@@ -23,6 +23,7 @@ import yaml
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
+
 # 程序版本号
 __version__ = "1.0.0"
 

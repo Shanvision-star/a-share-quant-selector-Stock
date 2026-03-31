@@ -150,7 +150,7 @@ EMA(EMA(CLOSE, 10), 10)
 ## 📁 项目结构
 
 ```
-a-share-quant-selector-main/  # 项目根目录
+a-share-quant-selector-Stock/  # 项目根目录
 ├── main.py                  # 🔥 命令行入口（CLI）
 ├── quant_system.py          # 🧠 核心业务逻辑（数据更新、选股、回溯、B1匹配）
 ├── README.md                # 📖 项目说明文档（功能介绍、命令用法、策略说明）

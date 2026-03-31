@@ -1,6 +1,6 @@
 # A-Share Quant Selector
 
-基于 Python + akshare 的A股量化选股系统，实现碗口反弹策略，支持K线图可视化、Web管理界面和钉钉自动通知。
+基于 Python + akshare 的A股量化选股系统，实现碗口反弹策略，支持K线图可视化、Web管理界面和钉钉自动通知。源代码作者github项目地址如下：https://github.com/Dzy-HW-XD/a-share-quant-selector
 
 ## 📋 TODO 清单
 

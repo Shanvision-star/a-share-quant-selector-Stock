@@ -27,8 +27,8 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/Dzy-HW-XD/a-share-quant-selector.git
-cd a-share-quant-selector
+git clone https://github.com/Shanvision-star/a-share-quant-selector-Stock
+cd a-share-quant-selector-Stock
 
 # 2. 安装依赖
 pip3 install -r requirements.txt

@@ -69,6 +69,54 @@ class QuantSystem:
             target_date -= timedelta(days=1)
         return target_date
 
+    def _format_eta(self, seconds):
+        """将剩余秒数格式化为易读的 ETA。"""
+        if seconds is None or seconds < 0:
+            return "--:--"
+        total_seconds = int(seconds)
+        minutes, sec = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{sec:02d}"
+        return f"{minutes:02d}:{sec:02d}"
+
+    def _build_progress_bar(self, processed, total, width=24):
+        """生成文本进度条。"""
+        if total <= 0:
+            return "[" + "-" * width + "]"
+        ratio = min(max(processed / total, 0.0), 1.0)
+        filled = min(width, int(ratio * width))
+        return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+    def _print_progress(
+        self,
+        prefix,
+        processed,
+        total,
+        started_at,
+        extra_text="",
+        stage_name="",
+        total_started_at=None,
+    ):
+        """统一进度输出：阶段名、进度条、速度、阶段耗时、总耗时、ETA。"""
+        if total <= 0:
+            return
+        now_ts = time.time()
+        elapsed = max(now_ts - started_at, 1e-6)
+        total_elapsed = max(now_ts - (total_started_at or started_at), 1e-6)
+        rate = processed / elapsed
+        remaining = max(total - processed, 0)
+        eta = remaining / rate if rate > 0 else None
+        pct = processed / total * 100
+        progress_bar = self._build_progress_bar(processed, total)
+        label = f"{prefix}[{stage_name}]" if stage_name else prefix
+        suffix = f" {extra_text}" if extra_text else ""
+        print(
+            f"  {label}: {progress_bar} [{processed}/{total}] {pct:5.1f}% | "
+            f"{rate:.1f}只/秒 | 阶段耗时 {self._format_eta(elapsed)} | "
+            f"总耗时 {self._format_eta(total_elapsed)} | ETA {self._format_eta(eta)}{suffix}"
+        )
+
     def _load_stock_names(self, stock_data):
         """
         加载股票名称映射表
@@ -234,13 +282,18 @@ class QuantSystem:
         category_count = {'bowl_center': 0, 'near_duokong': 0, 'near_short_trend': 0}
         process_codes = stock_codes[:max_stocks] if max_stocks else stock_codes
         total_codes = []
+        selection_started_at = time.time()
+        strategy_items = list(self.registry.strategies.items())
 
         # ===================== 遍历股票 + 执行策略 =====================
-        for strategy_name, strategy in self.registry.strategies.items():
+        for strategy_index, (strategy_name, strategy) in enumerate(strategy_items, start=1):
+            stage_name = f"{strategy_index}/{len(strategy_items)} {strategy_name}"
             print(f"\n执行策略: {strategy_name}")
             signals = []
             valid_count = 0
             invalid_count = 0
+            progress_started_at = time.time()
+            last_progress_at = 0.0
 
             if max_workers is None:
                 max_workers = min(8, max(1, (os.cpu_count() or 4) * 2))
@@ -306,9 +359,19 @@ class QuantSystem:
                         invalid_count += 1
                     # skip / error 不计入 valid_count
 
-                    if processed % 100 == 0 or processed == len(process_codes):
+                    now_ts = time.time()
+                    if processed == len(process_codes) or processed % 100 == 0 or (now_ts - last_progress_at) >= 5:
+                        last_progress_at = now_ts
                         gc.collect()
-                        print(f"  进度: [{processed}/{len(process_codes)}] 有效 {valid_count} 只，选出 {len(signals)} 只...")
+                        self._print_progress(
+                            "进度",
+                            processed,
+                            len(process_codes),
+                            progress_started_at,
+                            extra_text=f"| 有效 {valid_count} 只 | 选出 {len(signals)} 只",
+                            stage_name=stage_name,
+                            total_started_at=selection_started_at,
+                        )
 
             # 保存当前策略结果
             results[strategy_name] = signals
@@ -387,6 +450,7 @@ class QuantSystem:
         print(f"\n开始回溯扫描 {len(process_codes)} 只股票，使用并发线程加速处理...")
         results = []
         stock_data_dict = {}
+        scan_started_at = time.time()
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from utils.technical import KDJ, calculate_zhixing_trend
@@ -460,6 +524,7 @@ class QuantSystem:
                 future_map[future] = code
 
             processed = 0
+            last_progress_at = 0.0
             for future in as_completed(future_map):
                 processed += 1
                 try:
@@ -471,8 +536,17 @@ class QuantSystem:
                     stock_data_dict[result['code']] = result.pop('indicators')
                     results.append(result)
 
-                if processed % 50 == 0 or processed == len(process_codes):
-                    print(f"  进度: [{processed}/{len(process_codes)}] 发现 {len(results)} 只符合条件...")
+                now_ts = time.time()
+                if processed == len(process_codes) or processed % 50 == 0 or (now_ts - last_progress_at) >= 5:
+                    last_progress_at = now_ts
+                    self._print_progress(
+                        "回溯进度",
+                        processed,
+                        len(process_codes),
+                        scan_started_at,
+                        extra_text=f"| 命中 {len(results)} 只",
+                        stage_name="3天回溯扫描",
+                    )
 
         if not results:
             self.notifier.send_text(
@@ -496,6 +570,53 @@ class QuantSystem:
 
         return results
 
+    def _is_b1_fallback_error(self, exc):
+        """判断是否属于应自动回退到原模式的B1异常。"""
+        if isinstance(exc, MemoryError):
+            return True
+        msg = str(exc).lower()
+        error_markers = [
+            'out of memory',
+            'unable to allocate',
+            'cannot allocate memory',
+            'memoryerror',
+            "not 'series'",
+            'shape mismatch',
+            'broadcast',
+            'index out of bounds',
+        ]
+        return any(marker in msg for marker in error_markers)
+
+    @staticmethod
+    def _safe_float(value, default=1e9):
+        try:
+            if value in (None, '-', ''):
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    def _flatten_b1_candidates(self, results, stock_names):
+        """将策略结果压平成按股票去重后的候选列表。"""
+        candidates = {}
+        for strategy_name, signals in results.items():
+            for signal in signals:
+                code = signal.get('code')
+                if not code:
+                    continue
+                if code in candidates:
+                    continue
+                s = signal.get('signals', [{}])[0] if signal.get('signals') else {}
+                candidates[code] = {
+                    'code': code,
+                    'name': signal.get('name', stock_names.get(code, '未知')),
+                    'strategy': strategy_name,
+                    'category': s.get('category', 'unknown'),
+                    'close': s.get('close', '-'),
+                    'J': s.get('J', '-'),
+                }
+        return list(candidates.values())
+
     # ===================== B1 形态匹配核心 =====================
     def select_with_b1_match(self, category='all', max_stocks=None, min_similarity=None, lookback_days=None, max_workers=None):
         """
@@ -505,17 +626,27 @@ class QuantSystem:
           2. 对选出股票进行形态匹配
           3. 按相似度排序输出
         """
-        from strategy.pattern_config import MIN_SIMILARITY_SCORE, DEFAULT_LOOKBACK_DAYS
+        from strategy.pattern_config import (
+            MIN_SIMILARITY_SCORE,
+            DEFAULT_LOOKBACK_DAYS,
+            AUTO_FALLBACK_TO_CLASSIC,
+            B1_MATCH_MAX_CANDIDATES,
+            B1_MATCH_WORKERS,
+            B1_PREFILTER_BY_J,
+        )
         if min_similarity is None:
             min_similarity = MIN_SIMILARITY_SCORE
         if lookback_days is None:
             lookback_days = DEFAULT_LOOKBACK_DAYS
+        auto_fallback = bool(AUTO_FALLBACK_TO_CLASSIC)
 
         print("=" * 60)
         print("🎯 执行选股 + B1完美图形匹配")
         print(f"   相似度阈值: {min_similarity}%")
         print(f"   回看天数: {lookback_days}天")
+        print(f"   自动回退: {'开启' if auto_fallback else '关闭'}")
         print("=" * 60)
+        flow_started_at = time.time()
 
         # 步骤1：执行基础选股
         print("\n[1/3] 执行策略选股...")
@@ -523,8 +654,24 @@ class QuantSystem:
         total_selected = sum(len(signals) for signals in results.values())
         if total_selected == 0:
             print("\n✗ 策略未选出任何股票，跳过匹配")
-            return {'results': results, 'stock_names': stock_names, 'matched': []}
+            return {
+                'results': results,
+                'stock_names': stock_names,
+                'stock_data_dict': stock_data_dict,
+                'matched': [],
+                'total_selected': total_selected,
+                'fallback_to_classic': False,
+                'fallback_reason': '',
+            }
         print(f"\n✓ 策略选出 {total_selected} 只股票")
+
+        candidates = self._flatten_b1_candidates(results, stock_names)
+        if B1_PREFILTER_BY_J:
+            candidates.sort(key=lambda x: self._safe_float(x.get('J')))
+        max_candidates = max(0, int(B1_MATCH_MAX_CANDIDATES or 0))
+        if max_candidates and len(candidates) > max_candidates:
+            print(f"   候选裁剪: {len(candidates)} -> {max_candidates}（按J值低位优先）")
+            candidates = candidates[:max_candidates]
 
         # 步骤2：加载形态库
         print("\n[2/3] 初始化B1完美图形库...")
@@ -533,53 +680,151 @@ class QuantSystem:
             library = B1PatternLibrary(self.csv_manager)
             if not library.cases:
                 print("⚠️ 警告: 案例库为空")
-                return {'results': results, 'stock_names': stock_names, 'matched': []}
+                return {
+                    'results': results,
+                    'stock_names': stock_names,
+                    'stock_data_dict': stock_data_dict,
+                    'matched': [],
+                    'total_selected': total_selected,
+                    'fallback_to_classic': auto_fallback,
+                    'fallback_reason': '案例库为空',
+                }
             print(f"✓ 案例库加载完成: {len(library.cases)} 个案例")
         except Exception as e:
             print(f"✗ 初始化案例库失败: {e}")
-            return {'results': results, 'stock_names': stock_names, 'matched': []}
+            fallback_reason = f"初始化案例库失败: {e}"
+            return {
+                'results': results,
+                'stock_names': stock_names,
+                'stock_data_dict': stock_data_dict,
+                'matched': [],
+                'total_selected': total_selected,
+                'fallback_to_classic': auto_fallback,
+                'fallback_reason': fallback_reason,
+            }
 
         # 步骤3：执行形态匹配
         print("\n[3/3] 执行B1完美图形匹配...")
         matched_results = []
-        for strategy_name, signals in results.items():
-            for signal in signals:
-                code = signal['code']
-                name = signal.get('name', stock_names.get(code, '未知'))
-                if code not in stock_data_dict:
-                    continue
-                df = stock_data_dict[code]
-                if df.empty:
-                    continue
+        fallback_reason = ''
 
+        def _match_one(candidate):
+            code = candidate['code']
+            if code not in stock_data_dict:
+                return None
+            df = stock_data_dict[code]
+            if df.empty:
+                return None
+
+            match_result = library.find_best_match(code, df, lookback_days=lookback_days)
+            best = match_result.get('best_match')
+            stage_case = match_result.get('best_stage_case')
+            # 前瞻扫描结果：阶段1-5已通过，等待大阳买点确认
+            pre_signal = match_result.get('pre_signal', {})
+            pre_signal_detected = bool(pre_signal.get('detected', False))
+
+            score = best.get('similarity_score', 0) if best else 0
+            include_result = (
+                (best is not None and score >= min_similarity)
+                or (stage_case is not None)
+                or pre_signal_detected  # 前瞻信号也纳入结果
+            )
+            if not include_result:
+                return None
+
+            stage_summary = stage_case.get('summary', {}) if stage_case else {}
+            return {
+                'stock_code': code,
+                'stock_name': candidate['name'],
+                'strategy': candidate['strategy'],
+                'category': candidate['category'],
+                'close': candidate['close'],
+                'J': candidate['J'],
+                'similarity_score': score,
+                'matched_case': best.get('case_name', '') if best else '',
+                'matched_date': best.get('case_date', '') if best else '',
+                'matched_code': best.get('case_code', '') if best else '',
+                'breakdown': best.get('breakdown', {}) if best else {},
+                'tags': best.get('tags', []) if best else [],
+                'all_matches': match_result.get('all_matches', []),
+                'stage_case_passed': stage_case is not None,
+                'stage_case_name': stage_case.get('case_name', '') if stage_case else '',
+                'stage_case_code': stage_case.get('case_code', '') if stage_case else '',
+                'stage_case_buy_date': stage_case.get('buy_date', '') if stage_case else '',
+                'stage_case_tags': stage_case.get('tags', []) if stage_case else [],
+                'stage_case_description': stage_case.get('description', '') if stage_case else '',
+                'stage_case_summary': stage_summary,
+                'stage_case_analysis': stage_case.get('analysis', {}) if stage_case else {},
+                # 前瞻扫描字段：阶段1-5 通过，等待大阳确认买点
+                'pre_signal_detected': pre_signal_detected,
+                'pre_signal_anchor_date': pre_signal.get('anchor_date'),
+                'pre_signal_anchor_j': pre_signal.get('anchor_j'),
+                'pre_signal_setup_start': pre_signal.get('setup_window_start'),
+                'pre_signal_current_j': pre_signal.get('current_j'),
+                'pre_signal_dist_pct': pre_signal.get('current_dist_pct'),
+                'pre_signal_support_price': pre_signal.get('support_price'),
+                'pre_signal_stage_passed': pre_signal.get('stage_passed', {}),
+                'pre_signal_message': pre_signal.get('message', ''),
+            }
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        b1_workers = int(B1_MATCH_WORKERS or 0)
+        if b1_workers <= 0:
+            b1_workers = min(8, max(1, (os.cpu_count() or 4)))
+        b1_workers = min(b1_workers, len(candidates)) if candidates else 1
+        print(f"   B1并发匹配线程数: {b1_workers}")
+
+        processed = 0
+        progress_started_at = time.time()
+        last_progress_at = 0.0
+        with ThreadPoolExecutor(max_workers=b1_workers) as executor:
+            future_map = {executor.submit(_match_one, c): c['code'] for c in candidates}
+            for future in as_completed(future_map):
+                processed += 1
+                code = future_map[future]
                 try:
-                    match_result = library.find_best_match(code, df, lookback_days=lookback_days)
-                    if match_result.get('best_match'):
-                        best = match_result['best_match']
-                        score = best.get('similarity_score', 0)
-                        if score >= min_similarity:
-                            s = signal['signals'][0] if signal.get('signals') else {}
-                            matched_results.append({
-                                'stock_code': code,
-                                'stock_name': name,
-                                'strategy': strategy_name,
-                                'category': s.get('category', 'unknown'),
-                                'close': s.get('close', '-'),
-                                'J': s.get('J', '-'),
-                                'similarity_score': score,
-                                'matched_case': best.get('case_name', ''),
-                                'matched_date': best.get('case_date', ''),
-                                'matched_code': best.get('case_code', ''),
-                                'breakdown': best.get('breakdown', {}),
-                                'tags': best.get('tags', []),
-                                'all_matches': best.get('all_matches', []),
-                            })
+                    row = future.result()
+                    if row:
+                        matched_results.append(row)
                 except Exception as e:
+                    if auto_fallback and self._is_b1_fallback_error(e):
+                        fallback_reason = f"B1匹配异常，自动切换原模式: {e}"
+                        break
                     print(f"  ⚠️ 匹配 {code} 失败: {e}")
-                    continue
+
+                now_ts = time.time()
+                if processed == len(candidates) or processed % 100 == 0 or (now_ts - last_progress_at) >= 5:
+                    last_progress_at = now_ts
+                    self._print_progress(
+                        "B1进度",
+                        processed,
+                        len(candidates),
+                        progress_started_at,
+                        extra_text=f"| 命中 {len(matched_results)} 只",
+                        stage_name="3/3 B1完美图形匹配",
+                        total_started_at=flow_started_at,
+                    )
+
+        if fallback_reason:
+            print(f"\n⚠️ {fallback_reason}")
+            return {
+                'results': results,
+                'stock_names': stock_names,
+                'stock_data_dict': stock_data_dict,
+                'matched': [],
+                'total_selected': total_selected,
+                'fallback_to_classic': True,
+                'fallback_reason': fallback_reason,
+            }
 
         # 按相似度从高到低排序
-        matched_results.sort(key=lambda x: x['similarity_score'], reverse=True)
+        matched_results.sort(
+            key=lambda x: (
+                x.get('stage_case_passed', False),
+                x['similarity_score'],
+            ),
+            reverse=True,
+        )
         print(f"\n✓ 匹配完成: {len(matched_results)} 只股票超过阈值")
 
         # 打印TOP结果
@@ -594,12 +839,23 @@ class QuantSystem:
                 print(f"   相似度: {r['similarity_score']}% | 匹配: {r['matched_case']}")
                 bd = r.get('breakdown', {})
                 print(f"   趋势:{bd.get('trend_structure', 0)}%  KDJ:{bd.get('kdj_state', 0)}%  量能:{bd.get('volume_pattern', 0)}%  形态:{bd.get('price_shape', 0)}%")
+                if r.get('stage_case_passed'):
+                    stage_summary = r.get('stage_case_summary', {})
+                    print(
+                        "   阶段B1: "
+                        f"{r.get('stage_case_name', '')} | setup {stage_summary.get('setup_date', '-') }"
+                        f" -> buy {stage_summary.get('buy_date', '-') }"
+                        f" | 回溯 {stage_summary.get('anchor_lookback_days', '-')}/{stage_summary.get('support_lookback_days', '-')}天"
+                    )
 
         return {
             'results': results,
             'stock_names': stock_names,
+            'stock_data_dict': stock_data_dict,
             'matched': matched_results,
             'total_selected': total_selected,
+            'fallback_to_classic': False,
+            'fallback_reason': '',
         }
 
     # ===================== 完整流程（带B1 + 导出文件） =====================
@@ -623,6 +879,22 @@ class QuantSystem:
             lookback_days=lookback_days,
             max_workers=max_workers
         )
+
+        if match_result.get('fallback_to_classic'):
+            fallback_reason = match_result.get('fallback_reason', 'B1匹配出现异常')
+            print(f"\n⚠️ 已自动回退到原选股模式: {fallback_reason}")
+            self.notifier.send_text(f"⚠️ B1匹配异常，已自动回退原选股模式\n原因: {fallback_reason}")
+            strategy_obj = self.registry.strategies.get('BowlReboundStrategy') if self.registry.strategies else None
+            params = strategy_obj.params if strategy_obj else {}
+            self.notifier.send_stock_selection_with_charts(
+                match_result.get('results', {}),
+                match_result.get('stock_names', {}),
+                category_filter=category,
+                stock_data_dict=match_result.get('stock_data_dict', {}),
+                params=params,
+                send_text_first=True,
+            )
+            return match_result
 
         # 3. 钉钉通知 + 导出文件
         if match_result.get('matched'):

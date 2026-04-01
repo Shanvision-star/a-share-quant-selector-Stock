@@ -35,6 +35,22 @@ BASE_DIR = Path(__file__).parent.parent
 TXT_OUTPUT_DIR = BASE_DIR / "data" / "txt"
 ensure_dir(TXT_OUTPUT_DIR)
 
+
+def build_strategy_txt_dir(folder_name: str) -> Path:
+    output_dir = TXT_OUTPUT_DIR / folder_name
+    ensure_dir(output_dir)
+    return output_dir
+
+
+def sanitize_filename_part(value: str) -> str:
+    text = str(value).strip()
+    if not text:
+        return "unknown"
+    invalid_chars = '<>:"/\\|?*'
+    sanitized = "".join("_" if char in invalid_chars else char for char in text)
+    sanitized = sanitized.replace(" ", "_")
+    return sanitized.strip("._") or "unknown"
+
 # 时间戳
 def get_datetime_str():
     return datetime.now().strftime("%Y%m%d_%H%M")
@@ -87,6 +103,33 @@ def export_b1_match_tdx(matched_list):
             if tdx_code:
                 f.write(tdx_code + "\n")
     print(f"✅ B1匹配前30只已导出：{filepath}")
+
+
+def export_b1_pre_signal_tdx(pre_signal_list, max_count=None, strategy_name="阶段型B1前瞻扫描"):
+    """导出阶段型B1预警结果为通达信可导入TXT。"""
+    codes = [
+        clean_stock_code(item.get("stock_code", item.get("code", "")))
+        for item in pre_signal_list
+        if clean_stock_code(item.get("stock_code", item.get("code", "")))
+    ]
+    if not codes:
+        print("📝 阶段型B1预警无股票，不生成TXT")
+        return None
+
+    if max_count and max_count > 0:
+        codes = codes[:max_count]
+
+    output_dir = build_strategy_txt_dir("B1-zykj-match")
+    filename = f"{sanitize_filename_part(strategy_name)}_{get_datetime_str()}.txt"
+    filepath = output_dir / filename
+    with open(filepath, "w", encoding="gbk") as f:
+        for code in codes:
+            tdx_code = to_tdx_format(code)
+            if tdx_code:
+                f.write(tdx_code + "\n")
+
+    print(f"✅ 阶段型B1预警结果已导出：{filepath}")
+    return filepath
 
 # ====================== 4. ✅ 回溯筛选导出（通达信100%识别） ======================
 def export_backtrack_tdx(backtrack_result):

@@ -8,14 +8,16 @@ B1完美图形配置管理
 2. 如果YAML中未配置，使用本文件中的默认值
 """
 
-import os
 import yaml
 from pathlib import Path
 
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+
 def _load_yaml_config():
     """从YAML配置文件加载B1PatternMatch配置"""
-    config_path = Path("/root/quant-csv/config/strategy_params.yaml")
+    config_path = BASE_DIR / "config" / "strategy_params.yaml"
     
     if not config_path.exists():
         return {}
@@ -32,7 +34,7 @@ def _load_yaml_config():
 # 加载YAML配置
 _yaml_config = _load_yaml_config()
 
-# B1完美图形案例配置（10个历史成功案例）
+# B1完美图形案例配置（12个历史成功案例，其中含1个阶段型案例）
 # 注：日期为"选股系统选出的买入日期"，不是突破日
 B1_PERFECT_CASES = [
     {
@@ -70,6 +72,15 @@ B1_PERFECT_CASES = [
         "lookback_days": 25,
         "tags": ["主板", "科技"],
         "description": "靠近多空线+量能平稳+J值中位",
+    },
+    {
+        "id": "case_005",
+        "name": "澄天伟业",
+        "code": "300689",
+        "breakout_date": "2025-07-15",
+        "lookback_days": 25,
+        "tags": ["创业板", "芯片"],
+        "description": "持续缩量+价格震荡+J值低位",
     },
     {
         "id": "case_006",
@@ -127,6 +138,52 @@ B1_PERFECT_CASES = [
     },
 ]
 
+# B1阶段型案例配置
+# 这类案例用于表达多阶段完美图形，不参与原始特征向量库缓存，
+# 但会在B1匹配结果中作为补充命中信息输出。
+B1_STAGE_CASES = [
+    {
+        "id": "stage_case_001",
+        "name": "掌阅科技",
+        "code": "603533",
+        "case_date": "2026-02-06",
+        "buy_date": "2026-02-09",
+        "lookback_days": 80,
+        "tags": ["主板", "文化传媒", "阶段型B1"],
+        "description": "低位KDJ触发+护盘+三连涨+洗盘守低+回踩知行多空线后大阳启动",
+        "analysis_config": {
+            "anchor_date": "2025-11-17",
+            "reference_low_date": "2025-10-17",
+            "breakout_date": "2025-11-21",
+            "washout_end_date": "2025-12-17",
+            "revisit_date": "2026-02-06",
+            "setup_window_days": 3,
+            "buy_date": "2026-02-09",
+            "anchor_kdj_field": "J",
+            "anchor_kdj_max": 13,
+            "no_break_days": 3,
+            "guard_reference_field": "open",
+            "guard_compare_field": "low",
+            "breakout_min_pct": 4.0,
+            "breakout_min_streak": 3,
+            "washout_compare_field": "close",
+            "revisit_line_field": "bull_bear_line",
+            "revisit_band_pct": 3.0,
+            "revisit_kdj_field": "J",
+            "revisit_kdj_max": 20.0,
+            "buy_compare_field": "close",
+            "buy_trigger_min_pct": 9.5,
+            "buy_breakout_lookback_days": 5,
+            "short_pct": 2.0,
+            "duokong_pct": 3.0,
+            "M1": 14,
+            "M2": 28,
+            "M3": 57,
+            "M4": 114,
+        },
+    },
+]
+
 # 相似度权重配置（优先从YAML读取，否则使用默认值）
 _default_weights = {
     "trend_structure": 0.30,    # 知行趋势线结构
@@ -144,6 +201,16 @@ DEFAULT_LOOKBACK_DAYS = _yaml_config.get('lookback_days', 25)
 
 # Top N 结果展示（优先从YAML读取）
 TOP_N_RESULTS = _yaml_config.get('top_n_results', 15)
+
+# B1匹配性能与容错开关
+# auto_fallback_to_classic: B1阶段出错时自动回退到原始选股模式
+# max_candidates: B1匹配最大候选数（按J值升序优先）
+# match_workers: B1并发匹配线程数（0表示自动）
+# prefilter_by_j: 是否在裁剪候选前按J值升序预筛
+AUTO_FALLBACK_TO_CLASSIC = _yaml_config.get('auto_fallback_to_classic', True)
+B1_MATCH_MAX_CANDIDATES = _yaml_config.get('max_candidates', 400)
+B1_MATCH_WORKERS = _yaml_config.get('match_workers', 0)
+B1_PREFILTER_BY_J = _yaml_config.get('prefilter_by_j', True)
 
 # 匹配容差参数（优先从YAML读取）
 _default_tolerances = {

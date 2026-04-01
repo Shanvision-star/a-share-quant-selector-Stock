@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from strategy.base_strategy import BaseStrategy
 from utils.technical import (
     MA, EMA, LLV, HHV, REF, EXIST,
-    KDJ, calculate_zhixing_trend
+    KDJ, calculate_zhixing_state
 )
 
 
@@ -71,42 +71,19 @@ class BowlReboundStrategy(BaseStrategy):
         计算碗口反弹策略所需的所有指标
         """
         result = df.copy()
-        
-        # 1. 知行趋势线（使用technical模块，正确处理倒序数据）
-        from utils.technical import calculate_zhixing_trend
-        trend_df = calculate_zhixing_trend(
+
+        # 1. 统一计算知行双线和位置状态，避免策略与B1定义分叉
+        zhixing_df = calculate_zhixing_state(
             result, 
             m1=self.params['M1'],
             m2=self.params['M2'],
             m3=self.params['M3'],
-            m4=self.params['M4']
+            m4=self.params['M4'],
+            duokong_pct=self.params['duokong_pct'],
+            short_pct=self.params['short_pct']
         )
-        result['short_term_trend'] = trend_df['short_term_trend']
-        result['bull_bear_line'] = trend_df['bull_bear_line']
-        
-        # 2. 上升趋势
-        result['trend_above'] = result['short_term_trend'] > result['bull_bear_line']
-        
-        # 3. 分类条件计算
-        # 回落碗中：价格位于多空线和短期趋势线之间（优先级最高）
-        result['fall_in_bowl'] = (
-            (result['close'] >= result['bull_bear_line']) & 
-            (result['close'] <= result['short_term_trend'])
-        )
-        
-        # 靠近多空线：价格距离多空线 ±duokong_pct% 范围内
-        duokong_pct = self.params['duokong_pct'] / 100
-        result['near_duokong'] = (
-            (result['close'] >= result['bull_bear_line'] * (1 - duokong_pct)) & 
-            (result['close'] <= result['bull_bear_line'] * (1 + duokong_pct))
-        )
-        
-        # 靠近短期趋势线：价格距离短期趋势线 ±short_pct% 范围内
-        short_pct = self.params['short_pct'] / 100
-        result['near_short_trend'] = (
-            (result['close'] >= result['short_term_trend'] * (1 - short_pct)) & 
-            (result['close'] <= result['short_term_trend'] * (1 + short_pct))
-        )
+        for column in zhixing_df.columns:
+            result[column] = zhixing_df[column]
         
         # 4. KDJ指标
         from utils.technical import KDJ

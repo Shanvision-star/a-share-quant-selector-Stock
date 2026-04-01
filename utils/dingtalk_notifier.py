@@ -18,7 +18,7 @@ try:
     # 优先使用快速版
     from utils.kline_chart_fast import generate_kline_chart_fast as generate_kline_chart
     KLINE_CHART_AVAILABLE = True
-    print("✓ 使用快速K线图生成")
+    print("[OK] 使用快速K线图生成")
 except ImportError:
     try:
         from utils.kline_chart import generate_kline_chart
@@ -273,7 +273,7 @@ class DingTalkNotifier:
         if content_size <= MAX_SIZE:
             # 单条发送
             if self._send_single_markdown(title, content):
-                print("✓ 钉钉通知发送成功")
+                print("[OK] 钉钉通知发送成功")
                 return True
             return False
         
@@ -541,7 +541,7 @@ class DingTalkNotifier:
         if content_size <= MAX_SIZE:
             # 单条发送
             if self._send_single_text(content):
-                print("✓ 钉钉通知发送成功")
+                print("[OK] 钉钉通知发送成功")
                 return True
             return False
         
@@ -865,7 +865,7 @@ class DingTalkNotifier:
             bool: 发送是否成功
         """
         if not KLINE_CHART_AVAILABLE:
-            print("⚠️ K线图模块不可用，发送普通文本消息")
+            print("[WARN] K线图模块不可用，发送普通文本消息")
             return self.send_stock_selection(results, stock_names, category_filter)
         
         if stock_names is None:
@@ -1113,6 +1113,128 @@ class DingTalkNotifier:
         return True
 
 
+    def send_b1_pre_signal_results_with_charts(
+        self,
+        results: list,
+        stock_names=None,
+        stock_data_dict=None,
+        params=None,
+    ):
+        """发送阶段型B1预警结果（文字+K线图）到钉钉。"""
+        if not results:
+            self.send_text("[B1预警] 本次扫描无阶段型B1预警股票。")
+            return False
+
+        if stock_names is None:
+            stock_names = {}
+        if stock_data_dict is None:
+            stock_data_dict = {}
+        if params is None:
+            params = {}
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        lines = [
+            "## 阶段型 B1 预警结果",
+            "",
+            f"时间: {now}",
+            f"命中数量: {len(results)} 只",
+            f"策略: {params.get('strategy_name', '阶段型B1前瞻扫描')}",
+            f"说明: 满足阶段1-5，阶段6大阳买点待确认",
+            "━" * 30,
+            "",
+        ]
+
+        for i, item in enumerate(results, 1):
+            code = item.get('stock_code', item.get('code', ''))
+            name = item.get('stock_name', item.get('name', stock_names.get(code, '未知')))
+            lines.append(f"{i}. **{code}** {name}")
+            lines.append(
+                f"   anchor={item.get('anchor_date')} J={item.get('anchor_j')} | "
+                f"setup={item.get('setup_window_start')} | 当前J={item.get('current_j')} | "
+                f"多空线偏离={item.get('current_dist_pct')}%"
+            )
+            lines.append(
+                f"   支撑价={item.get('support_price')} | 策略={item.get('strategy_name', '阶段型B1前瞻扫描')}"
+            )
+            lines.append("")
+
+        summary_ok = self.send_markdown("阶段型B1预警结果", "\n".join(lines))
+        if not summary_ok:
+            print("[WARN] 阶段型B1汇总消息发送失败")
+
+        temp_dir = Path(tempfile.gettempdir()) / 'kline_charts'
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        chart_params = {
+            'M': int(params.get('chart_days', 80)),
+            'duokong_pct': params.get('duokong_pct', 3),
+            'short_pct': params.get('short_pct', 2),
+        }
+
+        detail_msg_ok = 0
+        detail_msg_fail = 0
+        chart_ok = 0
+        chart_fail = 0
+
+        for item in results:
+            code = item.get('stock_code', item.get('code', ''))
+            name = item.get('stock_name', item.get('name', stock_names.get(code, '未知')))
+            df = stock_data_dict.get(code)
+            if df is None or getattr(df, 'empty', True):
+                detail_msg_fail += 1
+                continue
+
+            content_lines = [
+                f"### {code} {name}",
+                f"策略: {item.get('strategy_name', '阶段型B1前瞻扫描')}",
+                f"anchor: {item.get('anchor_date')} | J={item.get('anchor_j')}",
+                f"setup: {item.get('setup_window_start')} | 当前J={item.get('current_j')}",
+                f"多空线偏离: {item.get('current_dist_pct')}% | 支撑价: {item.get('support_price')}",
+                f"说明: 阶段1-5通过，阶段6大阳待确认，可加入重点观察。",
+            ]
+            detail_ok = self.send_markdown(f"{code} {name} 阶段型B1预警", "\n".join(content_lines))
+            if detail_ok:
+                detail_msg_ok += 1
+            else:
+                detail_msg_fail += 1
+
+            key_dates = []
+            for date_value in [item.get('anchor_date'), item.get('setup_window_start')]:
+                if date_value:
+                    try:
+                        key_dates.append(pd.Timestamp(date_value))
+                    except Exception:
+                        continue
+
+            try:
+                chart_path = generate_kline_chart(
+                    stock_code=code,
+                    stock_name=name,
+                    df=df,
+                    category='near_duokong',
+                    params=chart_params,
+                    key_candle_dates=key_dates,
+                    output_dir=str(temp_dir),
+                    show_text=False,
+                    show_legend=True,
+                )
+                if self.send_image(chart_path, f"{code} 阶段型B1 K线图"):
+                    chart_ok += 1
+                else:
+                    chart_fail += 1
+            except Exception as e:
+                print(f"[WARN] 生成/发送 {code} 阶段型B1 K线图失败: {e}")
+                chart_fail += 1
+
+        print(
+            f"[INFO] 阶段型B1钉钉发送统计: 汇总={'OK' if summary_ok else 'FAIL'} | "
+            f"个股消息={detail_msg_ok}成功/{detail_msg_fail}失败 | "
+            f"图片={chart_ok}成功/{chart_fail}失败"
+        )
+
+        return bool(summary_ok and detail_msg_ok > 0)
+
+
     def send_b1_match_results(self, results: list, total_selected: int):
         """
         发送带B1完美图形匹配的选股结果
@@ -1173,12 +1295,58 @@ class DingTalkNotifier:
             
             cat_name = category_names.get(category, category)
             lines.append(f"   策略: {cat_name} | 价格: {close} | J值: {j_val}")
+
+            # 回溯验证通过的阶段型案例（固定历史日期，6阶段全部完成）
+            if r.get('stage_case_passed'):
+                stage_summary = r.get('stage_case_summary', {})
+                stage_name = r.get('stage_case_name', '')
+                setup_date = stage_summary.get('setup_date', '-')
+                buy_date = stage_summary.get('buy_date', '-')
+                anchor_lookback = stage_summary.get('anchor_lookback_days', '-')
+                support_lookback = stage_summary.get('support_lookback_days', '-')
+                setup_kdj_field = stage_summary.get('setup_kdj_field', 'J')
+                setup_kdj_value = stage_summary.get('setup_kdj_value', '-')
+                setup_distance = stage_summary.get('setup_distance_pct', '-')
+                lines.append(
+                    f"   [回溯验证B1] {stage_name} | setup {setup_date} -> buy {buy_date}"
+                )
+                lines.append(
+                    f"   回溯: anchor {anchor_lookback}天 | support {support_lookback}天 | "
+                    f"{setup_kdj_field}={setup_kdj_value} | 多空线偏离{setup_distance}%"
+                )
+
+            # 前瞻预警信号：阶段1-5通过，等待大阳买点出现，可提前布局
+            if r.get('pre_signal_detected'):
+                anchor_date = r.get('pre_signal_anchor_date', '-')
+                anchor_j = r.get('pre_signal_anchor_j', '-')
+                setup_start = r.get('pre_signal_setup_start', '-')
+                cur_j = r.get('pre_signal_current_j', '-')
+                cur_dist = r.get('pre_signal_dist_pct', '-')
+                support_p = r.get('pre_signal_support_price', '-')
+                stage_nums = r.get('pre_signal_stage_passed', {})
+                stages_str = ''.join(
+                    f"[{i}{'ok' if stage_nums.get(i) else 'x'}]"
+                    for i in range(1, 6)
+                )
+                lines.append(
+                    f"   [预买入信号] 阶段1-5通过，等待大阳确认买点"
+                )
+                lines.append(
+                    f"   anchor: {anchor_date} J={anchor_j} | "
+                    f"setup窗口: {setup_start} | "
+                    f"当前J={cur_j} | 多空线偏离{cur_dist}%"
+                )
+                lines.append(
+                    f"   支撑价: {support_p} | 阶段: {stages_str} | 阶段6(大阳)待确认"
+                )
+
             lines.append("")  # 空行分隔
         
         # 添加图例说明
         lines.append("---")
-        lines.append("**B1匹配逻辑**: 基于双线+量比+形态三维相似度")
-        lines.append("**案例来源**: 10个历史成功案例（华纳药厂、宁波韵升等）")
+        lines.append("**B1匹配逻辑**: 基于双线+KDJ+量能+形态四维相似度")
+        lines.append("**案例来源**: 12个历史成功案例（华纳药厂、宁波韵升、澄天伟业、航天发展、掌阅科技等）")
+        lines.append("**阶段型案例**: 掌阅科技按案例库日期 2026-02-06 归档，确认买点为 2026-02-09")
         
         content = "\n".join(lines)
         

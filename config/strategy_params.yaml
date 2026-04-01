@@ -59,7 +59,7 @@ BowlReboundStrategy:
 # B1完美图形匹配 (B1PatternMatch)
 # ============================================
 # 功能说明：
-# 将选股结果与10个历史成功案例进行四维相似度匹配
+# 将选股结果与12个历史成功案例进行四维相似度匹配
 # 按相似度排序输出，帮助识别具有相似突破特征的股票
 #
 # 详细逻辑请参考: B1_PATTERN_MATCH.md
@@ -99,6 +99,19 @@ B1PatternMatch:
     drawdown: 15            # 回撤幅度容差（±15%）
   
   top_n_results: 25         # 展示Top N个匹配结果（钉钉通知中显示的数量）
+
+  # auto_fallback_to_classic: B1阶段出现异常时自动切换到原始选股模式（仅发基础选股结果）
+  auto_fallback_to_classic: true
+
+  # max_candidates: B1匹配最大候选数（先按J值低位优先后裁剪）
+  # 候选过多会显著增加CPU和内存压力，建议200-600
+  max_candidates: 400
+
+  # match_workers: B1匹配线程数，0表示自动（建议保持0）
+  match_workers: 0
+
+  # prefilter_by_j: 裁剪候选前按J值升序预筛（更偏向低位形态，能提速）
+  prefilter_by_j: true
 
 # ============================================
 # 新增策略配置示例

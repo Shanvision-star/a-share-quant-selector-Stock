@@ -39,6 +39,38 @@ def calculate_short_term_trend(df):
     return EMA(EMA(df['close'], 10), 10)
 
 
+def evaluate_zhixing_snapshot(close, short_term_trend, bull_bear_line, duokong_pct=3, short_pct=2):
+    """
+    评估单个价格点相对于知行短期趋势线/多空线的位置状态。
+    该函数用于统一策略分类和B1特征提取中的双线定义。
+    """
+    duokong_ratio = duokong_pct / 100
+    short_ratio = short_pct / 100
+
+    distance_to_bullbear_pct = 0.0 if bull_bear_line == 0 else (close - bull_bear_line) / bull_bear_line * 100
+    distance_to_short_term_pct = 0.0 if short_term_trend == 0 else (close - short_term_trend) / short_term_trend * 100
+
+    avg_line = (short_term_trend + bull_bear_line) / 2
+    avg_line_bias_pct = 0.0 if avg_line == 0 else (close - avg_line) / avg_line * 100
+    line_spread_pct = 0.0 if bull_bear_line == 0 else (short_term_trend - bull_bear_line) / bull_bear_line * 100
+
+    lower_line = min(short_term_trend, bull_bear_line)
+    upper_line = max(short_term_trend, bull_bear_line)
+    trend_above = short_term_trend > bull_bear_line
+
+    return {
+        'trend_above': trend_above,
+        'between_lines': lower_line <= close <= upper_line,
+        'fall_in_bowl': trend_above and bull_bear_line <= close <= short_term_trend,
+        'near_duokong': bull_bear_line * (1 - duokong_ratio) <= close <= bull_bear_line * (1 + duokong_ratio),
+        'near_short_trend': short_term_trend * (1 - short_ratio) <= close <= short_term_trend * (1 + short_ratio),
+        'distance_to_bullbear_pct': distance_to_bullbear_pct,
+        'distance_to_short_term_pct': distance_to_short_term_pct,
+        'line_spread_pct': line_spread_pct,
+        'avg_line_bias_pct': avg_line_bias_pct,
+    }
+
+
 def LLV(series, n):
     """
     N周期最低值 - 正确处理倒序排列的数据
@@ -181,14 +213,74 @@ def calculate_zhixing_trend(df, m1=14, m2=28, m3=57, m4=114):
     参数:
         m1, m2, m3, m4: 多空线计算用的MA周期，默认14, 28, 57, 114
     """
-    # 知行短期趋势线 = EMA(EMA(CLOSE,10),10)
-    short_term_trend = calculate_short_term_trend(df)
-    
-    # 知行多空线 = (MA(m1) + MA(m2) + MA(m3) + MA(m4)) / 4
-    bull_bear_line = (MA(df['close'], m1) + MA(df['close'], m2) + 
-                      MA(df['close'], m3) + MA(df['close'], m4)) / 4
-    
-    return pd.DataFrame({
+    is_descending = 'date' in df.columns and df['date'].iloc[0] > df['date'].iloc[-1]
+
+    if is_descending:
+        df_calc = df.iloc[::-1].copy().reset_index(drop=True)
+    else:
+        df_calc = df.copy().reset_index(drop=True)
+
+    # 在时间正序上直接计算，避免复用仅适配倒序序列的MA/EMA辅助函数
+    close = df_calc['close']
+    short_term_trend = close.ewm(span=10, adjust=False, min_periods=1).mean().ewm(
+        span=10,
+        adjust=False,
+        min_periods=1,
+    ).mean()
+    bull_bear_line = (
+        close.rolling(window=m1, min_periods=1).mean() +
+        close.rolling(window=m2, min_periods=1).mean() +
+        close.rolling(window=m3, min_periods=1).mean() +
+        close.rolling(window=m4, min_periods=1).mean()
+    ) / 4
+
+    result = pd.DataFrame({
         'short_term_trend': short_term_trend,
         'bull_bear_line': bull_bear_line
+    })
+
+    if is_descending:
+        result = result.iloc[::-1].reset_index(drop=True)
+
+    result.index = df.index
+    return result
+
+
+def calculate_zhixing_state(df, m1=14, m2=28, m3=57, m4=114, duokong_pct=3, short_pct=2):
+    """
+    统一计算知行双线及其衍生位置状态。
+    该函数保留原始双线定义，并额外输出策略分类和B1分析所需的偏离度字段。
+    """
+    trend_df = calculate_zhixing_trend(df, m1=m1, m2=m2, m3=m3, m4=m4)
+
+    short_term_trend = trend_df['short_term_trend']
+    bull_bear_line = trend_df['bull_bear_line']
+    close = df['close']
+
+    duokong_ratio = duokong_pct / 100
+    short_ratio = short_pct / 100
+
+    safe_bull = bull_bear_line.replace(0, np.nan)
+    safe_short = short_term_trend.replace(0, np.nan)
+    avg_line = (short_term_trend + bull_bear_line) / 2
+    safe_avg = avg_line.replace(0, np.nan)
+
+    lower_line = pd.Series(np.minimum(short_term_trend.values, bull_bear_line.values), index=df.index)
+    upper_line = pd.Series(np.maximum(short_term_trend.values, bull_bear_line.values), index=df.index)
+    trend_above = short_term_trend > bull_bear_line
+
+    state_df = pd.DataFrame({
+        'short_term_trend': short_term_trend,
+        'bull_bear_line': bull_bear_line,
+        'trend_above': trend_above,
+        'between_lines': (close >= lower_line) & (close <= upper_line),
+        'fall_in_bowl': trend_above & (close >= bull_bear_line) & (close <= short_term_trend),
+        'near_duokong': (close >= bull_bear_line * (1 - duokong_ratio)) & (close <= bull_bear_line * (1 + duokong_ratio)),
+        'near_short_trend': (close >= short_term_trend * (1 - short_ratio)) & (close <= short_term_trend * (1 + short_ratio)),
+        'distance_to_bullbear_pct': ((close - bull_bear_line) / safe_bull * 100).fillna(0.0),
+        'distance_to_short_term_pct': ((close - short_term_trend) / safe_short * 100).fillna(0.0),
+        'line_spread_pct': ((short_term_trend - bull_bear_line) / safe_bull * 100).fillna(0.0),
+        'avg_line_bias_pct': ((close - avg_line) / safe_avg * 100).fillna(0.0),
     }, index=df.index)
+
+    return state_df

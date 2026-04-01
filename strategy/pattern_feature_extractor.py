@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.technical import (
-    MA, EMA, KDJ, calculate_zhixing_trend, REF, LLV, HHV
+    MA, EMA, KDJ, calculate_zhixing_state, evaluate_zhixing_snapshot, REF, LLV, HHV
 )
 
 
@@ -39,10 +39,10 @@ class PatternFeatureExtractor:
         # 按日期正序排列（便于计算趋势）
         window_df = window_df.sort_values('date').reset_index(drop=True)
         
-        # 计算知行指标
-        trend_df = calculate_zhixing_trend(window_df)
-        window_df['short_term_trend'] = trend_df['short_term_trend']
-        window_df['bull_bear_line'] = trend_df['bull_bear_line']
+        # 计算知行指标和位置状态，复用与主策略完全一致的双线定义
+        zhixing_df = calculate_zhixing_state(window_df)
+        for column in zhixing_df.columns:
+            window_df[column] = zhixing_df[column]
         
         # 计算KDJ
         kdj_df = KDJ(window_df, n=9, m1=3, m2=3)
@@ -74,6 +74,11 @@ class PatternFeatureExtractor:
             return {}
         
         latest = df.iloc[-1]  # 最后一天（最新）
+        snapshot = evaluate_zhixing_snapshot(
+            close=float(latest['close']),
+            short_term_trend=float(latest['short_term_trend']),
+            bull_bear_line=float(latest['bull_bear_line']),
+        )
         
         # 1. 短期趋势 vs 多空线的相对位置（百分比偏离）
         short_bullbear_ratio = latest['short_term_trend'] / latest['bull_bear_line'] if latest['bull_bear_line'] != 0 else 1.0
@@ -82,30 +87,16 @@ class PatternFeatureExtractor:
         short_slope = (df['short_term_trend'].iloc[-1] / df['short_term_trend'].iloc[-5] - 1) * 100 if df['short_term_trend'].iloc[-5] != 0 else 0
         bullbear_slope = (df['bull_bear_line'].iloc[-1] / df['bull_bear_line'].iloc[-5] - 1) * 100 if df['bull_bear_line'].iloc[-5] != 0 else 0
         
-        # 3. 价格相对于趋势线的偏离（百分比）- 关键：使用相对偏离而非绝对比值
-        # 价格高于趋势线为正，低于为负
-        price_vs_short_pct = (latest['close'] - latest['short_term_trend']) / latest['short_term_trend'] * 100 if latest['short_term_trend'] != 0 else 0
-        price_vs_bullbear_pct = (latest['close'] - latest['bull_bear_line']) / latest['bull_bear_line'] * 100 if latest['bull_bear_line'] != 0 else 0
-        
-        # 4. 是否在碗中（短期趋势 > 价格 > 多空线）
-        is_in_bowl = (latest['short_term_trend'] > latest['close'] > latest['bull_bear_line'])
-        
-        # 5. 趋势发散程度（短期趋势与多空线的百分比距离）
-        trend_spread_pct = (latest['short_term_trend'] - latest['bull_bear_line']) / latest['bull_bear_line'] * 100 if latest['bull_bear_line'] != 0 else 0
-        
-        # 6. 双线乖离率（价格与两条趋势线的平均偏离）
-        avg_trend = (latest['short_term_trend'] + latest['bull_bear_line']) / 2
-        price_bias_pct = (latest['close'] - avg_trend) / avg_trend * 100 if avg_trend != 0 else 0
-        
+
         return {
             "short_vs_bullbear": round(short_bullbear_ratio, 4),
             "short_slope": round(short_slope, 4),
             "bullbear_slope": round(bullbear_slope, 4),
-            "price_vs_short_pct": round(price_vs_short_pct, 4),  # 改为百分比偏离
-            "price_vs_bullbear_pct": round(price_vs_bullbear_pct, 4),  # 改为百分比偏离
-            "is_in_bowl": is_in_bowl,
-            "trend_spread_pct": round(trend_spread_pct, 4),  # 改为百分比
-            "price_bias_pct": round(price_bias_pct, 4),  # 新增：双线乖离率
+            "price_vs_short_pct": round(snapshot['distance_to_short_term_pct'], 4),
+            "price_vs_bullbear_pct": round(snapshot['distance_to_bullbear_pct'], 4),
+            "is_in_bowl": snapshot['fall_in_bowl'],
+            "trend_spread_pct": round(snapshot['line_spread_pct'], 4),
+            "price_bias_pct": round(snapshot['avg_line_bias_pct'], 4),
         }
     
     def _extract_kdj_features(self, df: pd.DataFrame) -> dict:

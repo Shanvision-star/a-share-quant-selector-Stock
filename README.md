@@ -53,6 +53,62 @@ python3 main.py run --max-stocks 500
 python3 main.py web
 ```
 
+## 📁 项目结构
+
+```
+a-share-quant-selector-Stock/
+├── main.py                      # CLI 主入口（init / run / web / schedule / backtest）
+├── quant_system.py              # 核心调度引擎，协调数据、策略、通知和导出
+├── web_server.py                # Flask Web 管理服务
+├── requirements.txt             # Python 依赖列表
+├── quant.sh                     # Shell 启动包装脚本
+│
+├── config/                      # 配置文件目录
+│   ├── config.yaml.template     # 钉钉 & 系统配置模板
+│   ├── github.yaml.template     # GitHub API 配置模板
+│   ├── strategy_params.yaml     # 策略参数设置
+│   └── crontab.txt              # 定时任务参考配置
+│
+├── strategy/                    # 选股策略模块
+│   ├── base_strategy.py         # 策略抽象基类
+│   ├── strategy_registry.py     # 策略动态注册器
+│   ├── bowl_rebound.py          # 碗口反弹策略实现
+│   ├── pattern_config.py        # B1 图形匹配参数配置
+│   ├── pattern_matcher.py       # B1 图形匹配引擎（DTW）
+│   ├── pattern_feature_extractor.py  # K 线特征提取
+│   ├── pattern_library.py       # B1 历史案例库（12 个成功案例）
+│   └── b1_case_analyzer.py      # B1 案例分析与相似度计算
+│
+├── utils/                       # 工具模块
+│   ├── akshare_fetcher.py       # AKShare 数据抓取（含并发）
+│   ├── dingtalk_notifier.py     # 钉钉推送（含限流与图片上传）
+│   ├── csv_manager.py           # CSV 文件读写管理
+│   ├── technical.py             # 技术指标计算（MA/EMA/KDJ 等）
+│   ├── kline_chart.py           # K 线图生成（matplotlib）
+│   ├── kline_chart_fast.py      # 快速 K 线图生成
+│   ├── tdx_exporter.py          # 通达信格式导出
+│   └── backtrack_analyzer.py    # 3 天回溯分析
+│
+├── scripts/                     # 独立运行脚本
+│   └── run_b1_scan.py           # B1 阶段型前瞻扫描脚本
+│
+├── tests/                       # 测试脚本
+│   ├── test_dingtalk.py         # 钉钉通知测试工具
+│   └── test_kline_chart.py      # K 线图功能测试脚本
+│
+├── web/                         # Web 前端资源
+│   ├── templates/index.html     # 管理界面 HTML
+│   └── static/
+│       ├── js/app.js            # 前端交互逻辑
+│       └── css/style.css        # 界面样式
+│
+└── docs/                        # 详细文档
+    ├── B1_PATTERN_MATCH.md      # B1 完美图形匹配详解
+    ├── B1_STAGE_STRATEGY.md     # B1 阶段策略（1-5 阶段）详解
+    ├── B1_CHANGELOG_20260402.md # B1 功能更新日志
+    └── CHANGELOG.md             # 项目版本更新记录
+```
+
 ## 📊 策略说明
 
 ### 碗口反弹策略 (BowlReboundStrategy)
@@ -75,7 +131,7 @@ python3 main.py web
 
 B1完美图形匹配功能基于12个历史成功案例，对选股结果进行三维相似度匹配排序，帮助识别具有相似突破特征的股票。
 
-📖 **[查看详细匹配逻辑 →](B1_PATTERN_MATCH.md)**
+📖 **[查看详细匹配逻辑 →](docs/B1_PATTERN_MATCH.md)**
 
 #### 案例库（12个历史成功案例）
 
@@ -104,7 +160,7 @@ B1阶段策略用于“启动前预警”，不是只做事后复盘。
 - 动态扫描用于全市场选股：重点筛出阶段1-5成立、阶段6待确认的标的。
 - 时间口径全部按交易日计数（不是自然日）。
 
-📖 **[查看阶段策略详解 →](B1_STAGE_STRATEGY.md)**
+📖 **[查看阶段策略详解 →](docs/B1_STAGE_STRATEGY.md)**
 
 #### 匹配维度（三维相似度）
 
@@ -209,7 +265,7 @@ a-share-quant-selector-Stock/  # 项目根目录
 | 3. 初始化历史数据（首次） | `python3 main.py init` | 首次全量抓取；已有数据可跳过。 |
 | 4. 日常执行主流程 | `python3 main.py run` | 更新数据 + 选股 + 通知。 |
 | 5. 日常执行（B1匹配） | `python3 main.py run --b1-match` | 在主流程后追加 B1 完美图形匹配。 |
-| 6. 阶段型B1前瞻扫描 | `python3 -u run_b1_scan.py` | 启动前预警扫描，实时显示进度。 |
+| 6. 阶段型B1前瞻扫描 | `python3 -u scripts/run_b1_scan.py` | 启动前预警扫描，实时显示进度。 |
 | 7. 快速验证（小样本） | `python3 main.py run --max-stocks 500 --b1-match` | 小规模验证参数与流程是否正常。 |
 | 8. 启动 Web 管理界面 | `python3 main.py web` | 本地查看数据与图形。 |
 
@@ -223,7 +279,7 @@ a-share-quant-selector-Stock/  # 项目根目录
 | 4. 初始化历史数据（首次） | `.\.venv\Scripts\python.exe .\main.py init` | 首次全量抓取；已有数据可跳过。 |
 | 5. 日常执行主流程 | `.\.venv\Scripts\python.exe .\main.py run` | 更新数据 + 选股 + 通知。 |
 | 6. 日常执行（B1匹配） | `.\.venv\Scripts\python.exe .\main.py run --b1-match` | 在主流程后追加 B1 完美图形匹配。 |
-| 7. 阶段型B1前瞻扫描 | `.\.venv\Scripts\python.exe -u .\run_b1_scan.py` | 启动前预警扫描，实时显示进度。 |
+| 7. 阶段型B1前瞻扫描 | `.\.venv\Scripts\python.exe -u .\scripts\run_b1_scan.py` | 启动前预警扫描，实时显示进度。 |
 | 8. 快速验证（小样本） | `.\.venv\Scripts\python.exe .\main.py run --max-stocks 500 --b1-match` | 小规模验证参数与流程是否正常。 |
 | 9. 启动 Web 管理界面 | `.\.venv\Scripts\python.exe .\main.py web` | 本地查看数据与图形。 |
 
@@ -260,12 +316,12 @@ a-share-quant-selector-Stock/  # 项目根目录
 | `python3 main.py run --b1-match --min-similarity 70` | 指定最低相似度 70%。相似度按百分比计算（0-100），低于 70% 的结果不展示。 |
 | `python3 main.py run --b1-match --lookback-days 30 --min-similarity 70` | 回看 30 个交易日 + 相似度至少 70%，适合实盘中等偏严格筛选。 |
 
-#### 3）阶段型B1前瞻扫描命令（run_b1_scan.py）
+#### 3）阶段型B1前瞻扫描命令（scripts/run_b1_scan.py）
 
 | 命令 | 说明 |
 |------|------|
-| `python3 run_b1_scan.py` | 执行全市场阶段型 B1 前瞻扫描。 |
-| `python3 -u run_b1_scan.py` | 无缓冲实时输出，显示进度/速度/ETA/命中/异常。 |
+| `python3 scripts/run_b1_scan.py` | 执行全市场阶段型 B1 前瞻扫描。 |
+| `python3 -u scripts/run_b1_scan.py` | 无缓冲实时输出，显示进度/速度/ETA/命中/异常。 |
 
 ### 二、Windows 命令
 
@@ -298,12 +354,12 @@ a-share-quant-selector-Stock/  # 项目根目录
 | `.\.venv\Scripts\python.exe .\main.py run --b1-match --min-similarity 70` | 指定最低相似度 70%。相似度按百分比计算（0-100），低于 70% 的结果不展示。 |
 | `.\.venv\Scripts\python.exe .\main.py run --b1-match --lookback-days 30 --min-similarity 70` | 回看 30 个交易日 + 相似度至少 70%，适合实盘中等偏严格筛选。 |
 
-#### 3）阶段型B1前瞻扫描命令（run_b1_scan.py）
+#### 3）阶段型B1前瞻扫描命令（scripts/run_b1_scan.py）
 
 | 命令 | 说明 |
 |------|------|
-| `.\.venv\Scripts\python.exe .\run_b1_scan.py` | 执行全市场阶段型 B1 前瞻扫描。 |
-| `.\.venv\Scripts\python.exe -u .\run_b1_scan.py` | 无缓冲实时输出（推荐），显示进度/速度/ETA/命中/异常。 |
+| `.\.venv\Scripts\python.exe .\scripts\run_b1_scan.py` | 执行全市场阶段型 B1 前瞻扫描。 |
+| `.\.venv\Scripts\python.exe -u .\scripts\run_b1_scan.py` | 无缓冲实时输出（推荐），显示进度/速度/ETA/命中/异常。 |
 
 阶段扫描完成后自动执行：
 - 推送命中股票到钉钉（代码 + 中文名 + 关键信息 + K 线图）

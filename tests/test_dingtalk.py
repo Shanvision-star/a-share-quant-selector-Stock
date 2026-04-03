@@ -3,9 +3,9 @@
 钉钉通知测试工具
 
 用法:
-    python3 test_dingtalk.py              # 使用模拟数据测试
-    python3 test_dingtalk.py --real       # 执行真实选股并发送
-    python3 test_dingtalk.py --category bowl_center  # 只测试特定分类
+    python3 tests/test_dingtalk.py              # 使用模拟数据测试
+    python3 tests/test_dingtalk.py --real       # 执行真实选股并发送
+    python3 tests/test_dingtalk.py --category bowl_center  # 只测试特定分类
 """
 import sys
 import argparse
@@ -13,7 +13,7 @@ from pathlib import Path
 from datetime import datetime
 
 # 添加项目根目录到路径
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.dingtalk_notifier import DingTalkNotifier
 import yaml
@@ -144,10 +144,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python3 test_dingtalk.py                    # 模拟数据测试
-  python3 test_dingtalk.py --real             # 真实选股测试
-  python3 test_dingtalk.py --real --max-stocks 100   # 只处理100只股票
-  python3 test_dingtalk.py --real --category bowl_center  # 只测试碗中分类
+  python3 tests/test_dingtalk.py                    # 模拟数据测试
+  python3 tests/test_dingtalk.py --real             # 真实选股测试
+  python3 tests/test_dingtalk.py --real --max-stocks 100   # 只处理100只股票
+  python3 tests/test_dingtalk.py --real --category bowl_center  # 只测试碗中分类
         """
     )
     

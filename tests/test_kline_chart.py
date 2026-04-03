@@ -9,7 +9,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 # 添加项目根目录到路径
-sys.path.insert(0, '/root/quant-csv')
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.kline_chart import generate_kline_chart
 

@@ -1,11 +1,12 @@
-# A-Share Quant Selector
+# a-share-quant-selector-Stock
+(原作者项目库：A-Share Quant Selector，原作者项目地址https://github.com/Dzy-HW-XD/a-share-quant-selector)
 
 基于 Python + akshare 的A股量化选股系统，实现碗口反弹策略，支持K线图可视化、Web管理界面和钉钉自动通知。源代码作者github项目地址如下：https://github.com/Dzy-HW-XD/a-share-quant-selector
 
 ## 📋 TODO 清单
 
 - [ ] **TODO 1**: 尝试大模型的近似能力 -----已实现B1阶段策略
-- [ ] **TODO 2**: 更新砖型图选股逻辑
+- [ ] **TODO 2**: 更新砖型图选股逻辑 ---TODO
 - [ ] **TODO 3**: 补充B1、砖型图完美图形库 ---补充掌阅科技B1图形
 
 ---

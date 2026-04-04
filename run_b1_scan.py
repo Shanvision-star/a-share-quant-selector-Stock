@@ -14,7 +14,8 @@ from utils.dingtalk_notifier import DingTalkNotifier
 from utils.tdx_exporter import export_b1_pre_signal_tdx
 from strategy.b1_case_analyzer import B1CaseAnalyzer
 
-base = Path(__file__).parent
+# Adjust base path to project root
+base = Path(__file__).resolve().parent.parent
 cm = CSVManager(str(base / 'data'))
 analyzer = B1CaseAnalyzer()
 

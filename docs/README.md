@@ -4,9 +4,9 @@
 
 ## 📋 TODO 清单
 
-- [ ] **TODO 1**: 尝试大模型的近似能力
+- [ ] **TODO 1**: 尝试大模型的近似能力 -----已实现B1阶段策略
 - [ ] **TODO 2**: 更新砖型图选股逻辑
-- [ ] **TODO 3**: 补充B1、砖型图完美图形库
+- [ ] **TODO 3**: 补充B1、砖型图完美图形库 ---补充掌阅科技B1图形
 
 ---
 
@@ -27,8 +27,8 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/Dzy-HW-XD/a-share-quant-selector.git
-cd a-share-quant-selector
+git clone https://github.com/Shanvision-star/a-share-quant-selector-Stock
+cd a-share-quant-selector-Stock
 
 # 2. 安装依赖
 pip3 install -r requirements.txt
@@ -163,37 +163,24 @@ EMA(EMA(CLOSE, 10), 10)
 ## 📁 项目结构
 
 ```
-a-share-quant-selector-Stock/  # 项目根目录
-├── main.py                  # 🔥 命令行入口（CLI）
-├── quant_system.py          # 🧠 核心业务逻辑（数据更新、选股、回溯、B1匹配）
-├── README.md                # 📖 项目说明文档（功能介绍、命令用法、策略说明）
-├── web_server.py            # 🌐 Web服务模块（Flask实现，支持可视化管理界面）
-├── config/                  # ⚙️ 配置文件目录
-│   ├── config.yaml          # 系统核心配置（钉钉Webhook/Secret、数据目录、定时调度时间等）
-│   └── strategy_params.yaml # 策略参数配置（KDJ阈值、MA周期、形态匹配权重/容差等）
-├── strategy/                # 🧠 策略引擎核心目录
-│   ├── __init__.py
-│   ├── BowlReboundStrategy.py  # 核心业务策略（碗口反弹策略，选股核心逻辑）
-│   ├── strategy_registry.py    # 策略注册器（自动扫描加载strategy目录下的策略）
-│   ├── pattern_config.py       # B1形态匹配配置（相似度阈值、回看天数、权重分配等）
-│   └── pattern_library.py      # B1形态匹配库（12个历史案例管理、三维相似度比对核心）
-├── utils/                   # 🛠️ 工具模块目录（全功能支撑）
-│   ├── __init__.py
-│   ├── akshare_fetcher.py      # 📊 数据抓取模块（akshare封装，全量/增量更新股票数据）
-│   ├── csv_manager.py          # 📁 数据存储模块（线程安全的CSV文件读写，股票数据管理）
-│   ├── dingtalk_notifier.py    # 🔔 钉钉通知模块（文本/Markdown/图片推送，内置限流保护）
-│   ├── tdx_exporter.py         # 📤 通达信导出模块（选股结果转为通达信可导入TXT格式）
-│   ├── kline_chart.py          # 📈 K线图生成模块（基础版，含趋势线/多空线/成交量绘制）
-│   ├── kline_chart_fast.py     # ⚡ 快速K线图生成模块（优先加载，提升绘图效率）
-│   └── backtrack_analyzer.py   # ✅ 回溯筛选模块（KDJ超卖+股价回落幅度二次筛选）
-├── data/                    # 📊 数据存储目录（自动生成）
-│   ├── stock_names.json        # 🏷️ 股票名称映射缓存（代码→名称键值对）
-│   └── [股票代码].csv          # 📈 个股历史数据文件（含K线数据+技术指标，如688799.csv）
-├── output/                  # 📤 导出文件目录（自动生成）
-│   ├── strategy_BowlRebound.txt # 策略选股结果（通达信格式，碗口反弹策略输出）
-│   └── b1_top30.txt            # B1形态匹配结果（TOP30高相似度股票，通达信格式）
-└── requirements.txt         # 📦 依赖包清单（Python 3.8+，含akshare、pandas、matplotlib等）
+main.py
+quant_system.py
+web_server.py
+requirements.txt
+quant.sh
+README.md
+config/
+strategy/
+utils/
+scripts/
+tests/
+web/
+docs/
 ```
+
+### Updated References
+- `scripts/run_b1_scan.py` for running B1 scans.
+- Documentation moved to `docs/`.
 
 ## 📝 命令说明（完整）
 

@@ -12,6 +12,7 @@ import urllib.parse
 import tempfile
 from datetime import datetime
 from pathlib import Path
+import pandas as pd
 
 # 导入K线图模块
 try:
@@ -826,7 +827,7 @@ class DingTalkNotifier:
         close = signal.get('close', '-')
         j_val = signal.get('J', '-')
         key_date = signal.get('key_candle_date', '-')
-        if hasattr(key_date, 'strftime'):
+        if isinstance(key_date, pd.Timestamp):
             key_date = key_date.strftime("%m-%d")
         reasons = ' '.join(signal.get('reasons', []))
         
@@ -1190,7 +1191,7 @@ class DingTalkNotifier:
                 f"anchor: {item.get('anchor_date')} | J={item.get('anchor_j')}",
                 f"setup: {item.get('setup_window_start')} | 当前J={item.get('current_j')}",
                 f"多空线偏离: {item.get('current_dist_pct')}% | 支撑价: {item.get('support_price')}",
-                f"说明: 阶段1-5通过，阶段6大阳待确认，可加入重点观察。",
+                f"说明: 阶段1-5通过，阶段6大阳待确认，可提前布局。",
             ]
             detail_ok = self.send_markdown(f"{code} {name} 阶段型B1预警", "\n".join(content_lines))
             if detail_ok:
@@ -1353,6 +1354,201 @@ class DingTalkNotifier:
         # 发送markdown消息
         self.send_markdown("B1完美图形匹配选股结果", content)
 
+    def send_b2_match_results(self, results: list) -> None:
+        """
+        发送 B2 突破信号扫描结果到钉钉。
 
-# 为了处理 pandas 导入
-import pandas as pd
+        Args:
+            results : B2PatternLibrary.scan_all() 返回的命中列表
+        """
+        if not results:
+            return
+
+        lines = [
+            f"## B2 突破图形匹配选股结果",
+            f"**共命中 {len(results)} 只**",
+            "",
+        ]
+
+        for i, r in enumerate(results, 1):
+            code  = r.get("code", "")
+            name  = r.get("name", code)
+            b1_d  = r.get("b1_date", "-")
+            b2_d  = r.get("b2_date", "-")
+            pct   = r.get("b2_pct_chg", "-")
+            vol_r = r.get("b2_vol_ratio", "-")
+            j_val = r.get("j_at_b1", "-")
+            c_hi  = r.get("consolidation_high", "-")
+            c_lo  = r.get("consolidation_low", "-")
+            c_s   = r.get("consolidation_start", "-")
+            c_e   = r.get("consolidation_end", "-")
+            stop  = r.get("stop_loss_price", "-")
+            case  = r.get("matched_case_name", "-")
+            big_n = r.get("big_up_count", "-")
+            t_sum = r.get("big_up_turnover_sum", "-")
+
+            lines += [
+                f"### [{i}] {code} {name}",
+                f"- **B1触发日**: {b1_d}  J值={j_val}",
+                f"- **B2突破日**: {b2_d}  涨幅={pct}%  量比={vol_r}x",
+                f"- **整理区间**: {c_s} ~ {c_e}  区间高={c_hi}  区间低={c_lo}",
+                f"- **大阳线**: {big_n} 根  换手率总和={t_sum}%",
+                f"- **止损价**: {stop}（B2突破日最低价）",
+                f"- **匹配案例**: {case}",
+                "",
+            ]
+
+        lines += [
+            "---",
+            "**B2匹配逻辑**: B1前提 + 大阳线验证 + 整理区间突破 + 放量 + 站稳多空线",
+            "**案例来源**: 星环科技(688663) 2025-12-15 标准B2形态",
+        ]
+
+        content = "\n".join(lines)
+        self.send_markdown("B2突破图形匹配选股结果", content)
+
+    def send_b2_match_results_with_charts(
+        self,
+        results: list,
+        stock_data_dict: dict = None,
+        stock_names: dict = None,
+    ) -> bool:
+        """
+        发送 B2 突破选股结果（文字汇总 + 个股详情 + K 线图）到钉钉。
+
+        Args:
+            results        : B2PatternLibrary.scan_all() 返回的命中列表
+            stock_data_dict: {code: DataFrame} 各命中股票的历史行情数据，用于生成 K 线图
+            stock_names    : {code: name} 股票名称字典（可选，用于补全名称）
+
+        Returns:
+            bool: 汇总消息发送是否成功
+        """
+        if not results:
+            self.send_text("[B2扫描] 本次扫描无命中股票。")
+            return False
+
+        if stock_data_dict is None:
+            stock_data_dict = {}
+        if stock_names is None:
+            stock_names = {}
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        # ── 1. 发送汇总 Markdown ─────────────────────────────────────
+        summary_lines = [
+            "## B2 经典图形扫描结果",
+            "",
+            f"时间: {now}",
+            f"命中数量: **{len(results)} 只**",
+            "策略: B1前提 + 大阳线 + 整理突破 + 放量 + 站稳多空线",
+            f"案例库: 星环科技(688663) 2025-12-15 标准B2形态",
+            "━" * 30,
+            "",
+        ]
+        for i, r in enumerate(results, 1):
+            code  = r.get("code", "")
+            name  = r.get("name", stock_names.get(code, code))
+            b2_d  = r.get("b2_date", "-")
+            pct   = r.get("b2_pct_chg", "-")
+            vol_r = r.get("b2_vol_ratio", "-")
+            stop  = r.get("stop_loss_price", "-")
+            summary_lines.append(
+                f"{i}. **{code}** {name}  B2={b2_d}  涨{pct}%  量{vol_r}x  止损{stop}"
+            )
+        summary_lines += [
+            "",
+            "个股详情与K线图见下方消息",
+        ]
+        summary_ok = self.send_markdown("B2经典图形扫描结果", "\n".join(summary_lines))
+        if not summary_ok:
+            print("[WARN] B2汇总消息发送失败")
+
+        time.sleep(1)
+
+        # ── 2. 逐只发送个股详情 + K 线图 ─────────────────────────────
+        temp_dir = Path(tempfile.gettempdir()) / "kline_charts_b2"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        chart_params = {"M": 60}  # 展示最近 60 个交易日
+
+        detail_ok = 0
+        detail_fail = 0
+        chart_ok = 0
+        chart_fail = 0
+
+        for r in results:
+            code      = r.get("code", "")
+            name      = r.get("name", stock_names.get(code, code))
+            b1_d      = r.get("b1_date", "-")
+            j_val     = r.get("j_at_b1", "-")
+            b2_d      = r.get("b2_date", "-")
+            pct       = r.get("b2_pct_chg", "-")
+            vol_r     = r.get("b2_vol_ratio", "-")
+            c_s       = r.get("consolidation_start", "-")
+            c_e       = r.get("consolidation_end", "-")
+            c_hi      = r.get("consolidation_high", "-")
+            big_n     = r.get("big_up_count", "-")
+            t_sum     = r.get("big_up_turnover_sum", "-")
+            stop      = r.get("stop_loss_price", "-")
+            case_name = r.get("matched_case_name", "-")
+            case_id   = r.get("matched_case_id", "-")
+
+            # 个股详情 Markdown
+            detail_lines = [
+                f"### {code} {name}",
+                f"- **B1 触发日**: {b1_d}  J值={j_val}",
+                f"- **B2 突破日**: {b2_d}  涨幅={pct}%  量比={vol_r}x",
+                f"- **整理区间**: {c_s} ~ {c_e}  区间高={c_hi}",
+                f"- **大阳线**: {big_n} 根  换手率总和={t_sum}%",
+                f"- **止损价**: {stop}（B2突破日最低价）",
+                f"- **匹配案例**: {case_name} ({case_id})",
+            ]
+            ok = self.send_markdown(f"B2 {code} {name}", "\n".join(detail_lines))
+            if ok:
+                detail_ok += 1
+            else:
+                detail_fail += 1
+
+            # K 线图
+            df = stock_data_dict.get(code)
+            if df is not None and not getattr(df, "empty", True) and KLINE_CHART_AVAILABLE:
+                key_dates = []
+                for d in [b1_d, b2_d]:
+                    try:
+                        key_dates.append(pd.Timestamp(d))
+                    except Exception:
+                        pass
+                try:
+                    chart_path = generate_kline_chart(
+                        stock_code=code,
+                        stock_name=name,
+                        df=df,
+                        category="near_short_trend",
+                        params=chart_params,
+                        key_candle_dates=key_dates,
+                        output_dir=str(temp_dir),
+                        show_text=False,
+                        show_legend=True,
+                    )
+                    if self.send_image(chart_path, f"{code} B2突破 K线图"):
+                        chart_ok += 1
+                    else:
+                        chart_fail += 1
+                except Exception as e:
+                    print(f"[WARN] 生成/发送 {code} B2 K线图失败: {e}")
+                    chart_fail += 1
+            else:
+                if not KLINE_CHART_AVAILABLE:
+                    pass  # 模块不可用，静默跳过
+                else:
+                    chart_fail += 1
+
+        print(
+            f"[INFO] B2钉钉发送统计: 汇总={'OK' if summary_ok else 'FAIL'} | "
+            f"个股详情={detail_ok}成功/{detail_fail}失败 | "
+            f"K线图={chart_ok}成功/{chart_fail}失败"
+        )
+        return bool(summary_ok)
+
+

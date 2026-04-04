@@ -221,3 +221,56 @@ _default_tolerances = {
     "drawdown": 15,         # 回撤幅度容差（±15%）
 }
 MATCH_TOLERANCES = _yaml_config.get('tolerances', _default_tolerances)
+
+# ─────────────────── B2 策略案例库 ───────────────────────────
+# 经典案例列表，每个 case 描述一次成功的 B2 突破形态
+# 步骤3（整理区间）依赖 consolidation_start / consolidation_end
+# 若不填则自动跳过区间突破条件，仅检查涨幅和量
+B2_PERFECT_CASES = [
+    {
+        "id":                   "b2_case_001",
+        "name":                 "星环科技",
+        "code":                 "688663",
+        "b1_date":              "2025-12-14",   # B1前提信号日（J值低位+短期趋势线上穿多空线）
+        "b2_date":              "2025-12-15",   # B2突破日（参考日，实际由算法动态识别）
+        "consolidation_start":  "2025-10-28",   # 整理区间起始
+        "consolidation_end":    "2025-12-04",   # 整理区间结束
+        "lookback_days":        40,             # 向前回溯天数（含B1前提扫描窗口）
+        "tags":                 ["科创板", "数据库软件", "大数据"],
+        "description": (
+            "星环科技688663：B1信号2025-12-14，J值低位触底，短期趋势线上穿多空线；"
+            "主力在2025-10-28~2025-12-04构建整理平台；"
+            "2025-12-15放量大阳突破整理区高点，站稳多空线上方，为标准B2形态。"
+        ),
+    },
+    # ── 后续持续补充案例，格式与上方保持一致 ──
+    # {
+    #     "id":                  "b2_case_002",
+    #     "name":                "待补充",
+    #     "code":                "",
+    #     "b1_date":             "",
+    #     "b2_date":             "",
+    #     "consolidation_start": "",
+    #     "consolidation_end":   "",
+    #     "lookback_days":       40,
+    #     "tags":                [],
+    #     "description":         "",
+    # },
+]
+
+# B2 默认参数（算法层面，与 B2CaseAnalyzer.DEFAULT_PARAMS 保持一致）
+# 可在 config/strategy_params.yaml 中覆盖
+B2_DEFAULT_PARAMS = {
+    "b1_kdj_threshold":    13,    # J值低位阈值
+    "b1_close_near_pct":    2.0,  # 收盘价贴近短期趋势线 ±N%
+    "b1_pre_lookback":     20,    # B1大阳线回溯天数
+    "b1_big_up_pct":        5.0,  # 大阳线涨幅阈值（%）
+    "b1_big_up_days_min":   3,    # 大阳线最少根数
+    "b1_big_up_days_max":   5,    # 大阳线最多根数
+    "b1_turnover_sum_pct":  35.0, # 大阳线换手率总和上限（%）
+    "vol_mean_days":        10,   # 放量对比均量窗口（交易日）
+    "vol_multiplier":        1.5, # 当日量 > 均量 x 此倍数
+    "b2_min_pct":            4.0, # B2突破当日最小涨幅（%）
+    "b2_hold_days":          3,   # 突破后站稳多空线天数
+    "export_txt_dir":        "data/txt/B2-match",
+}

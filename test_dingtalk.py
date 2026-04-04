@@ -8,12 +8,10 @@
     python3 test_dingtalk.py --category bowl_center  # 只测试特定分类
 """
 import sys
-import argparse
 from pathlib import Path
-from datetime import datetime
 
-# 添加项目根目录到路径
-sys.path.insert(0, str(Path(__file__).parent))
+# Adjust sys.path to include the project root
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from utils.dingtalk_notifier import DingTalkNotifier
 import yaml

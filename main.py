@@ -92,6 +92,7 @@ def main():
     parser.add_argument('--category', type=str, choices=['all', 'bowl_center', 'near_duokong', 'near_short_trend'], default='all', help='分类')
     parser.add_argument('--min-similarity', type=float, default=None, help='最小相似度')
     parser.add_argument('--b1-match', action='store_true', help='启用B1匹配')
+    parser.add_argument('--b2-match', action='store_true', help='启用B2突破图形匹配')
     parser.add_argument('--lookback-days', type=int, default=None, help='回看天数')
     parser.add_argument('--backtest-days', type=int, default=3, help='回溯天数（连续K小于阈值的天数）')
     parser.add_argument('--k-threshold', type=float, default=20.0, help='K值阈值')
@@ -122,6 +123,11 @@ def main():
                 max_stocks=args.max_stocks,
                 min_similarity=min_sim,
                 lookback_days=lookback,
+                max_workers=args.workers
+            )
+        elif args.b2_match:
+            quant.run_with_b2_match(
+                max_stocks=args.max_stocks,
                 max_workers=args.workers
             )
         else:

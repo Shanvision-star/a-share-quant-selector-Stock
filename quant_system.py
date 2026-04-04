@@ -15,6 +15,7 @@ from utils.dingtalk_notifier import DingTalkNotifier
 from strategy.strategy_registry import get_registry
 from utils.kline_chart import generate_kline_chart
 from utils.tdx_exporter import export_strategy_tdx, export_total_tdx, export_b1_match_tdx
+from strategy.b2_strategy import B2CaseAnalyzer, B2PatternLibrary
 
 
 class QuantSystem:
@@ -911,6 +912,70 @@ class QuantSystem:
             print("\n⚠️ 没有匹配结果，跳过通知")
 
         return match_result
+
+    def run_with_b2_match(self, max_stocks=None, max_workers=None):
+        """
+        B2突破图形匹配全流程：
+        数据更新 → 全市场 B2 扫描 → TXT导出 → 钉钉通知
+        """
+        print("=" * 60)
+        print("执行完整流程（含B2突破图形匹配）")
+        print("=" * 60)
+
+        # 1. 智能更新数据
+        self._smart_update(max_stocks=max_stocks)
+
+        # 2. 获取股票列表
+        stock_list = self.csv_manager.list_all_stocks()
+        if max_stocks:
+            stock_list = stock_list[:max_stocks]
+
+        # 3. 读取股票名称
+        stock_names = {}
+        try:
+            import json, os
+            names_file = os.path.join(self.data_dir, "stock_names.json")
+            if os.path.exists(names_file):
+                with open(names_file, "r", encoding="utf-8") as f:
+                    stock_names = json.load(f)
+        except Exception:
+            pass
+
+        # 4. B2 扫描
+        from strategy.b2_strategy import B2PatternLibrary
+        import time as _time
+        b2_library = B2PatternLibrary()
+
+        total = len(stock_list)
+        start_ts = _time.time()
+
+        def _progress(done, total, code):
+            pct  = done * 100 // total
+            elapsed = _time.time() - start_ts
+            speed = done / elapsed if elapsed > 0 else 0
+            eta   = (total - done) / speed if speed > 0 else 0
+            bar   = "#" * (pct // 5) + "-" * (20 - pct // 5)
+            try:
+                print(
+                    f"\r[B2] [{bar}] {pct:3d}% {done}/{total} "
+                    f"{code} {speed:.1f}只/s ETA {eta:.0f}s   ",
+                    end="", flush=True
+                )
+            except Exception:
+                pass
+
+        results = b2_library.scan_all(stock_list, self.csv_manager, progress_callback=_progress)
+        print(flush=True)
+        print(f"\n[B2] 扫描完成，共命中 {len(results)} 只")
+
+        # 5. 导出 + 钉钉
+        b2_library.notify_and_export(
+            results=results,
+            notifier=self.notifier if results else None,
+            stock_names=stock_names,
+        )
+
+        return results
 
     # ===================== 内置定时任务 =====================
     def run_schedule(self):

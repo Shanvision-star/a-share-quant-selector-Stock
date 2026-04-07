@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from strategy.pattern_config import B1_PERFECT_CASES, B1_STAGE_CASES, SIMILARITY_WEIGHTS, MIN_SIMILARITY_SCORE
-from strategy.b1_case_analyzer import B1CaseAnalyzer
+from strategy.b1_case_analyzer import B1CaseStrategy
 from strategy.pattern_feature_extractor import PatternFeatureExtractor
 from strategy.pattern_matcher import PatternMatcher
 
@@ -34,7 +34,7 @@ class B1PatternLibrary:
         self.csv_manager = csv_manager
         self.extractor = PatternFeatureExtractor()
         self.matcher = PatternMatcher(SIMILARITY_WEIGHTS)
-        self.case_analyzer = B1CaseAnalyzer()
+        self.case_analyzer = B1CaseStrategy()
         self.cases = {}  # {case_id: {meta, features}}
         
         # 尝试从缓存加载，否则重新计算

@@ -16,7 +16,7 @@ B2 信号相比 B1 具有以下特征：
 
 ──────────────────────────────────────────────────────────────────────────
 
-【经典案例：星环科技（688663）选股复盘】
+【经典案例1：星环科技（688663）选股复盘】
 
   基本信息：
     代码    : 688663（上交所科创板）
@@ -62,6 +62,9 @@ B2 信号相比 B1 具有以下特征：
 
     4. 止损逻辑清晰 —— B2 突破日最低价作为硬止损位，破位即离场，
        控制最大回撤，不让利润侵蚀。
+
+    5. 盘整突破的 B2 案例字样 —— 进一步强调该案例的教学意义，
+       作为盘整突破的经典模板，便于后续策略推广与优化。
 
 ──────────────────────────────────────────────────────────────────────────
 
@@ -173,6 +176,18 @@ class B2CaseAnalyzer:
         j_at_b1、matched_case_name、matched_case_id、stop_loss_price
     """
 
+    PATTERN_TYPE_LABELS = {
+        "sideways_breakout": "横盘突破型",
+        "post_crash_rebuild": "灾后重建型",
+        "parallel_artillery": "平行重炮型",
+    }
+
+    PATTERN_PRIORITY = {
+        "sideways_breakout": 1,
+        "post_crash_rebuild": 2,
+        "parallel_artillery": 3,
+    }
+
     # ── 默认参数（与 pattern_config.B2_DEFAULT_PARAMS 保持一致）─────────────
     # 以星环科技（688663）实测数据为基准校准，后续可通过 config/strategy_params.yaml 覆盖
     DEFAULT_PARAMS = {
@@ -225,6 +240,22 @@ class B2CaseAnalyzer:
                                       # 3 天是"短期趋势确认"的最小周期，
                                       # 少于 3 天则可能是单日脉冲，无持续性
 
+        # ── 灾后重建型参数 ─────────────────────────────────────────────────
+        "damage_lookback_days":  50,  # 在 B1 前回看多少天寻找前期破坏段
+        "damage_min_drop_pct":   18.0,# 前期从高点到低点至少回撤多少，才算“灾后”
+        "reversal_min_pct":       6.0,# 灾后首根反转长阳的最小涨幅
+        "reversal_vol_multiplier": 1.8,# 反转长阳相对近 10 日均量的放量倍数
+        "rebuild_window_days":   12,  # 灾后修复平台的默认识别窗口
+
+        # ── 平行重炮型参数 ─────────────────────────────────────────────────
+        "parallel_lookback_days":   25, # 在 B1 前回看多少天寻找平行大阳
+        "parallel_big_up_pct":       4.0,# 认定平行重炮大阳的单日涨幅门槛
+        "parallel_big_up_min_count": 2,  # 至少需要几根平行大阳
+        "parallel_big_up_max_count": 4,  # 最多取最近几根平行大阳参与判断
+        "parallel_close_band_pct":   2.0,# 多根大阳收盘价允许落在同一价格带的偏差
+        "red_fat_green_vol_ratio":   0.65,# 阴线/小阳的量能需显著小于大阳均量
+        "b1_to_b2_transition_days": 15,  # 最后一根平行大阳到 B1 的最长过渡天数
+
         # ── 输出目录 ───────────────────────────────────────────────────────
         "export_txt_dir":        "data/txt/B2-match",
     }
@@ -233,6 +264,410 @@ class B2CaseAnalyzer:
         # 外部传入参数优先级高于默认值；
         # 支持只传部分参数（如只修改 b2_min_pct），其余自动补全默认值
         self.params = {**self.DEFAULT_PARAMS, **(params or {})}
+
+    def _prepare_working_df(self, code: str, df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """统一准备 B2 所需的原始行情、KDJ 与知行双线列。"""
+        # ── 数据量预检：不足则直接跳过，避免指标计算产生全量 NaN ─────────────
+        min_rows = max(self.params["b1_pre_lookback"] + self.params["vol_mean_days"] + 10, 130)
+        if df is None or len(df) < min_rows:
+            return None
+
+        df_asc = df.sort_values("date").reset_index(drop=True)
+        if not pd.api.types.is_datetime64_any_dtype(df_asc["date"]):
+            df_asc["date"] = pd.to_datetime(df_asc["date"])
+
+        try:
+            state_df = calculate_zhixing_state(df_asc)
+        except Exception as e:
+            logger.warning("[B2] %s 计算双线状态失败: %s", code, e)
+            return None
+
+        try:
+            kdj_df = KDJ(df_asc)
+        except Exception as e:
+            logger.warning("[B2] %s 计算KDJ失败: %s", code, e)
+            return None
+
+        working_df = state_df.copy()
+        working_df["open"] = df_asc["open"].values if "open" in df_asc.columns else df_asc["close"].values
+        working_df["K"] = kdj_df["K"].values
+        working_df["D"] = kdj_df["D"].values
+        working_df["J"] = kdj_df["J"].values
+        working_df["date"] = df_asc["date"].values
+        working_df["close"] = df_asc["close"].values
+        working_df["volume"] = df_asc["volume"].values
+        working_df["high"] = df_asc["high"].values if "high" in df_asc.columns else df_asc["close"].values
+        working_df["low"] = df_asc["low"].values if "low" in df_asc.columns else df_asc["close"].values
+
+        if "pct_chg" in df_asc.columns:
+            working_df["pct_chg"] = df_asc["pct_chg"].values
+        else:
+            working_df["pct_chg"] = df_asc["close"].pct_change().fillna(0) * 100
+
+        if "turnover" in df_asc.columns:
+            working_df["turnover"] = df_asc["turnover"].values
+        elif "turnover_rate" in df_asc.columns:
+            working_df["turnover"] = df_asc["turnover_rate"].values
+        else:
+            working_df["turnover"] = float("nan")
+
+        return working_df
+
+    def _resolve_manual_consolidation_dates(self, code: str, case_cfg: dict):
+        """
+        只有当前扫描股票就是案例本身时，才允许复用案例文档里的固定整理区日期。
+
+        这样可以避免把“星环科技的盘整区间日期”误套到全市场其它股票身上。
+        """
+        if case_cfg.get("code") == code:
+            return case_cfg.get("consolidation_start"), case_cfg.get("consolidation_end")
+        return None, None
+
+    def _build_consolidation_from_window(self, working_df: pd.DataFrame, start_idx: int, end_idx: int) -> Optional[dict]:
+        """把任意一段 K 线窗口转换为统一的整理区间结构。"""
+        start_idx = max(0, int(start_idx))
+        end_idx = min(int(end_idx), len(working_df))
+        if end_idx - start_idx < 2:
+            return None
+
+        window = working_df.iloc[start_idx:end_idx]
+        if window.empty:
+            return None
+
+        return {
+            "high": float(window["high"].max()),
+            "low": float(window["low"].min()),
+            "start": str(window.iloc[0]["date"])[:10],
+            "end": str(window.iloc[-1]["date"])[:10],
+        }
+
+    def _identify_low_volatility_consolidation(
+        self,
+        working_df: pd.DataFrame,
+        start_idx: int,
+        end_idx: int,
+        window_size: int,
+    ) -> Optional[dict]:
+        """在给定区间中寻找波动率最低的一段，作为动态整理平台。"""
+        start_idx = max(0, int(start_idx))
+        end_idx = min(int(end_idx), len(working_df))
+        if end_idx - start_idx < 4:
+            return None
+
+        segment = working_df.iloc[start_idx:end_idx].copy()
+        if segment.empty:
+            return None
+
+        window_size = max(4, min(int(window_size), len(segment)))
+        if len(segment) <= window_size:
+            return self._build_consolidation_from_window(working_df, start_idx, end_idx)
+
+        volatility = (segment["high"] - segment["low"]) / segment["close"].replace(0, np.nan)
+        rolling_vol = volatility.rolling(window_size).mean()
+        min_vol_idx = rolling_vol.idxmin()
+        if pd.isna(min_vol_idx):
+            return self._build_consolidation_from_window(working_df, start_idx, end_idx)
+
+        local_start = max(start_idx, int(min_vol_idx) - window_size + 1)
+        return self._build_consolidation_from_window(working_df, local_start, int(min_vol_idx) + 1)
+
+    def _identify_damage_zone(self, working_df: pd.DataFrame, cutoff_idx: int) -> Optional[dict]:
+        """识别灾后重建型在 B1 之前的“破坏段”。"""
+        lookback_days = int(self.params["damage_lookback_days"])
+        start_idx = max(0, cutoff_idx - lookback_days)
+        window = working_df.iloc[start_idx:cutoff_idx].copy()
+        if len(window) < 10:
+            return None
+
+        rolling_peak = window["close"].cummax()
+        drawdown_series = (window["close"] / rolling_peak - 1.0) * 100
+        trough_idx = int(drawdown_series.idxmin())
+        peak_idx = int(window.loc[:trough_idx, "close"].idxmax())
+        peak_close = _safe_float(working_df.iloc[peak_idx]["close"])
+        trough_low = _safe_float(working_df.iloc[trough_idx]["low"])
+        drop_pct = (peak_close - trough_low) / peak_close * 100 if peak_close > 0 else 0.0
+
+        if drop_pct < float(self.params["damage_min_drop_pct"]):
+            return None
+
+        return {
+            "peak_idx": peak_idx,
+            "trough_idx": trough_idx,
+            "damage_start": str(working_df.iloc[peak_idx]["date"])[:10],
+            "damage_end": str(working_df.iloc[trough_idx]["date"])[:10],
+            "drop_pct": round(drop_pct, 2),
+        }
+
+    def _check_reversal_impulse(self, working_df: pd.DataFrame, start_idx: int, end_idx: int) -> Optional[dict]:
+        """检查灾后重建型是否出现了放量反转长阳。"""
+        vol_days = int(self.params["vol_mean_days"])
+        reversal_min_pct = float(self.params["reversal_min_pct"])
+        reversal_vol_multiplier = float(self.params["reversal_vol_multiplier"])
+
+        for idx in range(max(1, start_idx + 1), min(end_idx, len(working_df))):
+            row = working_df.iloc[idx]
+            pct_chg = _safe_float(row.get("pct_chg", float("nan")))
+            mean_vol = float(working_df.iloc[max(0, idx - vol_days):idx]["volume"].mean())
+            current_vol = _safe_float(row.get("volume", float("nan")))
+            is_up_candle = _safe_float(row.get("close", float("nan"))) > _safe_float(row.get("open", float("nan")))
+            vol_ok = mean_vol > 0 and current_vol >= mean_vol * reversal_vol_multiplier
+            if is_up_candle and pct_chg >= reversal_min_pct and vol_ok:
+                return {
+                    "idx": idx,
+                    "reversal_date": str(row["date"])[:10],
+                    "reversal_pct": round(pct_chg, 2),
+                    "reversal_vol_ratio": round(current_vol / mean_vol, 2),
+                }
+        return None
+
+    def _identify_rebuild_platform(self, working_df: pd.DataFrame, reversal_idx: int, b1_idx: int) -> Optional[dict]:
+        """识别灾后重建型在反转长阳之后的修复平台。"""
+        rebuild_days = int(self.params["rebuild_window_days"])
+        start_idx = max(reversal_idx + 1, b1_idx - rebuild_days)
+        end_idx = b1_idx
+        platform = self._identify_low_volatility_consolidation(
+            working_df,
+            start_idx,
+            end_idx,
+            window_size=max(4, rebuild_days // 2),
+        )
+        if platform is None:
+            platform = self._build_consolidation_from_window(working_df, start_idx, end_idx)
+        return platform
+
+    def _identify_parallel_big_candles(self, working_df: pd.DataFrame, b1_idx: int) -> Optional[dict]:
+        """识别平行重炮型中收盘价落在同一价格带的多根放量大阳。"""
+        lookback_days = int(self.params["parallel_lookback_days"])
+        min_count = int(self.params["parallel_big_up_min_count"])
+        max_count = int(self.params["parallel_big_up_max_count"])
+        big_up_pct = float(self.params["parallel_big_up_pct"])
+        close_band_pct = float(self.params["parallel_close_band_pct"])
+
+        window = working_df.iloc[max(0, b1_idx - lookback_days):b1_idx].copy()
+        if window.empty:
+            return None
+
+        candidates = window[
+            (window["pct_chg"].apply(_safe_float) >= big_up_pct)
+            & (window["close"].apply(_safe_float) > window["open"].apply(_safe_float))
+        ].copy()
+        if len(candidates) < min_count:
+            return None
+
+        candidates = candidates.tail(max_count)
+        best_cluster = None
+        best_band = None
+        for count in range(min_count, len(candidates) + 1):
+            cluster = candidates.tail(count)
+            avg_close = float(cluster["close"].mean())
+            if avg_close <= 0:
+                continue
+            band_pct = (float(cluster["close"].max()) - float(cluster["close"].min())) / avg_close * 100
+            if band_pct <= close_band_pct:
+                if best_cluster is None or count > len(best_cluster) or (count == len(best_cluster) and band_pct < best_band):
+                    best_cluster = cluster
+                    best_band = band_pct
+
+        if best_cluster is None:
+            return None
+
+        indices = [int(idx) for idx in best_cluster.index.tolist()]
+        return {
+            "indices": indices,
+            "dates": [str(dt)[:10] for dt in best_cluster["date"].tolist()],
+            "count": len(indices),
+            "close_band_pct": round(float(best_band), 2),
+            "first_idx": indices[0],
+            "last_idx": indices[-1],
+            "avg_big_volume": round(float(best_cluster["volume"].mean()), 2),
+        }
+
+    def _check_red_fat_green_thin(self, working_df: pd.DataFrame, candle_indices: list) -> Optional[dict]:
+        """验证平行重炮之间是否存在“红肥绿瘦”的缩量中继。"""
+        if not candle_indices:
+            return None
+
+        first_idx = min(candle_indices)
+        last_idx = max(candle_indices)
+        segment = working_df.iloc[first_idx:last_idx + 1].copy()
+        if segment.empty:
+            return None
+
+        big_up_df = working_df.iloc[candle_indices]
+        avg_big_vol = float(big_up_df["volume"].mean()) if not big_up_df.empty else 0.0
+        pullback_df = segment.loc[~segment.index.isin(candle_indices)]
+        if pullback_df.empty:
+            return {
+                "ok": True,
+                "max_pullback_vol": 0.0,
+                "avg_big_vol": round(avg_big_vol, 2),
+            }
+
+        max_pullback_vol = float(pullback_df["volume"].max())
+        threshold = avg_big_vol * float(self.params["red_fat_green_vol_ratio"])
+        return {
+            "ok": max_pullback_vol <= threshold,
+            "max_pullback_vol": round(max_pullback_vol, 2),
+            "avg_big_vol": round(avg_big_vol, 2),
+        }
+
+    def _check_b1_to_b2_transition(self, b1_idx: int, last_big_candle_idx: int) -> bool:
+        """验证平行重炮最后一根大阳到 B1 的过渡距离，避免拖得太久形态失真。"""
+        transition_days = int(self.params["b1_to_b2_transition_days"])
+        return last_big_candle_idx < b1_idx <= last_big_candle_idx + transition_days
+
+    def _build_sideways_breakout_context(self, code: str, working_df: pd.DataFrame, case_cfg: dict) -> Optional[dict]:
+        """横盘突破型：标准平台整理 + B1 + 放量突破。"""
+        b1_result = self._check_b1_precondition(working_df, case_cfg)
+        if b1_result is None:
+            return None
+
+        big_up_result = self._check_big_up_candles(working_df, b1_result["idx"])
+        if big_up_result is None:
+            return None
+
+        start_date, end_date = self._resolve_manual_consolidation_dates(code, case_cfg)
+        if start_date and end_date:
+            consolidation = self._identify_consolidation(working_df, start_date, end_date)
+        else:
+            lookback_days = int(case_cfg.get("lookback_days", 40))
+            consolidation = self._identify_low_volatility_consolidation(
+                working_df,
+                max(0, b1_result["idx"] - lookback_days),
+                b1_result["idx"],
+                window_size=max(6, min(12, lookback_days // 3 or 6)),
+            )
+
+        if consolidation is None:
+            return None
+
+        return {
+            "pattern_type": "sideways_breakout",
+            "pattern_label": self.PATTERN_TYPE_LABELS["sideways_breakout"],
+            "pattern_subtype": "standard_platform_breakout",
+            "pattern_priority": self.PATTERN_PRIORITY["sideways_breakout"],
+            "b1_result": b1_result,
+            "big_up_result": big_up_result,
+            "consolidation": consolidation,
+            "pattern_notes": [
+                f"平台整理区 {consolidation['start']} ~ {consolidation['end']}",
+                f"攻击波大阳 {big_up_result['count']} 根",
+            ],
+        }
+
+    def _build_post_crash_rebuild_context(self, code: str, working_df: pd.DataFrame, case_cfg: dict) -> Optional[dict]:
+        """灾后重建型：先有破坏段，再有放量反转和修复平台。"""
+        b1_result = self._check_b1_precondition(working_df, case_cfg)
+        if b1_result is None:
+            return None
+
+        damage_zone = self._identify_damage_zone(working_df, b1_result["idx"])
+        if damage_zone is None:
+            return None
+
+        reversal = self._check_reversal_impulse(working_df, damage_zone["trough_idx"], b1_result["idx"])
+        if reversal is None:
+            return None
+
+        consolidation = self._identify_rebuild_platform(working_df, reversal["idx"], b1_result["idx"])
+        if consolidation is None:
+            return None
+
+        # 读取反转阳线的实际换手率
+        reversal_row = working_df.iloc[reversal["idx"]]
+        reversal_turnover = _safe_float(reversal_row.get("turnover", float("nan")))
+        reversal_turnover_sum = 0.0 if np.isnan(reversal_turnover) else round(reversal_turnover, 2)
+
+        return {
+            "pattern_type": "post_crash_rebuild",
+            "pattern_label": self.PATTERN_TYPE_LABELS["post_crash_rebuild"],
+            "pattern_subtype": "post_crash_rebuild_platform",
+            "pattern_priority": self.PATTERN_PRIORITY["post_crash_rebuild"],
+            "b1_result": b1_result,
+            "big_up_result": {
+                "count": 1,
+                "turnover_sum": reversal_turnover_sum,
+            },
+            "consolidation": consolidation,
+            "damage_zone": damage_zone,
+            "reversal": reversal,
+            "pattern_notes": [
+                f"前期破坏段 {damage_zone['damage_start']} ~ {damage_zone['damage_end']} 回撤 {damage_zone['drop_pct']}%",
+                f"修复长阳 {reversal['reversal_date']} 涨幅 {reversal['reversal_pct']}%",
+            ],
+        }
+
+    def _build_parallel_artillery_context(self, code: str, working_df: pd.DataFrame, case_cfg: dict) -> Optional[dict]:
+        """平行重炮型：多根相近价位的大阳反复攻击，配合缩量中继与 B1 过渡。"""
+        b1_result = self._check_b1_precondition(working_df, case_cfg)
+        if b1_result is None:
+            return None
+
+        parallel_info = self._identify_parallel_big_candles(working_df, b1_result["idx"])
+        if parallel_info is None:
+            return None
+
+        red_fat_green = self._check_red_fat_green_thin(working_df, parallel_info["indices"])
+        if red_fat_green is None or not red_fat_green.get("ok"):
+            return None
+
+        if not self._check_b1_to_b2_transition(b1_result["idx"], parallel_info["last_idx"]):
+            return None
+
+        consolidation = self._identify_low_volatility_consolidation(
+            working_df,
+            parallel_info["first_idx"],
+            b1_result["idx"],
+            window_size=max(4, min(10, b1_result["idx"] - parallel_info["first_idx"])),
+        )
+        if consolidation is None:
+            consolidation = self._build_consolidation_from_window(
+                working_df,
+                parallel_info["first_idx"],
+                b1_result["idx"],
+            )
+        if consolidation is None:
+            return None
+
+        damage_zone = self._identify_damage_zone(working_df, parallel_info["first_idx"])
+        pattern_subtype = "parallel_artillery_rebuild" if damage_zone else "parallel_artillery_platform"
+
+        # 汇总各平行大阳线的实际换手率
+        parallel_turnovers = [
+            _safe_float(working_df.iloc[idx].get("turnover", float("nan")))
+            for idx in parallel_info["indices"]
+        ]
+        parallel_turnover_sum = round(sum(t for t in parallel_turnovers if not np.isnan(t)), 2)
+
+        return {
+            "pattern_type": "parallel_artillery",
+            "pattern_label": self.PATTERN_TYPE_LABELS["parallel_artillery"],
+            "pattern_subtype": pattern_subtype,
+            "pattern_priority": self.PATTERN_PRIORITY["parallel_artillery"],
+            "b1_result": b1_result,
+            "big_up_result": {
+                "count": parallel_info["count"],
+                "turnover_sum": parallel_turnover_sum,
+            },
+            "consolidation": consolidation,
+            "parallel_info": parallel_info,
+            "red_fat_green": red_fat_green,
+            "damage_zone": damage_zone,
+            "pattern_notes": [
+                f"平行大阳日期 {'/'.join(parallel_info['dates'])}",
+                f"收盘价带宽 {parallel_info['close_band_pct']}%",
+                f"红肥绿瘦量能阈值通过，回调量峰值 {red_fat_green['max_pullback_vol']}",
+            ],
+        }
+
+    def _build_pattern_context(self, code: str, working_df: pd.DataFrame, case_cfg: dict) -> Optional[dict]:
+        """按 pattern_type 分发到对应的 B2 分类检测器。"""
+        pattern_type = case_cfg.get("pattern_type", "sideways_breakout")
+        if pattern_type == "post_crash_rebuild":
+            return self._build_post_crash_rebuild_context(code, working_df, case_cfg)
+        if pattern_type == "parallel_artillery":
+            return self._build_parallel_artillery_context(code, working_df, case_cfg)
+        return self._build_sideways_breakout_context(code, working_df, case_cfg)
 
     # ────────────────── 对外主入口 ────────────────────────────────────────────
 
@@ -257,108 +692,17 @@ class B2CaseAnalyzer:
             步骤3(整理区间) → 步骤4+5(突破+放量) → 步骤6(站稳) →
             后置过滤(J值) → 组装结果字典
         """
-        # ── 数据量预检：不足则直接跳过，避免指标计算产生全量 NaN ─────────────
-        # 多空线（bull_bear_line）需要至少 114 个交易日才能收敛（约半年数据）；
-        # 加上回溯天数 + 均量天数的 buffer，设置 130 行为安全下限。
-        min_rows = max(self.params["b1_pre_lookback"] + self.params["vol_mean_days"] + 10, 130)
-        if df is None or len(df) < min_rows:
+        working_df = self._prepare_working_df(code, df)
+        if working_df is None or working_df.empty:
             return None
 
-        # ── 数据预处理：CSV 为倒序（最新日期在前），转为正序便于时序计算 ───────
-        # 正序（升序）是所有技术指标（KDJ、移动平均）计算的标准输入方向。
-        df_asc = df.sort_values("date").reset_index(drop=True)
-        if not pd.api.types.is_datetime64_any_dtype(df_asc["date"]):
-            # 将字符串日期（如 "2025-12-15"）转为 pandas Timestamp，
-            # 便于后续区间过滤时做日期比较
-            df_asc["date"] = pd.to_datetime(df_asc["date"])
-
-        # ── 计算知行双线（核心趋势判断指标）────────────────────────────────────
-        # calculate_zhixing_state() 返回 DataFrame，包含列：
-        #   trend_above      : bool，短期趋势线是否高于多空线（看多信号）
-        #   near_short_trend : bool，当前收盘价是否贴近短期趋势线（回调未破支撑）
-        #   bull_bear_line   : float，多空线数值（主力成本线）
-        #   short_term_trend : float，短期趋势线数值（短期支撑/压力位）
-        try:
-            state_df = calculate_zhixing_state(df_asc)
-        except Exception as e:
-            logger.warning("[B2] %s 计算双线状态失败: %s", code, e)
+        pattern_context = self._build_pattern_context(code, working_df, case_cfg)
+        if pattern_context is None:
             return None
 
-        # ── 计算 KDJ 随机指标 ───────────────────────────────────────────────────
-        # KDJ() 返回 DataFrame，包含列：K、D、J
-        # J = 3K - 2D，是超买/超卖的最灵敏指标：
-        #   J < 0  : 极度超卖（短期底部区，极少见）
-        #   J < 13 : 深度超卖（B1前提阈值，本策略使用）
-        #   J < 20 : 超卖区（B2前一日过滤阈值）
-        #   J = 50 : 中性
-        #   J > 80 : 超买区（不建议追高区间）
-        #   J > 100: 极度超买（极少见）
-        try:
-            kdj_df = KDJ(df_asc)
-        except Exception as e:
-            logger.warning("[B2] %s 计算KDJ失败: %s", code, e)
-            return None
-
-        # ── 合并所有字段到统一的 working_df ─────────────────────────────────────
-        # 使用独立的 working_df（基于 state_df），保留双线指标列，
-        # 追加 KDJ + 原始行情数据，形成统一的分析视图。
-        working_df = state_df.copy()
-        working_df["K"]      = kdj_df["K"].values
-        working_df["D"]      = kdj_df["D"].values
-        working_df["J"]      = kdj_df["J"].values
-        working_df["date"]   = df_asc["date"].values
-        working_df["close"]  = df_asc["close"].values
-        working_df["volume"] = df_asc["volume"].values
-        # 高低价：若 CSV 中缺失则用收盘价兜底（避免 KeyError）
-        working_df["high"]   = df_asc["high"].values   if "high"  in df_asc.columns else df_asc["close"].values
-        working_df["low"]    = df_asc["low"].values    if "low"   in df_asc.columns else df_asc["close"].values
-
-        # 涨幅（%）：优先使用 CSV 中预计算的 pct_chg 列（精度更高）；
-        # 若 CSV 中没有此列，则从 close 序列计算日涨幅（精度差一阶）
-        if "pct_chg" in df_asc.columns:
-            working_df["pct_chg"] = df_asc["pct_chg"].values
-        else:
-            working_df["pct_chg"] = df_asc["close"].pct_change().fillna(0) * 100
-
-        # 换手率：列名在不同数据源有差异（turnover / turnover_rate），做兼容处理；
-        # 无换手率数据时设为 NaN，后续检查会宽松通过（不强制拒绝）
-        if "turnover" in df_asc.columns:
-            working_df["turnover"] = df_asc["turnover"].values
-        elif "turnover_rate" in df_asc.columns:
-            working_df["turnover"] = df_asc["turnover_rate"].values
-        else:
-            working_df["turnover"] = float("nan")
-
-        # ─────────────────────────────────────────────────────────────────────
-        # 步骤 1：B1 前提检查（确认趋势 + J值低位 + 贴近支撑）
-        # ─────────────────────────────────────────────────────────────────────
-        b1_result = self._check_b1_precondition(working_df, case_cfg)
-        if b1_result is None:
-            # 没有找到满足 B1 前提的交易日，跳过此股票
-            return None
+        b1_result = pattern_context["b1_result"]
         b1_idx = b1_result["idx"]
-
-        # ─────────────────────────────────────────────────────────────────────
-        # 步骤 2：大阳线验证（确认主力攻击波质量）
-        # ─────────────────────────────────────────────────────────────────────
-        big_up_result = self._check_big_up_candles(working_df, b1_idx)
-        if big_up_result is None:
-            return None
-
-        # ─────────────────────────────────────────────────────────────────────
-        # 步骤 3：整理区间识别（确定突破的"关口价"）
-        # ─────────────────────────────────────────────────────────────────────
-        consolidation = self._identify_consolidation(
-            working_df,
-            case_cfg.get("consolidation_start"),  # 配置中的盘整起始日期，如 "2025-10-28"
-            case_cfg.get("consolidation_end"),    # 配置中的盘整结束日期，如 "2025-12-04"
-        )
-        if consolidation is None:
-            return None
-
-        # ─────────────────────────────────────────────────────────────────────
-        # 步骤 4+5：B2 突破 + 放量确认（核心买点信号）
-        # ─────────────────────────────────────────────────────────────────────
+        consolidation = pattern_context["consolidation"]
         b2_result = self._detect_b2_breakout(working_df, b1_idx, consolidation)
         if b2_result is None:
             return None
@@ -398,6 +742,9 @@ class B2CaseAnalyzer:
         # ─────────────────────────────────────────────────────────────────────
         # 所有条件通过：组装完整的结果字典返回
         # ─────────────────────────────────────────────────────────────────────
+        big_up_result = pattern_context.get("big_up_result", {})
+        matched_case_name = case_cfg.get("name") or pattern_context.get("pattern_label", "")
+        matched_case_id = case_cfg.get("id") or f"b2_{pattern_context.get('pattern_type', 'unknown')}"
         return {
             "code":                code,
             # B1 触发日信息
@@ -413,13 +760,26 @@ class B2CaseAnalyzer:
             "consolidation_start": consolidation["start"],
             "consolidation_end":   consolidation["end"],
             # 大阳线信息
-            "big_up_count":        big_up_result["count"],          # 大阳线根数（3~5）
-            "big_up_turnover_sum": big_up_result["turnover_sum"],   # 大阳线换手率总和（%）
+            "big_up_count":        big_up_result.get("count", 0),          # 大阳线根数（3~5）
+            "big_up_turnover_sum": big_up_result.get("turnover_sum", 0.0), # 大阳线换手率总和（%）
             # B1 日 J 值（反映调整充分程度）
             "j_at_b1":             b1_result["j_val"],
             # 匹配的经典案例信息
-            "matched_case_name":   case_cfg.get("name", ""),
-            "matched_case_id":     case_cfg.get("id", ""),
+            "matched_case_name":   matched_case_name,
+            "matched_case_id":     matched_case_id,
+            "pattern_type":        pattern_context.get("pattern_type", "sideways_breakout"),
+            "pattern_label":       pattern_context.get("pattern_label", self.PATTERN_TYPE_LABELS["sideways_breakout"]),
+            "pattern_subtype":     pattern_context.get("pattern_subtype", "standard_platform_breakout"),
+            "pattern_priority":    pattern_context.get("pattern_priority", 0),
+            "pattern_notes":       pattern_context.get("pattern_notes", []),
+            "damage_start":        pattern_context.get("damage_zone", {}).get("damage_start"),
+            "damage_end":          pattern_context.get("damage_zone", {}).get("damage_end"),
+            "damage_drop_pct":     pattern_context.get("damage_zone", {}).get("drop_pct"),
+            "reversal_date":       pattern_context.get("reversal", {}).get("reversal_date"),
+            "reversal_pct":        pattern_context.get("reversal", {}).get("reversal_pct"),
+            "parallel_candle_dates": pattern_context.get("parallel_info", {}).get("dates", []),
+            "parallel_close_band_pct": pattern_context.get("parallel_info", {}).get("close_band_pct"),
+            "shrinking_volume_between_big_ups": pattern_context.get("red_fat_green", {}).get("ok"),
             # 止损参考：B2 突破日最低价（若破位则确认突破失败，应止损离场）
             "stop_loss_price":     round(_safe_float(b2_row["low"]), 4),
         }
@@ -784,6 +1144,7 @@ class B2PatternLibrary:
 
         # 经典案例列表：当前仅有 688663（星环科技），后续可追加
         self.cases = B2_PERFECT_CASES
+        self.pattern_templates = self._build_pattern_templates(B2_PERFECT_CASES)
 
         # 参数合并优先级：外部传入 > B2_DEFAULT_PARAMS > B2CaseAnalyzer.DEFAULT_PARAMS
         # 外部可通过 config_params 在运行时覆盖单个参数，无需改代码
@@ -798,6 +1159,28 @@ class B2PatternLibrary:
         self._results = []  # 最近一次 scan_all 的结果缓存
 
         logger.info("[B2] 案例库初始化完成，共 %d 个经典案例", len(self.cases))
+
+    def _build_pattern_templates(self, cases: list) -> list:
+        """为三类 B2 模式构建扫描模板，优先使用已配置案例，缺失时退回到通用模板。"""
+        case_by_type = {}
+        for case in cases:
+            pattern_type = case.get("pattern_type", "sideways_breakout")
+            case_by_type.setdefault(pattern_type, case)
+
+        templates = []
+        for pattern_type in ("parallel_artillery", "post_crash_rebuild", "sideways_breakout"):
+            case_cfg = case_by_type.get(pattern_type)
+            if case_cfg is None:
+                case_cfg = {
+                    "id": f"b2_{pattern_type}",
+                    "name": B2CaseAnalyzer.PATTERN_TYPE_LABELS.get(pattern_type, pattern_type),
+                    "pattern_type": pattern_type,
+                    "lookback_days": 40,
+                    "tags": ["B2三分类"],
+                    "description": f"{B2CaseAnalyzer.PATTERN_TYPE_LABELS.get(pattern_type, pattern_type)}通用模板",
+                }
+            templates.append(case_cfg)
+        return templates
 
     # ────────────────── 全市场扫描 ───────────────────────────────────────────
 
@@ -837,28 +1220,41 @@ class B2PatternLibrary:
             if df is None or df.empty:
                 continue
 
-            # 遍历所有经典案例（OR 逻辑：任一案例命中即记录）
-            # 目前只有 688663 一个案例，未来可添加更多
-            for case_cfg in self.cases:
+            best_result = None
+            for case_cfg in self.pattern_templates:
                 try:
                     result = self.analyzer.analyze(code, df, case_cfg)
                     if result:
-                        results.append(result)
-                        # 保存 DataFrame 以便后续生成 K 线图（内存中保留，不重复读盘）
-                        self._stock_data_dict[code] = df
-                        logger.info(
-                            "[B2] %s 命中！突破日=%s 涨幅=%.1f%% 量比=%.1fx",
-                            code,
-                            result["b2_date"],
-                            result["b2_pct_chg"],
-                            result["b2_vol_ratio"],
-                        )
+                        if (
+                            best_result is None
+                            or result.get("pattern_priority", 0) > best_result.get("pattern_priority", 0)
+                            or (
+                                result.get("pattern_priority", 0) == best_result.get("pattern_priority", 0)
+                                and result.get("b2_vol_ratio", 0) > best_result.get("b2_vol_ratio", 0)
+                            )
+                        ):
+                            best_result = result
                 except Exception as e:
                     # 单股异常不中断整体流程，记录日志后继续
                     logger.warning("[B2] 分析 %s 时发生异常: %s", code, e)
 
+            if best_result:
+                results.append(best_result)
+                self._stock_data_dict[code] = df
+                logger.info(
+                    "[B2] %s 命中！分类=%s 突破日=%s 涨幅=%.1f%% 量比=%.1fx",
+                    code,
+                    best_result.get("pattern_label", best_result.get("pattern_type", "-")),
+                    best_result["b2_date"],
+                    best_result["b2_pct_chg"],
+                    best_result["b2_vol_ratio"],
+                )
+
         # 按 B2 突破日倒序排列：最新日期的命中结果排在前面，方便快速查阅
-        results.sort(key=lambda x: x.get("b2_date", ""), reverse=True)
+        results.sort(
+            key=lambda x: (x.get("b2_date", ""), x.get("pattern_priority", 0), x.get("b2_vol_ratio", 0)),
+            reverse=True,
+        )
         self._results = results
 
         logger.info("[B2] 扫描完成，命中 %d / %d", len(results), total)
@@ -967,6 +1363,8 @@ class B2PatternLibrary:
         for i, r in enumerate(results, 1):
             code      = r.get("code", "")
             name      = r.get("name", code)
+            pattern   = r.get("pattern_label", r.get("pattern_type", "-"))
+            subtype   = r.get("pattern_subtype", "-")
             b1_d      = r.get("b1_date", "-")
             j_val     = r.get("j_at_b1", "-")
             b2_d      = r.get("b2_date", "-")
@@ -980,9 +1378,11 @@ class B2PatternLibrary:
             stop      = r.get("stop_loss_price", "-")
             case_name = r.get("matched_case_name", "-")
             case_id   = r.get("matched_case_id", "-")
+            notes     = r.get("pattern_notes", [])
 
             lines += [
                 f"[{i}] {code} {name}\n",
+                f"    分类类型    : {pattern} / {subtype}\n",
                 f"    B1 触发日   : {b1_d}  J值={j_val}\n",
                 f"    B2 突破日   : {b2_d}  涨幅={pct}%  量比={vol_r}x\n",
                 f"    整理区间    : {c_s} ~ {c_e}\n",
@@ -992,6 +1392,11 @@ class B2PatternLibrary:
                 f"    匹配案例    : {case_name} ({case_id})\n",
                 "\n",
             ]
+
+            if notes:
+                for note in notes:
+                    lines.append(f"    结构备注    : {note}\n")
+                lines.append("\n")
 
         with open(fname, "w", encoding="utf-8") as f:
             f.writelines(lines)

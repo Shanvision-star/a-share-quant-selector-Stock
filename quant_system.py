@@ -118,6 +118,36 @@ class QuantSystem:
             f"总耗时 {self._format_eta(total_elapsed)} | ETA {self._format_eta(eta)}{suffix}"
         )
 
+    def _resolve_worker_count(self, requested_workers, task_count, default_cap=8, label="任务"):
+        """
+        统一解析并发线程数。
+
+        规则：
+        1. 用户显式传入 --workers 时优先采用；
+        2. 未传入时按 CPU 核心数自动估算；
+        3. 检测到单核设备时自动从并发模式降级为单线程；
+        4. 最终线程数不会超过待处理任务数。
+        """
+        if task_count <= 1:
+            return 1
+
+        cpu_count = os.cpu_count() or 1
+        if requested_workers is None:
+            resolved = min(default_cap, max(1, cpu_count * 2))
+        else:
+            resolved = max(1, int(requested_workers))
+
+        if cpu_count <= 1 and resolved > 1:
+            print(f"  [并发] {label}: 检测到单核设备，自动从并发模式降级为单线程执行")
+            resolved = 1
+
+        resolved = min(resolved, task_count)
+        if resolved > 1:
+            print(f"  [并发] {label}: 使用 {resolved} 个并发线程（CPU核心数: {cpu_count}）")
+        else:
+            print(f"  [并发] {label}: 使用单线程执行")
+        return resolved
+
     def _load_stock_names(self, stock_data):
         """
         加载股票名称映射表
@@ -277,108 +307,112 @@ class QuantSystem:
         print(f"共 {len(stock_codes)} 只股票")
         stock_names = self._load_stock_names({})
 
-        import gc
         results = {}
         indicators_dict = {}
-        category_count = {'bowl_center': 0, 'near_duokong': 0, 'near_short_trend': 0}
+        category_count = {}
         process_codes = stock_codes[:max_stocks] if max_stocks else stock_codes
         total_codes = []
         selection_started_at = time.time()
         strategy_items = list(self.registry.strategies.items())
+        results = {strategy_name: [] for strategy_name, _ in strategy_items}
+        selected_codes = set()
+        max_workers = self._resolve_worker_count(max_workers, len(process_codes), default_cap=8, label="默认选股")
 
         # ===================== 遍历股票 + 执行策略 =====================
-        for strategy_index, (strategy_name, strategy) in enumerate(strategy_items, start=1):
-            stage_name = f"{strategy_index}/{len(strategy_items)} {strategy_name}"
-            print(f"\n执行策略: {strategy_name}")
-            signals = []
-            valid_count = 0
-            invalid_count = 0
-            progress_started_at = time.time()
-            last_progress_at = 0.0
+        print("\n执行多策略联合选股（单只股票只读取一次，减少重复IO与重复指标计算）...")
+        valid_count = 0
+        invalid_count = 0
+        progress_started_at = time.time()
+        last_progress_at = 0.0
 
-            if max_workers is None:
-                max_workers = min(8, max(1, (os.cpu_count() or 4) * 2))
-            max_workers = min(max_workers, len(process_codes)) if process_codes else 1
+        def _process_stock(code):
+            df = self.csv_manager.read_stock(code)
+            name = stock_names.get(code, '未知')
+            invalid_keywords = ['退', '未知', '退市', '已退']
+            if any(kw in name for kw in invalid_keywords):
+                return 'invalid', code, None, None
+            if name.startswith('ST') or name.startswith('*ST'):
+                return 'invalid', code, None, None
+            if df.empty or len(df) < 60:
+                return 'skip', code, None, None
 
-            def _process_stock(code):
-                df = self.csv_manager.read_stock(code)
-                name = stock_names.get(code, '未知')
-                invalid_keywords = ['退', '未知', '退市', '已退']
-                if any(kw in name for kw in invalid_keywords):
-                    return 'invalid', code, None, None
-                if name.startswith('ST') or name.startswith('*ST'):
-                    return 'invalid', code, None, None
-                if df.empty or len(df) < 60:
-                    return 'skip', code, None, None
-
+            strategy_hits = []
+            for strategy_name, strategy in strategy_items:
                 try:
-                    df_with_indicators = strategy.calculate_indicators(df)
+                    df_with_indicators = strategy.calculate_indicators(df.copy())
                     signal_list = strategy.select_stocks(df_with_indicators, name)
-                    if not signal_list:
-                        return 'no_signal', code, None, None
-                    return 'ok', code, name, signal_list, df_with_indicators
+                    if signal_list:
+                        strategy_hits.append((strategy_name, signal_list, df_with_indicators))
                 except Exception:
-                    return 'error', code, None, None
+                    continue
 
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            future_to_code = {}
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                for code in process_codes:
-                    future = executor.submit(_process_stock, code)
-                    future_to_code[future] = code
+            if not strategy_hits:
+                return 'no_signal', code, name, df
+            return 'ok', code, name, strategy_hits, df
 
-                processed = 0
-                for future in as_completed(future_to_code):
-                    processed += 1
-                    try:
-                        result = future.result()
-                    except Exception:
-                        invalid_count += 1
-                        continue
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        future_to_code = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for code in process_codes:
+                future = executor.submit(_process_stock, code)
+                future_to_code[future] = code
 
-                    if not result:
-                        continue
+            processed = 0
+            for future in as_completed(future_to_code):
+                processed += 1
+                try:
+                    result = future.result()
+                except Exception:
+                    invalid_count += 1
+                    continue
 
-                    status = result[0]
-                    if status == 'ok':
-                        _, code, name, signal_list, df_with_indicators = result
-                        valid_count += 1
+                if not result:
+                    continue
+
+                status = result[0]
+                if status == 'ok':
+                    _, code, name, strategy_hits, raw_df = result
+                    valid_count += 1
+                    for strategy_name, signal_list, df_with_indicators in strategy_hits:
+                        filtered_signals = []
                         for s in signal_list:
                             cat = s.get('category', 'unknown')
-                            category_count[cat] += 1
+                            category_count[cat] = category_count.get(cat, 0) + 1
                             if category == 'all' or cat == category:
-                                signals.append({
-                                    'code': code,
-                                    'name': name,
-                                    'signals': [s]
-                                })
-                                if return_data:
-                                    indicators_dict[code] = df_with_indicators
-                    elif status == 'no_signal':
-                        valid_count += 1
-                    elif status == 'invalid':
-                        invalid_count += 1
-                    # skip / error 不计入 valid_count
+                                filtered_signals.append(s)
 
-                    now_ts = time.time()
-                    if processed == len(process_codes) or processed % 100 == 0 or (now_ts - last_progress_at) >= 5:
-                        last_progress_at = now_ts
-                        gc.collect()
-                        self._print_progress(
-                            "进度",
-                            processed,
-                            len(process_codes),
-                            progress_started_at,
-                            extra_text=f"| 有效 {valid_count} 只 | 选出 {len(signals)} 只",
-                            stage_name=stage_name,
-                            total_started_at=selection_started_at,
-                        )
+                        if filtered_signals:
+                            results[strategy_name].append({
+                                'code': code,
+                                'name': name,
+                                'signals': filtered_signals,
+                            })
+                            selected_codes.add(code)
+                            if return_data:
+                                indicators_dict[code] = df_with_indicators
 
-            # 保存当前策略结果
-            results[strategy_name] = signals
-            print(f"  ✓ 选股完成: 共 {len(signals)} 只 (过滤 {invalid_count} 只)")
+                    if return_data and code not in indicators_dict:
+                        indicators_dict[code] = raw_df
+                elif status == 'no_signal':
+                    valid_count += 1
+                elif status == 'invalid':
+                    invalid_count += 1
 
-            # 导出当前策略 → 通达信文件
+                now_ts = time.time()
+                if processed == len(process_codes) or processed % 100 == 0 or (now_ts - last_progress_at) >= 5:
+                    last_progress_at = now_ts
+                    self._print_progress(
+                        "进度",
+                        processed,
+                        len(process_codes),
+                        progress_started_at,
+                        extra_text=f"| 有效 {valid_count} 只 | 命中 {len(selected_codes)} 只",
+                        stage_name="联合策略并发选股",
+                        total_started_at=selection_started_at,
+                    )
+
+        for strategy_name, signals in results.items():
+            print(f"  ✓ {strategy_name}: 共 {len(signals)} 只")
             strategy_codes = [s['code'] for s in signals]
             exported = export_strategy_tdx(strategy_codes, strategy_name)
             total_codes.extend(exported)
@@ -396,7 +430,12 @@ class QuantSystem:
                 code = signal['code']
                 name = signal.get('name', stock_names.get(code, '未知'))
                 for s in signal['signals']:
-                    cat_emoji = {'bowl_center': '🥣', 'near_duokong': '📊', 'near_short_trend': '📈'}.get(s.get('category'), '❓')
+                    cat_emoji = {
+                        'bowl_center': '🥣',
+                        'near_duokong': '📊',
+                        'near_short_trend': '📈',
+                        'stage_b1_setup': '🧭',
+                    }.get(s.get('category'), '❓')
                     print(f"  {cat_emoji} {code} {name}: 价格={s['close']}, J={s['J']}, 理由={s['reasons']}")
 
         print("\n" + "-" * 60)
@@ -404,17 +443,22 @@ class QuantSystem:
         print(f"  🥣 回落碗中: {category_count.get('bowl_center', 0)} 只")
         print(f"  📊 靠近多空线: {category_count.get('near_duokong', 0)} 只")
         print(f"  📈 靠近短期趋势线: {category_count.get('near_short_trend', 0)} 只")
+        print(f"  🧭 阶段型B1预警: {category_count.get('stage_b1_setup', 0)} 只")
         print("-" * 60)
 
         if return_data:
             return results, stock_names, indicators_dict
         return results, stock_names
 
-    # ===================== 完整流程（不带B1） =====================
+    # ===================== 完整流程（默认执行 Bowl + B1 阶段预警） =====================
     def run_full(self, category='all', max_stocks=None, max_workers=None):
         """
         标准完整流程：
-        数据更新 → 选股 → 钉钉通知
+        数据更新 → 默认策略组选股 → 钉钉通知
+
+        默认策略组当前包含：
+          1. BowlReboundStrategy
+          2. B1CaseStrategy
         """
         print("=" * 60)
         print("🚀 执行完整流程")
@@ -422,10 +466,11 @@ class QuantSystem:
         self._smart_update(max_stocks=max_stocks)
         results, stock_names, stock_data_dict = self.select_stocks(category=category, max_stocks=max_stocks, return_data=True, max_workers=max_workers)
         if results:
+            strategy_obj = self.registry.strategies.get('BowlReboundStrategy') if self.registry.strategies else None
             self.notifier.send_stock_selection_with_charts(
                 results, stock_names, category_filter=category,
                 stock_data_dict=stock_data_dict,
-                params=self.registry.strategies.get('BowlReboundStrategy', {}).params if self.registry.strategies else {},
+                params=strategy_obj.params if strategy_obj else {},
                 send_text_first=True
             )
         return results
@@ -456,9 +501,7 @@ class QuantSystem:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from utils.technical import KDJ, calculate_zhixing_trend
 
-        max_workers = min(16, max(1, (os.cpu_count() or 4) * 2))
-        max_workers = min(max_workers, len(process_codes)) if process_codes else 1
-        print(f"  并发线程数: {max_workers}")
+        max_workers = self._resolve_worker_count(None, len(process_codes), default_cap=16, label="3天回溯扫描")
 
         def _process_code(code):
             df = self.csv_manager.read_stock(code)
@@ -769,11 +812,13 @@ class QuantSystem:
             }
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        b1_workers = int(B1_MATCH_WORKERS or 0)
-        if b1_workers <= 0:
-            b1_workers = min(8, max(1, (os.cpu_count() or 4)))
-        b1_workers = min(b1_workers, len(candidates)) if candidates else 1
-        print(f"   B1并发匹配线程数: {b1_workers}")
+        requested_b1_workers = int(B1_MATCH_WORKERS or 0) or max_workers
+        b1_workers = self._resolve_worker_count(
+            requested_b1_workers,
+            len(candidates),
+            default_cap=8,
+            label="B1完美图形匹配",
+        )
 
         processed = 0
         progress_started_at = time.time()
@@ -822,6 +867,7 @@ class QuantSystem:
         matched_results.sort(
             key=lambda x: (
                 x.get('stage_case_passed', False),
+                x.get('pre_signal_detected', False),
                 x['similarity_score'],
             ),
             reverse=True,
@@ -977,6 +1023,235 @@ class QuantSystem:
 
         return results
 
+    def run_with_b2_today(self, max_stocks=None, max_workers=None):
+        """
+        当日收盘B2选股：扫描全市场，仅保留 B2突破日==今日 的结果。
+        适合在每日收盘后运行，快速筛选当日刚触发B2信号的股票。
+        """
+        import datetime as _dt
+        today_str = _dt.date.today().strftime("%Y-%m-%d")
+
+        print("=" * 60)
+        print(f"执行当日收盘B2选股（{today_str}）")
+        print("=" * 60)
+
+        # 1. 智能更新数据
+        self._smart_update(max_stocks=max_stocks)
+
+        # 2. 获取股票列表
+        stock_list = self.csv_manager.list_all_stocks()
+        if max_stocks:
+            stock_list = stock_list[:max_stocks]
+
+        # 3. 读取股票名称
+        stock_names = {}
+        try:
+            import json, os
+            names_file = os.path.join(self.data_dir, "stock_names.json")
+            if os.path.exists(names_file):
+                with open(names_file, "r", encoding="utf-8") as f:
+                    stock_names = json.load(f)
+        except Exception:
+            pass
+
+        # 4. B2 全市场扫描
+        from strategy.b2_strategy import B2PatternLibrary
+        import time as _time
+        b2_library = B2PatternLibrary()
+
+        total = len(stock_list)
+        start_ts = _time.time()
+
+        def _progress(done, total, code):
+            pct     = done * 100 // total
+            elapsed = _time.time() - start_ts
+            speed   = done / elapsed if elapsed > 0 else 0
+            eta     = (total - done) / speed if speed > 0 else 0
+            bar     = "#" * (pct // 5) + "-" * (20 - pct // 5)
+            try:
+                print(
+                    f"\r[B2今日] [{bar}] {pct:3d}% {done}/{total} "
+                    f"{code} {speed:.1f}只/s ETA {eta:.0f}s   ",
+                    end="", flush=True
+                )
+            except Exception:
+                pass
+
+        all_results = b2_library.scan_all(stock_list, self.csv_manager, progress_callback=_progress)
+        print(flush=True)
+
+        # 5. 过滤：仅保留 B2突破日 == 今日 的结果
+        today_results = [r for r in all_results if r.get("b2_date", "")[:10] == today_str]
+
+        # 检测数据中最新可用日期，判断今日数据是否已更新
+        latest_data_date = ""
+        if all_results:
+            latest_data_date = max(
+                (r.get("b2_date", "")[:10] for r in all_results), default=""
+            )
+        # 也可直接从CSV取最新行日期
+        if not latest_data_date and stock_list:
+            try:
+                sample_df = self.csv_manager.read_stock(stock_list[0])
+                if sample_df is not None and not sample_df.empty:
+                    latest_data_date = str(sample_df.iloc[0]["date"])[:10]
+            except Exception:
+                pass
+
+        print(f"\n[B2今日] 今日({today_str}) | 数据最新日期: {latest_data_date or '未知'}")
+        print(f"[B2今日] 今日触发B2信号: {len(today_results)} 只 / 全市场历史命中 {len(all_results)} 只")
+
+        # 6. 若今日数据尚未更新，给出明确提示并退出
+        if latest_data_date and latest_data_date < today_str:
+            msg = (
+                f"[B2今日] 今日({today_str})数据尚未更新\n"
+                f"数据最新日期: {latest_data_date}\n"
+                f"请在今日收盘后数据同步完成后再运行 --b2-today"
+            )
+            print(msg)
+            if self.notifier:
+                try:
+                    self.notifier.send_text(msg)
+                except Exception:
+                    pass
+            return []
+
+        # 7. 今日数据已更新但无信号
+        if not today_results:
+            msg = f"[B2今日] {today_str} 今日无B2信号命中（全市场扫描完成）"
+            print(msg)
+            if self.notifier:
+                try:
+                    self.notifier.send_text(msg)
+                except Exception:
+                    pass
+            return []
+
+        # 8. 有今日信号 → 导出 + 钉钉通知
+        print(f"[B2今日] 命中 {len(today_results)} 只，开始导出...")
+        b2_library._results = today_results
+        b2_library.notify_and_export(
+            results=today_results,
+            notifier=self.notifier,
+            stock_names=stock_names,
+        )
+
+        return today_results
+
+    def run_with_b2_pattern_match(
+        self,
+        max_stocks=None,
+        max_workers=None,
+        min_similarity=55.0,
+    ):
+        """
+        B2 完美图形匹配全流程：
+        数据更新 → 全市场 B2 规则扫描 → 相似度打分排序 → 导出 TXT → 钉钉通知（含 K 线图）
+
+        与 run_with_b2_match（规则扫描版）的区别：
+          - 额外对规则命中股进行多维相似度打分（参考 B1 图形匹配逻辑）
+          - 结果按相似度从高到低排序（而非按突破日期排序）
+          - 钉钉通知包含四维分项得分 + 匹配案例信息
+          - 额外生成带相似度信息的详细 TXT
+
+        Args:
+            max_stocks    : 限制扫描股票数量（调试用）
+            max_workers   : 预留并发参数（当前 B2 为串行模式）
+            min_similarity: 相似度阈值，低于此值不显示（默认 55%）
+        """
+        print("=" * 60)
+        print("执行完整流程（含 B2 完美图形相似度匹配）")
+        print("=" * 60)
+
+        # 1. 智能更新数据
+        self._smart_update(max_stocks=max_stocks)
+
+        # 2. 获取股票列表
+        stock_list = self.csv_manager.list_all_stocks()
+        if max_stocks:
+            stock_list = stock_list[:max_stocks]
+
+        # 3. 读取股票名称
+        stock_names = {}
+        try:
+            import json as _json, os as _os
+            names_file = _os.path.join(self.data_dir, "stock_names.json")
+            if _os.path.exists(names_file):
+                with open(names_file, "r", encoding="utf-8") as f:
+                    stock_names = _json.load(f)
+        except Exception:
+            pass
+
+        # 4. 初始化 B2 图形匹配库（离线特征库，首次运行会构建并缓存）
+        from strategy.b2_pattern_library import B2PatternMatchLibrary
+        match_lib = B2PatternMatchLibrary(self.csv_manager)
+
+        # 5. 完整扫描：规则扫描 → 相似度评分
+        import time as _time
+
+        start_ts = _time.time()
+        total = len(stock_list)
+
+        def _progress(done, total, code):
+            pct     = done * 100 // total
+            elapsed = _time.time() - start_ts
+            speed   = done / elapsed if elapsed > 0 else 0
+            eta     = (total - done) / speed if speed > 0 else 0
+            bar     = "#" * (pct // 5) + "-" * (20 - pct // 5)
+            try:
+                print(
+                    f"\r[B2PM] [{bar}] {pct:3d}% {done}/{total} "
+                    f"{code} {speed:.1f}只/s ETA {eta:.0f}s   ",
+                    end="", flush=True,
+                )
+            except Exception:
+                pass
+
+        scan_result = match_lib.run_full_scan(
+            stock_list=stock_list,
+            progress_callback=_progress,
+            min_similarity=min_similarity,
+        )
+        print(flush=True)
+
+        b2_hits    = scan_result.get("b2_hits", [])
+        matched    = scan_result.get("matched", [])
+        stock_dict = scan_result.get("stock_data_dict", {})
+
+        # 注入名称
+        for r in matched:
+            r.setdefault("name", stock_names.get(r.get("code", ""), r.get("code", "")))
+        for r in b2_hits:
+            r.setdefault("name", stock_names.get(r.get("code", ""), r.get("code", "")))
+
+        print(f"\n[B2PM] 规则命中 {len(b2_hits)} 只 → 相似度过滤后 {len(matched)} 只")
+
+        if not matched:
+            msg = (
+                f"[B2图形匹配] 规则命中 {len(b2_hits)} 只，"
+                f"但无股票达到相似度阈值 {min_similarity}%"
+            )
+            print(msg)
+            self.notifier.send_text(msg)
+            return scan_result
+
+        # 6. 导出通达信 TXT
+        from utils.tdx_exporter import export_b2_match_tdx, export_b2_pattern_match_detail_txt
+        export_b2_match_tdx(matched)
+        export_b2_pattern_match_detail_txt(matched, stock_names=stock_names)
+
+        # 7. 钉钉通知（含相似度信息 + K 线图）
+        print("\n[B2PM] 发送钉钉通知...")
+        self.notifier.send_b2_pattern_match_results_with_charts(
+            results=matched,
+            stock_data_dict=stock_dict,
+            stock_names=stock_names,
+            total_b2_hits=len(b2_hits),
+        )
+        print("[B2PM] 钉钉通知发送完成")
+
+        return scan_result
+
     # ===================== 内置定时任务 =====================
     def run_schedule(self):
         """内置定时调度（每天固定时间执行完整版流程）"""
@@ -991,6 +1266,7 @@ class QuantSystem:
         print(f"⏰ 启动定时调度")
         print(f"   每日 {schedule_time} 执行：选股 → B1匹配 → 导出TXT → 发钉钉")
         print("=" * 60)
+
 
         # 每日定时执行完整流程
         schedule.every().day.at(schedule_time).do(

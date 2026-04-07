@@ -1,10 +1,16 @@
 """
-B1阶段型案例分析器
+B1阶段型策略 / 案例分析兼容模块
 
-用于分析类似“掌阅科技”这类包含低位触发、护盘、拉升、洗盘、
-再次回踩知行多空线后启动的多阶段完美图形。
+本模块当前以 B1CaseStrategy 作为主实现，同时保留 B1CaseAnalyzer 兼容别名。
+职责包括：
+1. 作为独立分析器，服务于 B1 案例库、回溯验证、前瞻预警扫描。
+2. 作为标准策略类，接入 main.py run 默认执行链路，与 BowlReboundStrategy 并行运行。
 
-该模块不接入原有选股入口，只提供独立分析能力，避免影响现有策略行为。
+策略核心思想：
+    - 先寻找低位 KDJ 触发日（anchor）
+    - 再确认护盘、拉升、洗盘不破位
+    - 最后识别当前是否处于再次回踩知行多空线的 setup 窗口
+    - 如果阶段 1-5 均满足，则提前给出“待大阳确认”的阶段型 B1 预警
 """
 from __future__ import annotations
 
@@ -12,6 +18,7 @@ from copy import deepcopy
 
 import pandas as pd
 
+from strategy.base_strategy import BaseStrategy
 from utils.technical import KDJ, calculate_zhixing_state
 
 
@@ -24,7 +31,7 @@ ZHANGYUE_B1_ANALYSIS_CONFIG = {
     'setup_window_days': 2,
     'buy_date': '2026-02-09',
     'anchor_kdj_field': 'J',
-    'anchor_kdj_max': 13,
+    'anchor_kdj_max': 20,
     'no_break_days': 3,
     'guard_reference_field': 'open',
     'guard_compare_field': 'low',
@@ -47,15 +54,26 @@ ZHANGYUE_B1_ANALYSIS_CONFIG = {
 }
 
 
-class B1CaseAnalyzer:
-    """独立的B1阶段图形分析器。"""
+class B1CaseStrategy(BaseStrategy):
+    """既可独立分析，也可直接参与默认选股执行链路的 B1 阶段型策略。"""
 
     DEFAULT_CONFIG = ZHANGYUE_B1_ANALYSIS_CONFIG
+    SIGNAL_CATEGORY = 'stage_b1_setup'
+    MIN_HISTORY_BARS = 60
 
-    def __init__(self, config=None):
-        self.config = deepcopy(self.DEFAULT_CONFIG)
+    def __init__(self, config=None, params=None):
+        merged_config = deepcopy(self.DEFAULT_CONFIG)
+        if params:
+            merged_config.update(params)
         if config:
-            self.config.update(config)
+            merged_config.update(config)
+
+        self.config = merged_config
+        super().__init__('B1阶段型预警策略', deepcopy(self.config))
+
+    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """适配 BaseStrategy 接口，统一准备 B1 所需指标。"""
+        return self.prepare_indicators(df)
 
     def prepare_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """统一准备KDJ和知行双线状态。"""
@@ -103,13 +121,108 @@ class B1CaseAnalyzer:
 
         return result
 
+    def _ensure_prepared_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """避免重复计算指标；如果上游已经准备过指标，则只做列去重与排序。"""
+        if df is None or df.empty:
+            return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+        result = df.loc[:, ~df.columns.duplicated()].copy()
+        if 'date' in result.columns:
+            result['date'] = pd.to_datetime(result['date'])
+            result = result.sort_values('date').reset_index(drop=True)
+
+        required_cols = {
+            'K', 'D', 'J', 'short_term_trend', 'bull_bear_line', 'distance_to_bullbear_pct'
+        }
+        if required_cols.issubset(result.columns):
+            return result
+        return self.prepare_indicators(result)
+
+    def select_stocks(self, df: pd.DataFrame, stock_name='') -> list:
+        """
+        适配 BaseStrategy 接口。
+
+        默认 run 链路不再只看 BowlReboundStrategy，
+        当股票处于 B1 阶段型 setup 窗口时，这里直接返回预警信号。
+        """
+        if df is None or df.empty:
+            return []
+
+        if stock_name:
+            invalid_keywords = ['退', '未知', '退市', '已退']
+            if any(keyword in stock_name for keyword in invalid_keywords):
+                return []
+            if stock_name.startswith('ST') or stock_name.startswith('*ST'):
+                return []
+
+        prepared = self._ensure_prepared_indicators(df)
+        if prepared.empty or len(prepared) < self.MIN_HISTORY_BARS:
+            return []
+
+        signal = self.scan_pre_signal(
+            prepared,
+            lookback_days=int(self.params.get('lookback_days', 80)),
+        )
+        if not signal.get('detected'):
+            return []
+
+        latest = prepared.iloc[-1]
+        signal_date = latest['date'].strftime('%Y-%m-%d') if isinstance(latest['date'], pd.Timestamp) else str(latest['date'])
+        close_value = self._to_scalar(latest['close'], 'close')
+        current_j = signal.get('current_j')
+        if current_j is None:
+            current_j = self._to_scalar(latest['J'], 'J')
+
+        return [{
+            'date': signal_date,
+            'close': round(close_value, 2),
+            'J': round(float(current_j), 2),
+            'volume_ratio': '-',
+            'market_cap': '-',
+            'short_term_trend': round(self._to_scalar(latest['short_term_trend'], 'short_term_trend'), 2),
+            'bull_bear_line': round(self._to_scalar(latest['bull_bear_line'], 'bull_bear_line'), 2),
+            'reasons': self._build_pre_signal_reasons(signal),
+            'category': self.SIGNAL_CATEGORY,
+            'key_candle_date': signal.get('setup_window_start') or signal.get('anchor_date'),
+            'anchor_date': signal.get('anchor_date'),
+            'anchor_j': signal.get('anchor_j'),
+            'setup_window_start': signal.get('setup_window_start'),
+            'support_price': signal.get('support_price'),
+            'pending': signal.get('pending', 'buy_signal'),
+            'message': signal.get('message', ''),
+        }]
+
+    def _build_pre_signal_reasons(self, signal: dict) -> list:
+        """把阶段型 B1 预警结构压缩成默认结果展示可读的中文理由。"""
+        reasons = ['阶段型B1预警', '阶段1-5通过，等待放量大阳确认']
+
+        anchor_date = signal.get('anchor_date')
+        anchor_j = signal.get('anchor_j')
+        if anchor_date and anchor_j is not None:
+            reasons.append(f'低位触发日 {anchor_date} J={anchor_j}')
+
+        setup_window_start = signal.get('setup_window_start')
+        if setup_window_start:
+            reasons.append(f'setup窗口起点 {setup_window_start}')
+
+        current_j = signal.get('current_j')
+        current_dist = signal.get('current_dist_pct')
+        if current_j is not None and current_dist is not None:
+            reasons.append(f'当前J={current_j} 多空线偏离={current_dist}%')
+
+        support_price = signal.get('support_price')
+        if support_price is not None:
+            reasons.append(f'洗盘支撑价 {support_price}')
+
+        return reasons
+
     def analyze(self, df: pd.DataFrame, config=None) -> dict:
         """按阶段分析单个B1案例。"""
         case_config = deepcopy(self.config)
         if config:
             case_config.update(config)
 
-        prepared = self.prepare_indicators(df)
+        prepared = self._ensure_prepared_indicators(df)
         if prepared.empty:
             return {'passed': False, 'reason': 'empty_data', 'stages': {}}
 
@@ -336,7 +449,7 @@ class B1CaseAnalyzer:
         if df is None or df.empty or len(df) < 30:
             return _EMPTY
 
-        prepared = self.prepare_indicators(df)
+        prepared = self._ensure_prepared_indicators(df)
         if prepared.empty:
             return _EMPTY
 
@@ -525,3 +638,7 @@ class B1CaseAnalyzer:
                 raise ValueError(f'字段 {field_name} 无可用值')
             value = value.iloc[-1]
         return float(value)
+
+
+# 兼容旧导入名称，避免已有脚本与文档引用立即失效。
+B1CaseAnalyzer = B1CaseStrategy

@@ -12,12 +12,12 @@ import yaml
 from utils.csv_manager import CSVManager
 from utils.dingtalk_notifier import DingTalkNotifier
 from utils.tdx_exporter import export_b1_pre_signal_tdx
-from strategy.b1_case_analyzer import B1CaseAnalyzer
+from strategy.b1_case_analyzer import B1CaseStrategy
 
 # Adjust base path to project root
 base = Path(__file__).resolve().parent.parent
 cm = CSVManager(str(base / 'data'))
-analyzer = B1CaseAnalyzer()
+strategy = B1CaseStrategy()
 
 
 def _format_eta(seconds):
@@ -117,9 +117,9 @@ for idx, code in enumerate(sample, start=1):
         if df is None or df.empty or len(df) < 50:
             pass
         else:
-            r = analyzer.scan_pre_signal(df, lookback_days=100)
+            r = strategy.scan_pre_signal(df, lookback_days=100)
             if r['detected']:
-                prepared_df = analyzer.prepare_indicators(df)
+                prepared_df = strategy.prepare_indicators(df)
                 stock_data_dict[code] = prepared_df
                 found.append({
                     'stock_code': code,
@@ -173,8 +173,8 @@ if found:
             params={
                 'strategy_name': '阶段型B1前瞻扫描',
                 'chart_days': 80,
-                'duokong_pct': analyzer.config.get('duokong_pct', 3),
-                'short_pct': analyzer.config.get('short_pct', 2),
+                'duokong_pct': strategy.config.get('duokong_pct', 3),
+                'short_pct': strategy.config.get('short_pct', 2),
             },
         )
         if push_ok:

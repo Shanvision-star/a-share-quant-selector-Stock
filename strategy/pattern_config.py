@@ -15,8 +15,8 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-def _load_yaml_config():
-    """从YAML配置文件加载B1PatternMatch配置"""
+def _load_yaml_root_config():
+    """从YAML配置文件加载完整配置，供 B1/B2 共用。"""
     config_path = BASE_DIR / "config" / "strategy_params.yaml"
     
     if not config_path.exists():
@@ -25,14 +25,16 @@ def _load_yaml_config():
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
-        return config.get('B1PatternMatch', {})
+        return config or {}
     except Exception as e:
-        print(f"⚠️ 加载B1PatternMatch配置失败: {e}，使用默认值")
+        print(f"⚠️ 加载策略配置失败: {e}，使用默认值")
         return {}
 
 
 # 加载YAML配置
-_yaml_config = _load_yaml_config()
+_yaml_root_config = _load_yaml_root_config()
+_yaml_config = _yaml_root_config.get('B1PatternMatch', {})
+_b2_yaml_config = _yaml_root_config.get('B2Strategy', {})
 
 # B1完美图形案例配置（12个历史成功案例，其中含1个阶段型案例）
 # 注：日期为"选股系统选出的买入日期"，不是突破日
@@ -231,6 +233,7 @@ B2_PERFECT_CASES = [
         "id":                   "b2_case_001",
         "name":                 "星环科技",
         "code":                 "688663",
+        "pattern_type":         "sideways_breakout",
         "b1_date":              "2025-12-14",   # B1前提信号日（J值低位+短期趋势线上穿多空线）
         "b2_date":              "2025-12-15",   # B2突破日（参考日，实际由算法动态识别）
         "consolidation_start":  "2025-10-28",   # 整理区间起始
@@ -258,19 +261,95 @@ B2_PERFECT_CASES = [
     # },
 ]
 
-# B2 默认参数（算法层面，与 B2CaseAnalyzer.DEFAULT_PARAMS 保持一致）
-# 可在 config/strategy_params.yaml 中覆盖
+# ─────────────────── B2 图形相似度匹配案例库 ─────────────────────────────────
+# B2_PATTERN_CASES：专门用于图形相似度匹配的5个经典案例
+# 与 B2_PERFECT_CASES（规则扫描用）分离，用于特征提取与相似度打分
+# 每个案例的 b2_date 为 B2 突破日，特征窗口为该日前 lookback_days 天
+
+_b2_pattern_yaml_config = _yaml_root_config.get('B2PatternMatch', {})
+
+B2_PATTERN_CASES = [
+    {
+        "id": "b2p_case_001",
+        "name": "星环科技",
+        "code": "688663",
+        "b2_date": "2025-12-15",       # B2突破日（特征窗口的右边界）
+        "lookback_days": 40,            # 向左回溯40天，覆盖整理期+B1信号期
+        "pattern_type": "sideways_breakout",
+        "tags": ["科创板", "大数据", "横盘突破"],
+        "description": "横盘突破型标准案例：整理期2025-10-28~2025-12-04，B1=2025-12-14，B2=2025-12-15",
+    },
+    {
+        "id": "b2p_case_002",
+        "name": "晶科科技",
+        "code": "601778",
+        "b2_date": "2025-08-07",        # 灾后重建型B2突破日
+        "lookback_days": 40,
+        "pattern_type": "post_crash_rebuild",
+        "tags": ["主板", "光伏", "灾后重建"],
+        "description": "灾后重建型标准案例：前期大幅下跌后反转，B1约2025-08-05，B2=2025-08-07",
+    },
+    {
+        "id": "b2p_case_003",
+        "name": "四会富仕",
+        "code": "300852",
+        "b2_date": "2025-09-10",        # 平行重炮型B2突破日
+        "lookback_days": 40,
+        "pattern_type": "parallel_artillery",
+        "tags": ["创业板", "电子", "平行重炮"],
+        "description": "平行重炮型标准案例1：多根收盘价相近的大阳线集中攻击，B2=2025-09-10",
+    },
+    {
+        "id": "b2p_case_004",
+        "name": "百普赛斯",
+        "code": "301080",
+        "b2_date": "2025-06-24",        # 平行重炮型B2突破日
+        "lookback_days": 40,
+        "pattern_type": "parallel_artillery",
+        "tags": ["创业板", "生物科技", "平行重炮"],
+        "description": "平行重炮型标准案例2：收盘价平行集结，缩量中继后放量突破，B2=2025-06-24",
+    },
+]
+
+# B2 图形匹配相似度权重（量能权重更高：缩量整理是B2最核心特征）
+_b2_pattern_weights_default = {
+    "trend_structure": 0.25,    # 趋势线结构（验证大方向正确性）
+    "kdj_state": 0.25,          # KDJ状态（B2前必须经历低J值）
+    "volume_pattern": 0.35,     # 量能特征（缩量整理是B2最核心，权重最高）
+    "price_shape": 0.15,        # 价格曲线（次权重，B2形态多样化）
+}
+B2_SIMILARITY_WEIGHTS = _b2_pattern_yaml_config.get('weights', _b2_pattern_weights_default)
+
+# B2 图形匹配阈值与展示配置
+B2_MIN_SIMILARITY_SCORE = _b2_pattern_yaml_config.get('min_similarity', 55.0)
+B2_PATTERN_LOOKBACK_DAYS = _b2_pattern_yaml_config.get('lookback_days', 40)
+B2_PATTERN_TOP_N = _b2_pattern_yaml_config.get('top_n_results', 20)
+
+# B2 规则扫描默认参数（算法层面，与 B2CaseAnalyzer.DEFAULT_PARAMS 保持一致）
+# 可在 config/strategy_params.yaml 的 B2Strategy 节中覆盖
 B2_DEFAULT_PARAMS = {
-    "b1_kdj_threshold":    13,    # J值低位阈值
-    "b1_close_near_pct":    2.0,  # 收盘价贴近短期趋势线 ±N%
-    "b1_pre_lookback":     20,    # B1大阳线回溯天数
-    "b1_big_up_pct":        5.0,  # 大阳线涨幅阈值（%）
-    "b1_big_up_days_min":   3,    # 大阳线最少根数
-    "b1_big_up_days_max":   5,    # 大阳线最多根数
-    "b1_turnover_sum_pct":  35.0, # 大阳线换手率总和上限（%）
-    "vol_mean_days":        10,   # 放量对比均量窗口（交易日）
-    "vol_multiplier":        1.5, # 当日量 > 均量 x 此倍数
-    "b2_min_pct":            4.0, # B2突破当日最小涨幅（%）
-    "b2_hold_days":          3,   # 突破后站稳多空线天数
-    "export_txt_dir":        "data/txt/B2-match",
+    "b1_kdj_threshold":      _b2_yaml_config.get("b1_kdj_threshold", 13),
+    "b1_close_near_pct":     _b2_yaml_config.get("b1_close_near_pct", 2.0),
+    "b1_pre_lookback":       _b2_yaml_config.get("b1_pre_lookback", 20),
+    "b1_big_up_pct":         _b2_yaml_config.get("b1_big_up_pct", 5.0),
+    "b1_big_up_days_min":    _b2_yaml_config.get("b1_big_up_days_min", 3),
+    "b1_big_up_days_max":    _b2_yaml_config.get("b1_big_up_days_max", 5),
+    "b1_turnover_sum_pct":   _b2_yaml_config.get("b1_turnover_sum_pct", 35.0),
+    "vol_mean_days":         _b2_yaml_config.get("vol_mean_days", 10),
+    "vol_multiplier":        _b2_yaml_config.get("vol_multiplier", 1.5),
+    "b2_min_pct":           _b2_yaml_config.get("b2_min_pct", 4.0),
+    "b2_hold_days":         _b2_yaml_config.get("b2_hold_days", 3),
+    "damage_lookback_days": _b2_yaml_config.get("damage_lookback_days", 50),
+    "damage_min_drop_pct":  _b2_yaml_config.get("damage_min_drop_pct", 18.0),
+    "reversal_min_pct":     _b2_yaml_config.get("reversal_min_pct", 6.0),
+    "reversal_vol_multiplier": _b2_yaml_config.get("reversal_vol_multiplier", 1.8),
+    "rebuild_window_days":  _b2_yaml_config.get("rebuild_window_days", 12),
+    "parallel_lookback_days": _b2_yaml_config.get("parallel_lookback_days", 25),
+    "parallel_big_up_pct":  _b2_yaml_config.get("parallel_big_up_pct", 4.0),
+    "parallel_big_up_min_count": _b2_yaml_config.get("parallel_big_up_min_count", 2),
+    "parallel_big_up_max_count": _b2_yaml_config.get("parallel_big_up_max_count", 4),
+    "parallel_close_band_pct": _b2_yaml_config.get("parallel_close_band_pct", 2.0),
+    "red_fat_green_vol_ratio": _b2_yaml_config.get("red_fat_green_vol_ratio", 0.65),
+    "b1_to_b2_transition_days": _b2_yaml_config.get("b1_to_b2_transition_days", 15),
+    "export_txt_dir":        _b2_yaml_config.get("export_txt_dir", "data/txt/B2-match"),
 }

@@ -14,7 +14,7 @@ A股量化选股系统 - 主程序
     python main.py init      # 首次全量抓取历史数据
     python main.py update    # 每日增量更新
     python main.py select    # 仅执行选股
-    python main.py run       # 完整流程（更新+选股+通知）
+    python main.py run       # 完整流程（更新+BowlReboundStrategy+B1CaseStrategy+通知）
     python main.py schedule  # 内置定时调度
 ================================================
 """
@@ -35,6 +35,7 @@ sys.path.insert(0, str(project_root))
 __version__ = "1.0.0"
 
 from quant_system import QuantSystem
+from utils.backtrace_analyzer import BacktraceAnalyzer
 
 # ===================== 版本信息 =====================
 def print_version():
@@ -54,6 +55,7 @@ def main():
     命令行主入口
     根据输入命令执行对应流程
     支持：init / run / schedule / web
+    其中 run 默认执行 BowlReboundStrategy 与 B1CaseStrategy 两个核心策略
     """
     print("\n" + "=" * 60)
     print("📢  当日量化选股开始执行！")
@@ -75,8 +77,8 @@ def main():
         epilog="""
 示例:
   python main.py init                          # 首次抓取6年历史数据
-  python main.py run                           # 标准完整流程
-  python main.py run --b1-match                # 完整版流程（选股+B1匹配+导出双TXT）
+    python main.py run                           # 标准完整流程（默认执行 BowlReboundStrategy + B1CaseStrategy）
+    python main.py run --b1-match                # 完整版流程（选股+B1匹配+导出双TXT，自动并发/单核降级）
   python main.py backtest                      # 执行3天回溯扫描
   python main.py backtest --backtest-days 3 --k-threshold 20 --trend-drop-pct 5
   python main.py schedule                      # 启动内置定时
@@ -84,20 +86,24 @@ def main():
     )
 
     parser.add_argument('--version', action='store_true', help='显示版本信息')
-    parser.add_argument('command', choices=['init', 'run', 'web', 'schedule', 'backtest'], nargs='?', help='命令')
+    parser.add_argument('command', choices=['init', 'run', 'web', 'schedule', 'backtest', 'backtrace'], nargs='?', help='命令')
     parser.add_argument('--max-stocks', type=int, default=None, help='限制股票数量')
     parser.add_argument('--config', default='config/config.yaml', help='配置文件')
     parser.add_argument('--host', default='0.0.0.0', help='web监听地址')
     parser.add_argument('--port', type=int, default=5000, help='web端口')
-    parser.add_argument('--category', type=str, choices=['all', 'bowl_center', 'near_duokong', 'near_short_trend'], default='all', help='分类')
-    parser.add_argument('--min-similarity', type=float, default=None, help='最小相似度')
+    parser.add_argument('--category', type=str, choices=['all', 'bowl_center', 'near_duokong', 'near_short_trend', 'stage_b1_setup'], default='all', help='分类')
+    parser.add_argument('--min-similarity', type=float, default=None, help='B1/B2图形匹配最小相似度（默认B1=60%%, B2=55%%）')
     parser.add_argument('--b1-match', action='store_true', help='启用B1匹配')
-    parser.add_argument('--b2-match', action='store_true', help='启用B2突破图形匹配')
+    parser.add_argument('--b2-match', action='store_true', help='启用B2突破图形匹配（规则扫描版）')
+    parser.add_argument('--b2-today', action='store_true', help='当日收盘B2选股：仅输出当日触发B2信号的股票')
+    parser.add_argument('--b2-pattern-match', action='store_true', help='启用B2完美图形匹配（规则扫描+相似度打分，参考B1逻辑）')
     parser.add_argument('--lookback-days', type=int, default=None, help='回看天数')
     parser.add_argument('--backtest-days', type=int, default=3, help='回溯天数（连续K小于阈值的天数）')
     parser.add_argument('--k-threshold', type=float, default=20.0, help='K值阈值')
     parser.add_argument('--trend-drop-pct', type=float, default=5.0, help='短期趋势线最大容忍回落百分比')
-    parser.add_argument('--workers', type=int, default=None, help='选股并发线程数')
+    parser.add_argument('--workers', type=int, default=None, help='选股并发线程数（默认自动；单核设备会自动降级为1）')
+    parser.add_argument('--stock-code', type=str, help='股票代码')
+    parser.add_argument('--date', type=str, help='回溯日期，格式为YYYY-MM-DD')
 
     args = parser.parse_args()
 
@@ -130,6 +136,18 @@ def main():
                 max_stocks=args.max_stocks,
                 max_workers=args.workers
             )
+        elif args.b2_today:
+            quant.run_with_b2_today(
+                max_stocks=args.max_stocks,
+                max_workers=args.workers
+            )
+        elif args.b2_pattern_match:
+            min_sim = args.min_similarity if args.min_similarity is not None else 55.0
+            quant.run_with_b2_pattern_match(
+                max_stocks=args.max_stocks,
+                max_workers=args.workers,
+                min_similarity=min_sim,
+            )
         else:
             quant.run_full(category=args.category, max_stocks=args.max_stocks, max_workers=args.workers)
     elif args.command == 'backtest':
@@ -144,6 +162,22 @@ def main():
         run_web_server(host=args.host, port=args.port)
     elif args.command == 'schedule':
         quant.run_schedule()
+    elif args.command == 'backtrace':
+        if not args.stock_code or not args.date:
+            print("⚠️ 请输入股票代码和日期 (--stock-code 和 --date)")
+            return
+
+        try:
+            data_directory = "data"
+            analyzer = BacktraceAnalyzer(data_directory)
+            results = analyzer.backtrace(args.stock_code, args.date)
+            if results:
+                print(f"匹配的策略: {results}")
+            else:
+                print("未匹配到任何策略。")
+        except Exception as e:
+            print(f"回溯分析失败: {e}")
+        return
 
 
 if __name__ == '__main__':

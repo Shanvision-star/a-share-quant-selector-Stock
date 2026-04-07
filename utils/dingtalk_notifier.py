@@ -105,6 +105,21 @@ class DingTalkNotifier:
         self._last_send_time = 0
         self._min_interval = 2.0  # 最小发送间隔2秒
         self._rate_limiter = RateLimiter(max_per_minute=20, min_interval=2.0)  # 限流器
+
+    def _get_category_names(self):
+        """统一维护分类展示名称，兼容默认碗口分类和新增的 B1 阶段型预警分类。"""
+        return {
+            'bowl_center': '🥣 回落碗中',
+            'near_duokong': '📊 靠近多空线',
+            'near_short_trend': '📈 靠近短期趋势线',
+            'stage_b1_setup': '🧭 阶段型B1预警',
+        }
+
+    def _get_display_order(self, categories):
+        """默认分类优先，其它新增分类自动追加，避免新策略结果被静默隐藏。"""
+        default_order = ['bowl_center', 'near_duokong', 'near_short_trend', 'stage_b1_setup']
+        extra_categories = sorted(cat for cat in categories if cat not in default_order)
+        return [cat for cat in default_order if cat in categories] + extra_categories
     
     def _generate_sign(self):
         """生成钉钉签名"""
@@ -368,11 +383,7 @@ class DingTalkNotifier:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         
         # 分类名称映射
-        category_names = {
-            'bowl_center': '🥣 回落碗中',
-            'near_duokong': '📊 靠近多空线',
-            'near_short_trend': '📈 靠近短期趋势线'
-        }
+        category_names = self._get_category_names()
         
         # 筛选标签
         filter_label = "全部" if category_filter == 'all' else category_names.get(category_filter, category_filter)
@@ -384,7 +395,7 @@ class DingTalkNotifier:
         
         total_signals = 0
         # 按分类统计
-        category_count = {'bowl_center': 0, 'near_duokong': 0, 'near_short_trend': 0}
+        category_count = {}
         
         for strategy_name, signals in results.items():
             content += f"🎯 {strategy_name}\n\n"
@@ -409,7 +420,7 @@ class DingTalkNotifier:
             total_signals += sum(len(group) for group in category_groups.values())
             
             # 按优先级顺序显示分类
-            display_order = ['bowl_center', 'near_duokong', 'near_short_trend']
+            display_order = self._get_display_order(category_groups.keys())
             # 如果指定了分类，只显示该分类
             if category_filter != 'all' and category_filter in display_order:
                 display_order = [category_filter]
@@ -446,6 +457,7 @@ class DingTalkNotifier:
         content += f"   🥣 回落碗中: {category_count.get('bowl_center', 0)} 只\n"
         content += f"   📊 靠近多空线: {category_count.get('near_duokong', 0)} 只\n"
         content += f"   📈 靠近短期趋势线: {category_count.get('near_short_trend', 0)} 只\n"
+        content += f"   🧭 阶段型B1预警: {category_count.get('stage_b1_setup', 0)} 只\n"
         content += f"   📈 共选出: {total_signals} 只\n\n"
         content += "⚠️ 提示: 以上结果仅供参考，不构成投资建议"
         
@@ -637,11 +649,7 @@ class DingTalkNotifier:
             stock_names = {}
         
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        category_names = {
-            'bowl_center': '🥣 回落碗中',
-            'near_duokong': '📊 靠近多空线',
-            'near_short_trend': '📈 靠近短期趋势线'
-        }
+        category_names = self._get_category_names()
         
         total_sent = 0
         total_failed = 0
@@ -653,7 +661,7 @@ class DingTalkNotifier:
         summary += "━" * 20 + "\n\n"
         
         # 统计各分类数量
-        category_count = {'bowl_center': 0, 'near_duokong': 0, 'near_short_trend': 0}
+        category_count = {}
         for strategy_name, signals in results.items():
             for signal in signals:
                 for s in signal['signals']:
@@ -664,6 +672,7 @@ class DingTalkNotifier:
         summary += f"🥣 回落碗中: {category_count.get('bowl_center', 0)} 只\n"
         summary += f"📊 靠近多空线: {category_count.get('near_duokong', 0)} 只\n"
         summary += f"📈 靠近短期趋势线: {category_count.get('near_short_trend', 0)} 只\n"
+        summary += f"🧭 阶段型B1预警: {category_count.get('stage_b1_setup', 0)} 只\n"
         total = sum(category_count.values())
         summary += f"📈 共选出: {total} 只\n\n"
         summary += "详细列表见下方消息 👇"
@@ -689,7 +698,7 @@ class DingTalkNotifier:
                     category_groups[cat].append((signal, s))
             
             # 按优先级顺序发送
-            for cat in ['bowl_center', 'near_duokong', 'near_short_trend']:
+            for cat in self._get_display_order(category_groups.keys()):
                 if cat not in category_groups or not category_groups[cat]:
                     continue
                 
@@ -812,11 +821,7 @@ class DingTalkNotifier:
         Returns:
             str: 格式化的Markdown消息
         """
-        category_names = {
-            'bowl_center': '🥣 回落碗中',
-            'near_duokong': '📊 靠近多空线',
-            'near_short_trend': '📈 靠近短期趋势线'
-        }
+        category_names = self._get_category_names()
         category_name = category_names.get(category, category)
         
         # 格式化参数
@@ -884,17 +889,13 @@ class DingTalkNotifier:
         
         # 先发送汇总消息
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        category_names = {
-            'bowl_center': '🥣 回落碗中',
-            'near_duokong': '📊 靠近多空线',
-            'near_short_trend': '📈 靠近短期趋势线'
-        }
+        category_names = self._get_category_names()
         
         total_sent = 0
         total_failed = 0
         
         # 统计各分类数量
-        category_count = {'bowl_center': 0, 'near_duokong': 0, 'near_short_trend': 0}
+        category_count = {}
         chart_count = 0
 
         for strategy_name, signals in results.items():
@@ -905,7 +906,8 @@ class DingTalkNotifier:
                         category_count[cat] = category_count.get(cat, 0) + 1
         
         # 发送汇总消息
-        summary = f"🎯 BowlReboundStrategy:\n"
+        summary = f"🎯 默认策略组合:\n"
+        summary += "核心参数以下方碗口反弹口径为准，B1阶段型预警使用独立阶段判定。\n"
         summary += f"N: {params.get('N', 4)} (成交量倍数)\n"
         summary += f"M: {params.get('M', 15)} (回溯天数)\n"
         summary += f"CAP: {params.get('CAP', 4000000000)} (40亿市值门槛)\n"
@@ -924,6 +926,7 @@ class DingTalkNotifier:
         summary += f"🥣 回落碗中: {category_count.get('bowl_center', 0)} 只\n"
         summary += f"📊 靠近多空线: {category_count.get('near_duokong', 0)} 只\n"
         summary += f"📈 靠近短期趋势线: {category_count.get('near_short_trend', 0)} 只\n"
+        summary += f"🧭 阶段型B1预警: {category_count.get('stage_b1_setup', 0)} 只\n"
         total = sum(category_count.values())
         summary += f"📈 共选出: {total} 只\n\n"
         
@@ -1551,4 +1554,218 @@ class DingTalkNotifier:
         )
         return bool(summary_ok)
 
+    # ─────────────────── B2 图形匹配通知（含相似度打分）─────────────────────
+
+    def send_b2_pattern_match_results_with_charts(
+        self,
+        results: list,
+        stock_data_dict: dict = None,
+        stock_names: dict = None,
+        total_b2_hits: int = None,
+    ) -> bool:
+        """
+        发送 B2 图形匹配结果（规则扫描 + 相似度打分）到钉钉。
+
+        参考 B1 的 send_b1_match_results 格式，增加以下 B2 专属字段：
+          - 相似度总分 + 四维分项（趋势/KDJ/量能/形态）
+          - 匹配历史案例名称 + 模式类型
+          - B1/B2 日期 + 止损价
+
+        Args:
+            results         : B2PatternMatchLibrary.scan_with_match() 返回的相似度排序列表
+            stock_data_dict : {code: DataFrame} 用于生成 K 线图
+            stock_names     : {code: name} 股票名称补全
+            total_b2_hits   : 规则扫描总命中数（用于显示过滤比例）
+
+        Returns:
+            bool: 汇总消息是否发送成功
+        """
+        if not results:
+            self.send_text("[B2图形匹配] 本次无满足相似度阈值的候选股票。")
+            return False
+
+        if stock_data_dict is None:
+            stock_data_dict = {}
+        if stock_names is None:
+            stock_names = {}
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        top_n = min(len(results), 20)  # 最多显示前20只
+
+        # ── 1. 汇总消息 ─────────────────────────────────────────────────────
+        filter_note = ""
+        if total_b2_hits is not None:
+            filter_note = f"规则命中 {total_b2_hits} 只 → 相似度过滤后 {len(results)} 只"
+        else:
+            filter_note = f"共 {len(results)} 只"
+
+        # 按 pattern_type 分类统计
+        type_count = {}
+        for r in results:
+            pt = r.get("matched_b2_pattern_type", r.get("pattern_type", "unknown"))
+            type_count[pt] = type_count.get(pt, 0) + 1
+
+        summary_lines = [
+            "## B2 完美图形匹配选股结果",
+            "",
+            f"时间: {now}",
+            f"命中: **{filter_note}**",
+            "━" * 30,
+            "",
+            "**按形态分类:**",
+            f"  横盘突破型: {type_count.get('sideways_breakout', 0)} 只",
+            f"  灾后重建型: {type_count.get('post_crash_rebuild', 0)} 只",
+            f"  平行重炮型: {type_count.get('parallel_artillery', 0)} 只",
+            "",
+            f"**相似度排行 Top {top_n}:**",
+            "",
+        ]
+
+        for i, r in enumerate(results[:top_n], 1):
+            code  = r.get("code", "")
+            name  = r.get("name", stock_names.get(code, code))
+            score = r.get("similarity_score", 0)
+            b2_d  = r.get("b2_date", "-")
+            stop  = r.get("stop_loss_price", "-")
+            plabel = r.get("matched_b2_pattern_label",
+                           r.get("pattern_label", "-"))
+            summary_lines.append(
+                f"{i}. **{code}** {name}  相似度:{score}%  "
+                f"类型:{plabel}  B2={b2_d}  止损{stop}"
+            )
+
+        summary_lines += [
+            "",
+            "个股详情及K线图见下方消息",
+        ]
+
+        summary_ok = self.send_markdown("B2完美图形匹配结果", "\n".join(summary_lines))
+        if not summary_ok:
+            print("[WARN] B2图形匹配汇总消息发送失败")
+
+        time.sleep(1)
+
+        # ── 2. 逐只发送详情 + K 线图 ────────────────────────────────────────
+        from strategy.pattern_config import B2_PATTERN_TOP_N
+        display_list = results[:B2_PATTERN_TOP_N]
+
+        temp_dir = Path(tempfile.gettempdir()) / "kline_charts_b2_match"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        detail_ok = detail_fail = chart_ok = chart_fail = 0
+
+        for r in display_list:
+            code  = r.get("code", "")
+            name  = r.get("name", stock_names.get(code, code))
+            score = r.get("similarity_score", 0)
+
+            # 相似度分项
+            breakdown = r.get("similarity_breakdown", {})
+            trend_s  = breakdown.get("trend_structure", "-")
+            kdj_s    = breakdown.get("kdj_state", "-")
+            vol_s    = breakdown.get("volume_pattern", "-")
+            shape_s  = breakdown.get("price_shape", "-")
+
+            # B2 规则字段
+            b1_d      = r.get("b1_date", "-")
+            b2_d      = r.get("b2_date", "-")
+            pct       = r.get("b2_pct_chg", "-")
+            vol_r     = r.get("b2_vol_ratio", "-")
+            j_val     = r.get("j_at_b1", "-")
+            c_s       = r.get("consolidation_start", "-")
+            c_e       = r.get("consolidation_end", "-")
+            c_hi      = r.get("consolidation_high", "-")
+            big_n     = r.get("big_up_count", "-")
+            t_sum     = r.get("big_up_turnover_sum", "-")
+            stop      = r.get("stop_loss_price", "-")
+
+            # 匹配案例
+            case_name  = r.get("matched_b2_case_name", r.get("matched_case_name", "-"))
+            case_date  = r.get("matched_b2_case_date", "-")
+            plabel     = r.get("matched_b2_pattern_label",
+                               r.get("pattern_label", "-"))
+
+            detail_lines = [
+                f"### {code} {name}  相似度 **{score}%**",
+                "",
+                f"**形态类型**: {plabel}",
+                f"**匹配案例**: {case_name} ({case_date})",
+                f"**分项得分**: 趋势{trend_s}% | KDJ{kdj_s}% | 量能{vol_s}% | 形态{shape_s}%",
+                "",
+                f"**B1 触发日**: {b1_d}  J值={j_val}",
+                f"**B2 突破日**: {b2_d}  涨幅={pct}%  量比={vol_r}x",
+                f"**整理区间**: {c_s} ~ {c_e}  区间高={c_hi}",
+                f"**大阳线**: {big_n} 根  换手率总和={t_sum}%",
+                f"**止损价**: {stop}（B2突破日最低价，破位离场）",
+            ]
+
+            # 补充分类型专属信息
+            pt = r.get("matched_b2_pattern_type", r.get("pattern_type", ""))
+            if pt == "post_crash_rebuild":
+                dmg_s = r.get("damage_start", "-")
+                dmg_e = r.get("damage_end", "-")
+                drop  = r.get("damage_drop_pct", "-")
+                rev_d = r.get("reversal_date", "-")
+                detail_lines.append(
+                    f"**破坏段**: {dmg_s}~{dmg_e} 回撤{drop}%  反转长阳={rev_d}"
+                )
+            elif pt == "parallel_artillery":
+                pdates = "/".join(r.get("parallel_candle_dates", []))
+                pband  = r.get("parallel_close_band_pct", "-")
+                detail_lines.append(
+                    f"**平行大阳**: {pdates}  价格带宽={pband}%"
+                )
+
+            ok = self.send_markdown(f"B2图形匹配 {code} {name}", "\n".join(detail_lines))
+            if ok:
+                detail_ok += 1
+            else:
+                detail_fail += 1
+
+            # K 线图（标记 B1 和 B2 日期）
+            df = stock_data_dict.get(code)
+            if df is not None and not getattr(df, "empty", True) and KLINE_CHART_AVAILABLE:
+                key_dates = []
+                for d in [b1_d, b2_d]:
+                    if d and d != "-":
+                        try:
+                            key_dates.append(pd.Timestamp(d))
+                        except Exception:
+                            pass
+                try:
+                    chart_path = generate_kline_chart(
+                        stock_code=code,
+                        stock_name=name,
+                        df=df,
+                        category="near_short_trend",
+                        params={"M": 60, "duokong_pct": 3, "short_pct": 2},
+                        key_candle_dates=key_dates,
+                        output_dir=str(temp_dir),
+                        show_text=False,
+                        show_legend=True,
+                    )
+                    if self.send_image(chart_path, f"{code} B2图形匹配 K线图"):
+                        chart_ok += 1
+                    else:
+                        chart_fail += 1
+                except Exception as e:
+                    print(f"[WARN] 生成/发送 {code} B2图形匹配 K线图失败: {e}")
+                    chart_fail += 1
+
+        # 尾部说明
+        footer_lines = [
+            "---",
+            "**B2图形匹配逻辑**:",
+            "相似度 = 趋势结构(25%) + KDJ状态(25%) + 量能特征(35%) + 价格形态(15%)",
+            "**案例库**: 星环科技/晶科科技/四会富仕/百普赛斯 四类典型B2形态",
+            "**注意**: 相似度仅供参考，不构成投资建议",
+        ]
+        self.send_markdown("B2图形匹配说明", "\n".join(footer_lines))
+
+        print(
+            f"[INFO] B2图形匹配钉钉统计: 汇总={'OK' if summary_ok else 'FAIL'} | "
+            f"个股详情={detail_ok}成功/{detail_fail}失败 | "
+            f"K线图={chart_ok}成功/{chart_fail}失败"
+        )
+        return bool(summary_ok)
 

@@ -77,11 +77,16 @@ class StrategyRegistry:
                 # 查找策略类（继承自 BaseStrategy 的类）
                 from strategy.base_strategy import BaseStrategy
                 
+                seen_strategy_classes = set()
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
                     if (isinstance(attr, type) and 
                         issubclass(attr, BaseStrategy) and 
-                        attr is not BaseStrategy):
+                        attr is not BaseStrategy and
+                        attr.__module__ == module.__name__):
+                        if attr in seen_strategy_classes:
+                            continue
+                        seen_strategy_classes.add(attr)
                         
                         # 注册策略（排除基类）
                         self.register(attr, name=attr_name)
@@ -161,7 +166,7 @@ class StrategyRegistry:
                     print(f"  进度: [{processed}/{total_stocks}] 已分析 {processed} 只，选出 {len(signals)} 只...")
             
             results[strategy_name] = signals
-            print(f"  ✓ 选股完成: 共 {len(signals)} 只股票符合策略")
+            print(f"  [OK] 选股完成: 共 {len(signals)} 只股票符合策略")
         
         if return_indicators:
             return results, indicators_dict

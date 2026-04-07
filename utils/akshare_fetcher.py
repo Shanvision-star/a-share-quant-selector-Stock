@@ -876,27 +876,69 @@ class AKShareFetcher:
                 fut = executor.submit(self._update_single_stock, code, days, market_cap_map)
                 future_map[fut] = (code, days)
 
-            for future in as_completed(future_map):
-                code, _ = future_map[future]
-                completed += 1
+            all_done = False
+            try:
+                # 每只股票最多等 20 秒，总超时 = 只数 × 20s（但上限 10 分钟）
+                per_stock_timeout = 20
+                total_timeout = min(total * per_stock_timeout, 600)
+                for future in as_completed(future_map, timeout=total_timeout):
+                    code, _ = future_map[future]
+                    completed += 1
 
-                try:
-                    ok = future.result()
-                    if ok:
-                        updated += 1
-                    else:
+                    try:
+                        ok = future.result()
+                        if ok:
+                            updated += 1
+                        else:
+                            failed += 1
+                    except Exception:
                         failed += 1
-                except:
-                    failed += 1
 
-                # 实时进度打印
-                percent = (completed / total) * 100
-                print(f"进度: {completed:4d}/{total:<4d} | {percent:5.1f}% | 更新:{updated:4d} | 失败:{failed:4d} | 代码:{code}")
+                    # 实时进度打印
+                    percent = (completed / total) * 100
+                    print(f"进度: {completed:4d}/{total:<4d} | {percent:5.1f}% | 更新:{updated:4d} | 失败:{failed:4d} | 代码:{code}")
+                all_done = True  # 正常走完所有 future，才标记完成
+            except Exception as _e:
+                # TimeoutError 或 KeyboardInterrupt：取消剩余任务，用已有数据继续
+                if isinstance(_e, KeyboardInterrupt):
+                    print(f"\n[更新] 用户中断，已完成 {completed}/{total}，取消剩余任务，继续使用本地数据...")
+                else:
+                    print(f"\n[更新] 超时({total_timeout}s)，已完成 {completed}/{total}，取消剩余任务，继续使用本地数据...")
+                for f in future_map:
+                    f.cancel()
 
-        # 更新缓存
-        update_cache['last_update_date'] = target_date_str
-        with open(update_cache_file, 'w') as f:
-            json.dump(update_cache, f)
+        # 只有全量完成 + 抽样验证实际数据已到达目标日期，才写入缓存。
+        # 【缺陷修复】原逻辑仅以 all_done=True 为条件即写缓存：
+        #   若 AKShare API 存在发布延迟（节后首日/盘后数据未及时发布），
+        #   update_single_stock 会"成功"地把旧数据写入 CSV，
+        #   all_done=True 后缓存被写为 target_date，下次启动直接跳过更新，
+        #   实际数据永远停留在旧日期，形成"缓存永久误判"。
+        # 【修复方案】写缓存前抽样验证：>=50% 的样本 CSV 首行日期 >= target_date 才写入。
+        if all_done:
+            _verify_codes = existing_stocks[:min(20, len(existing_stocks))]
+            _reached = 0
+            for _vc in _verify_codes:
+                try:
+                    _vp = self.csv_manager.get_stock_path(_vc)
+                    _vdf = pd.read_csv(_vp, nrows=1)
+                    if not _vdf.empty:
+                        _vd = pd.to_datetime(_vdf.iloc[0]['date']).date()
+                        if _vd >= target_date:
+                            _reached += 1
+                except Exception:
+                    pass
+            _threshold = max(1, int(len(_verify_codes) * 0.5))  # 至少 50% 样本达到目标日
+            if _reached >= _threshold:
+                update_cache['last_update_date'] = target_date_str
+                with open(update_cache_file, 'w') as f:
+                    json.dump(update_cache, f)
+            else:
+                print(
+                    f"[更新] 抽样验证：{_reached}/{len(_verify_codes)} 只样本到达 {target_date_str}，"
+                    f"低于 50% 阈值，暂不写缓存，下次启动将重新检查（可能是数据发布延迟）"
+                )
+        else:
+            print(f"[更新] 未全量完成，不写入缓存，下次启动将重新检查并补全剩余股票")
 
         print("=" * 70)
         print(f"✅ 并发更新完成！总计：{total} 只 | 成功：{updated} 只 | 失败：{failed} 只")

@@ -118,6 +118,33 @@ class QuantSystem:
             f"总耗时 {self._format_eta(total_elapsed)} | ETA {self._format_eta(eta)}{suffix}"
         )
 
+    def _export_b2_today_empty_files(self, today_str: str, reason: str) -> tuple[str, str]:
+        """当日B2无信号或数据未更新时，仍导出说明TXT与空TDX文件，便于落盘留痕。"""
+        export_dir = Path(self.data_dir) / "txt" / "B2-match"
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+        now = datetime.now()
+        ts = now.strftime("%Y%m%d_%H%M")
+        detail_file = export_dir / f"B2今日扫描_{ts}.txt"
+        tdx_file = export_dir / f"B2_TDX导入_{ts}.txt"
+
+        detail_lines = [
+            f"B2 当日扫描结果  {now.strftime('%Y-%m-%d %H:%M')}\n",
+            f"交易日: {today_str}\n",
+            "命中数量: 0\n",
+            f"说明: {reason}\n",
+            "\n",
+        ]
+
+        with open(detail_file, "w", encoding="utf-8") as f:
+            f.writelines(detail_lines)
+        with open(tdx_file, "w", encoding="utf-8") as f:
+            f.write("")
+
+        print(f"[B2今日] 已导出说明TXT: {detail_file}")
+        print(f"[B2今日] 已导出空TDX文件: {tdx_file}")
+        return str(detail_file), str(tdx_file)
+
     def _resolve_worker_count(self, requested_workers, task_count, default_cap=8, label="任务"):
         """
         统一解析并发线程数。
@@ -194,52 +221,36 @@ class QuantSystem:
     def _smart_update(self, max_stocks=None, check_latest=True):
         """
         智能数据更新
-        逻辑：15:00前不更新 | 检查数据是否已是今日最新
+        逻辑：优先读取 daily_update 写入的缓存文件判断是否已全量更新，
+        避免随机抽样 100 只导致误判（抽中的已更新，其余可能未更新）。
+        max_stocks 调试模式下绕过缓存直接更新。
         """
-        from datetime import datetime
-        import pandas as pd
-        today = datetime.now().date()
-        current_time = datetime.now().time()
-        market_close_time = datetime.strptime("15:00", "%H:%M").time()
+        import json
+        from pathlib import Path
 
         expected_date = self._get_expected_latest_trade_date()
+        current_time = datetime.now().time()
+        market_close_time = dt_time(15, 0)
+
         if current_time < market_close_time:
             print("\n⏰ 当前时间尚未收盘 (15:00)")
             print(f"  检查本地数据是否已同步到最近交易日 {expected_date}")
 
-        # 抽样检查数据是否已是最新
-        if check_latest:
-            print("\n🔍 检查数据更新状态...")
-            stock_codes = self.csv_manager.list_all_stocks()
-            if max_stocks:
-                stock_codes = stock_codes[:max_stocks]
+        # 使用 daily_update 写入的缓存文件作为唯一可信的"已更新"标志
+        # （daily_update 只在全量扫描完成后才写入该文件）
+        if check_latest and not max_stocks:
+            cache_file = Path(self.fetcher.full_data_dir) / '.update_cache.json'
+            if cache_file.exists():
+                try:
+                    with open(cache_file, 'r') as _f:
+                        _cache = json.load(_f)
+                    if _cache.get('last_update_date') == str(expected_date):
+                        print(f"\n✓ 缓存确认：数据已全量同步到 {expected_date}，跳过网络更新")
+                        return
+                except Exception:
+                    pass  # 缓存读取失败，继续走更新流程
 
-            total = len(stock_codes)
-            has_today = 0
-            no_today = 0
-            check_limit = min(100, total)
-            sample_codes = stock_codes
-            if total > check_limit:
-                import random
-                sample_codes = random.sample(stock_codes, check_limit)
-
-            for code in sample_codes:
-                df = self.csv_manager.read_stock(code)
-                if not df.empty:
-                    latest_date = pd.to_datetime(df.iloc[0]['date']).date()
-                    if latest_date == expected_date:
-                        has_today += 1
-                    else:
-                        no_today += 1
-
-            if check_limit > 0 and has_today == check_limit:
-                print(f"  ✓ 已检查 {check_limit} 只股票，全部已有最新交易日数据 {expected_date}")
-                print("  数据已是最新，跳过网络更新")
-                return
-            elif current_time < market_close_time:
-                print(f"  ⚠ 检查到本地数据缺少最新交易日 {expected_date}，继续执行增量更新")
-
-        # 执行增量更新
+        # 执行增量更新（daily_update 内部逐只检查，只补缺失的股票）
         print("\n🔄 执行数据更新...")
         self.fetcher.daily_update(max_stocks=max_stocks)
         print("\n✓ 数据更新完成")
@@ -1023,10 +1034,11 @@ class QuantSystem:
 
         return results
 
-    def run_with_b2_today(self, max_stocks=None, max_workers=None):
+    def run_with_b2_today(self, max_stocks=None, max_workers=None, skip_update=False):
         """
         当日收盘B2选股：扫描全市场，仅保留 B2突破日==今日 的结果。
         适合在每日收盘后运行，快速筛选当日刚触发B2信号的股票。
+        skip_update=True 时跳过网络更新，直接用本地已有数据（网络不可用时使用）。
         """
         import datetime as _dt
         today_str = _dt.date.today().strftime("%Y-%m-%d")
@@ -1035,8 +1047,14 @@ class QuantSystem:
         print(f"执行当日收盘B2选股（{today_str}）")
         print("=" * 60)
 
-        # 1. 智能更新数据
-        self._smart_update(max_stocks=max_stocks)
+        # 1. 智能更新数据（允许用户 Ctrl+C 中断更新，中断后继续用本地已有数据分析）
+        if skip_update:
+            print("[B2今日] --no-update 已指定，跳过数据更新，直接使用本地已有数据")
+        else:
+            try:
+                self._smart_update(max_stocks=max_stocks)
+            except KeyboardInterrupt:
+                print("\n[B2今日] 数据更新被中断，继续使用本地已有数据进行分析...")
 
         # 2. 获取股票列表
         stock_list = self.csv_manager.list_all_stocks()
@@ -1083,18 +1101,26 @@ class QuantSystem:
         # 5. 过滤：仅保留 B2突破日 == 今日 的结果
         today_results = [r for r in all_results if r.get("b2_date", "")[:10] == today_str]
 
+        # ---------------------------------------------------------------
         # 检测数据中最新可用日期，判断今日数据是否已更新
+        # 【缺陷修复】原逻辑用 B2 信号触发日（b2_date）作为"数据最新日期"代理：
+        #   若当日无任何股票触发 B2 信号，max(b2_date) 仍为历史最近信号日，
+        #   误判为"数据未更新"并提前退出，导致真实已更新的数据被忽略。
+        # 【正确做法】直接抽样若干股票的 CSV 首行（倒序存储，首行=最新行），
+        #   取实际最大日期，才能准确反映数据是否已同步到今日。
+        # ---------------------------------------------------------------
         latest_data_date = ""
-        if all_results:
-            latest_data_date = max(
-                (r.get("b2_date", "")[:10] for r in all_results), default=""
-            )
-        # 也可直接从CSV取最新行日期
-        if not latest_data_date and stock_list:
+        # 跨步抽样：从股票列表首/中/尾各取若干，避免前段集中在同一批数据格式的目录
+        _n = len(stock_list)
+        _step = max(1, _n // 20)
+        _sampled = stock_list[::_step][:30]  # 最多取 30 只
+        for _code in _sampled:
             try:
-                sample_df = self.csv_manager.read_stock(stock_list[0])
-                if sample_df is not None and not sample_df.empty:
-                    latest_data_date = str(sample_df.iloc[0]["date"])[:10]
+                _df = self.csv_manager.read_stock(_code)
+                if _df is not None and not _df.empty:
+                    _d = str(_df.iloc[0]["date"])[:10]
+                    if _d > latest_data_date:
+                        latest_data_date = _d
             except Exception:
                 pass
 
@@ -1109,6 +1135,7 @@ class QuantSystem:
                 f"请在今日收盘后数据同步完成后再运行 --b2-today"
             )
             print(msg)
+            self._export_b2_today_empty_files(today_str, "当日数据未更新，未执行今日B2落地")
             if self.notifier:
                 try:
                     self.notifier.send_text(msg)
@@ -1120,6 +1147,7 @@ class QuantSystem:
         if not today_results:
             msg = f"[B2今日] {today_str} 今日无B2信号命中（全市场扫描完成）"
             print(msg)
+            self._export_b2_today_empty_files(today_str, "当日无B2信号命中")
             if self.notifier:
                 try:
                     self.notifier.send_text(msg)

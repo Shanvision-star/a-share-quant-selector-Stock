@@ -231,34 +231,49 @@ MATCH_TOLERANCES = _yaml_config.get('tolerances', _default_tolerances)
 B2_PERFECT_CASES = [
     {
         "id":                   "b2_case_001",
-        "name":                 "星环科技",
-        "code":                 "688663",
+        "name":                 "星环科技-U",
+        "code":                 "688031",
         "pattern_type":         "sideways_breakout",
-        "b1_date":              "2025-12-14",   # B1前提信号日（J值低位+短期趋势线上穿多空线）
-        "b2_date":              "2025-12-15",   # B2突破日（参考日，实际由算法动态识别）
+        "b1_date":              "2025-12-04",   # B1前提信号日（实盘J=-4.05）
+        "b2_date":              "2025-12-05",   # B2突破日（实盘+17.02%，vol/10dAvg=3.02x）
         "consolidation_start":  "2025-10-28",   # 整理区间起始
         "consolidation_end":    "2025-12-04",   # 整理区间结束
         "lookback_days":        40,             # 向前回溯天数（含B1前提扫描窗口）
         "tags":                 ["科创板", "数据库软件", "大数据"],
         "description": (
-            "星环科技688663：B1信号2025-12-14，J值低位触底，短期趋势线上穿多空线；"
-            "主力在2025-10-28~2025-12-04构建整理平台；"
-            "2025-12-15放量大阳突破整理区高点，站稳多空线上方，为标准B2形态。"
+            "星环科技688031：B1信号2025-12-04（J=-4.05），短期趋势线上穿多空线；"
+            "主力在2025-10-28~2025-12-04构建整理平台（收盘62.35）；"
+            "2025-12-05放量大阳突破整理区高点，涨幅+17.02%，vol/10dAvg=3.02x，且B2前一日即B1。"
         ),
     },
-    # ── 后续持续补充案例，格式与上方保持一致 ──
-    # {
-    #     "id":                  "b2_case_002",
-    #     "name":                "待补充",
-    #     "code":                "",
-    #     "b1_date":             "",
-    #     "b2_date":             "",
-    #     "consolidation_start": "",
-    #     "consolidation_end":   "",
-    #     "lookback_days":       40,
-    #     "tags":                [],
-    #     "description":         "",
-    # },
+    {
+        "id":                   "b2_case_002",
+        "name":                 "晶科科技",
+        "code":                 "601778",
+        "pattern_type":         "post_crash_rebuild",
+        "b2_date":              "2025-08-07",   # B2突破日（实盘+4.52%，vol/10dAvg=2.31x）
+        "lookback_days":        60,             # 灾后重建型窗口较大
+        "tags":                 ["主板", "光伏", "灾后重建"],
+        "description": (
+            "晶科科技601778：灾后重建型经典案例；前期大幅下跌后"
+            "2025-06-17放量反转大阳，经整理后2025-08-07放量突破，"
+            "B2涨幅+4.52%，vol/10dAvg=2.31x，vol/prevDay=3.18x。"
+        ),
+    },
+    {
+        "id":                   "b2_case_003",
+        "name":                 "四会富仕",
+        "code":                 "300852",
+        "pattern_type":         "parallel_artillery",
+        "b2_date":              "2025-09-10",   # B2突破日（实盘+4.95%）
+        "lookback_days":        40,
+        "tags":                 ["创业板", "电子", "平行重炮"],
+        "description": (
+            "四会富仕300852：平行重炮型经典案例；多根收盘价相近的大阳线"
+            "集中攻击后整理，2025-09-10放量突破，"
+            "B2涨幅+4.95%（均量因前大阳虚高，实质放量明确）。"
+        ),
+    },
 ]
 
 # ─────────────────── B2 图形相似度匹配案例库 ─────────────────────────────────
@@ -271,13 +286,13 @@ _b2_pattern_yaml_config = _yaml_root_config.get('B2PatternMatch', {})
 B2_PATTERN_CASES = [
     {
         "id": "b2p_case_001",
-        "name": "星环科技",
-        "code": "688663",
-        "b2_date": "2025-12-15",       # B2突破日（特征窗口的右边界）
+        "name": "星环科技-U",
+        "code": "688031",
+        "b2_date": "2025-12-05",       # B2突破日（实盘+17.02%，vol/10dAvg=3.02x）
         "lookback_days": 40,            # 向左回溯40天，覆盖整理期+B1信号期
         "pattern_type": "sideways_breakout",
         "tags": ["科创板", "大数据", "横盘突破"],
-        "description": "横盘突破型标准案例：整理期2025-10-28~2025-12-04，B1=2025-12-14，B2=2025-12-15",
+        "description": "横盘突破型标准案例：整理期2025-10-28~2025-12-04，B1=2025-12-04，B2=2025-12-05，涨幅+17.02%",
     },
     {
         "id": "b2p_case_002",
@@ -329,6 +344,7 @@ B2_PATTERN_TOP_N = _b2_pattern_yaml_config.get('top_n_results', 20)
 # 可在 config/strategy_params.yaml 的 B2Strategy 节中覆盖
 B2_DEFAULT_PARAMS = {
     "b1_kdj_threshold":      _b2_yaml_config.get("b1_kdj_threshold", 13),
+    "b1_kdj_relaxed_threshold": _b2_yaml_config.get("b1_kdj_relaxed_threshold", 20),
     "b1_close_near_pct":     _b2_yaml_config.get("b1_close_near_pct", 2.0),
     "b1_pre_lookback":       _b2_yaml_config.get("b1_pre_lookback", 20),
     "b1_big_up_pct":         _b2_yaml_config.get("b1_big_up_pct", 5.0),
@@ -339,17 +355,21 @@ B2_DEFAULT_PARAMS = {
     "vol_multiplier":        _b2_yaml_config.get("vol_multiplier", 1.5),
     "b2_min_pct":           _b2_yaml_config.get("b2_min_pct", 4.0),
     "b2_hold_days":         _b2_yaml_config.get("b2_hold_days", 3),
+    "b2_must_follow_b1_days": _b2_yaml_config.get("b2_must_follow_b1_days", 1),
     "damage_lookback_days": _b2_yaml_config.get("damage_lookback_days", 50),
     "damage_min_drop_pct":  _b2_yaml_config.get("damage_min_drop_pct", 18.0),
     "reversal_min_pct":     _b2_yaml_config.get("reversal_min_pct", 6.0),
     "reversal_vol_multiplier": _b2_yaml_config.get("reversal_vol_multiplier", 1.8),
     "rebuild_window_days":  _b2_yaml_config.get("rebuild_window_days", 12),
-    "parallel_lookback_days": _b2_yaml_config.get("parallel_lookback_days", 25),
+    "parallel_lookback_days": _b2_yaml_config.get("parallel_lookback_days", 30),
     "parallel_big_up_pct":  _b2_yaml_config.get("parallel_big_up_pct", 4.0),
     "parallel_big_up_min_count": _b2_yaml_config.get("parallel_big_up_min_count", 2),
     "parallel_big_up_max_count": _b2_yaml_config.get("parallel_big_up_max_count", 4),
-    "parallel_close_band_pct": _b2_yaml_config.get("parallel_close_band_pct", 2.0),
+    "parallel_close_band_pct": _b2_yaml_config.get("parallel_close_band_pct", 5.0),
     "red_fat_green_vol_ratio": _b2_yaml_config.get("red_fat_green_vol_ratio", 0.65),
     "b1_to_b2_transition_days": _b2_yaml_config.get("b1_to_b2_transition_days", 15),
+    "anchor_candle_min_pct":      _b2_yaml_config.get("anchor_candle_min_pct", 8.0),
+    "anchor_candle_vol_multiplier": _b2_yaml_config.get("anchor_candle_vol_multiplier", 2.0),
+    "anchor_candle_lookback":     _b2_yaml_config.get("anchor_candle_lookback", 60),
     "export_txt_dir":        _b2_yaml_config.get("export_txt_dir", "data/txt/B2-match"),
 }

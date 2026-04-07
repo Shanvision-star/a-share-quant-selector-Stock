@@ -97,6 +97,7 @@ def main():
     parser.add_argument('--b2-match', action='store_true', help='启用B2突破图形匹配（规则扫描版）')
     parser.add_argument('--b2-today', action='store_true', help='当日收盘B2选股：仅输出当日触发B2信号的股票')
     parser.add_argument('--b2-pattern-match', action='store_true', help='启用B2完美图形匹配（规则扫描+相似度打分，参考B1逻辑）')
+    parser.add_argument('--no-update', action='store_true', help='跳过数据更新，直接使用本地已有数据（网络不可用时使用）')
     parser.add_argument('--lookback-days', type=int, default=None, help='回看天数')
     parser.add_argument('--backtest-days', type=int, default=3, help='回溯天数（连续K小于阈值的天数）')
     parser.add_argument('--k-threshold', type=float, default=20.0, help='K值阈值')
@@ -139,7 +140,8 @@ def main():
         elif args.b2_today:
             quant.run_with_b2_today(
                 max_stocks=args.max_stocks,
-                max_workers=args.workers
+                max_workers=args.workers,
+                skip_update=args.no_update,
             )
         elif args.b2_pattern_match:
             min_sim = args.min_similarity if args.min_similarity is not None else 55.0

@@ -1007,11 +1007,11 @@ class QuantSystem:
         start_ts = _time.time()
 
         def _progress(done, total, code):
-            pct  = done * 100 // total
+            pct     = done * 100 // total
             elapsed = _time.time() - start_ts
-            speed = done / elapsed if elapsed > 0 else 0
-            eta   = (total - done) / speed if speed > 0 else 0
-            bar   = "#" * (pct // 5) + "-" * (20 - pct // 5)
+            speed   = done / elapsed if elapsed > 0 else 0
+            eta     = (total - done) / speed if speed > 0 else 0
+            bar     = "#" * (pct // 5) + "-" * (20 - pct // 5)
             try:
                 print(
                     f"\r[B2] [{bar}] {pct:3d}% {done}/{total} "

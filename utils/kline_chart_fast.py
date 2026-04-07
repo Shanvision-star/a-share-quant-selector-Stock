@@ -58,8 +58,20 @@ def generate_kline_chart_fast(
     df_plot = df.copy()
     df_plot['date'] = pd.to_datetime(df_plot['date'])
     df_plot = df_plot.sort_values('date').reset_index(drop=True)
-    
-    # 只取最近20天
+
+    # 若双线尚未计算（B2策略仅存原始CSV），在截取前用全量数据计算
+    # MA114 需要至少114行才能正确收敛
+    if 'close' in df_plot.columns and len(df_plot) >= 20:
+        if 'short_term_trend' not in df_plot.columns or 'bull_bear_line' not in df_plot.columns:
+            ema10 = df_plot['close'].ewm(span=10, adjust=False, min_periods=1).mean()
+            df_plot['short_term_trend'] = ema10.ewm(span=10, adjust=False, min_periods=1).mean()
+            ma14  = df_plot['close'].rolling(window=14,  min_periods=1).mean()
+            ma28  = df_plot['close'].rolling(window=28,  min_periods=1).mean()
+            ma57  = df_plot['close'].rolling(window=57,  min_periods=1).mean()
+            ma114 = df_plot['close'].rolling(window=114, min_periods=1).mean()
+            df_plot['bull_bear_line'] = (ma14 + ma28 + ma57 + ma114) / 4
+
+    # 只取最近M天（双线已基于全量数据计算好）
     M = params.get('M', 20)
     if len(df_plot) > M:
         df_plot = df_plot.tail(M).reset_index(drop=True)

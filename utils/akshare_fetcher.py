@@ -793,7 +793,10 @@ class AKShareFetcher:
         market_close_time = datetime.strptime("15:00", "%H:%M").time()
         is_after_market_close = current_time >= market_close_time
         target_date = today if is_after_market_close else today - timedelta(days=1)
-        while not is_after_market_close and target_date.weekday() >= 5:
+        # 无论收盘前后，均需回滚到最近的交易日（周一~周五）
+        # 注意：无法自动识别法定节假日，节假日当天运行时 target_date 可能仍是节假日，
+        # 但 API 不会返回该日数据，验证阶段会检测到并跳过缓存写入，不影响正确性。
+        while target_date.weekday() >= 5:  # 5=Saturday, 6=Sunday
             target_date -= timedelta(days=1)
         target_date_str = target_date.strftime('%Y-%m-%d')
 
@@ -834,7 +837,8 @@ class AKShareFetcher:
                 latest_date = pd.to_datetime(df_quick.iloc[0]['date']).date()
                 if latest_date < target_date:
                     days_needed = (target_date - latest_date).days
-                    stocks_to_update.append((code, min(days_needed + 2, 60)))
+                    # 上限提升至 120，避免长假/长期未更新股票补不全
+                    stocks_to_update.append((code, min(days_needed + 5, 120)))
             except:
                 stocks_to_update.append((code, 30))
 
@@ -915,7 +919,18 @@ class AKShareFetcher:
         #   实际数据永远停留在旧日期，形成"缓存永久误判"。
         # 【修复方案】写缓存前抽样验证：>=50% 的样本 CSV 首行日期 >= target_date 才写入。
         if all_done:
-            _verify_codes = existing_stocks[:min(20, len(existing_stocks))]
+            # 分层抽样：从 00/30/60/68 各前缀均匀取样，避免只抽 000xxx 前20只
+            _prefix_buckets = {}
+            for _sc in existing_stocks:
+                _pfx = _sc[:2]
+                _prefix_buckets.setdefault(_pfx, []).append(_sc)
+            _verify_codes = []
+            for _pfx in sorted(_prefix_buckets):
+                _bucket = _prefix_buckets[_pfx]
+                # 每个前缀最多取5只，均匀分散
+                _step = max(1, len(_bucket) // 5)
+                _verify_codes.extend(_bucket[::_step][:5])
+            _verify_codes = _verify_codes[:30]  # 最多30只
             _reached = 0
             for _vc in _verify_codes:
                 try:

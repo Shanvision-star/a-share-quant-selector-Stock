@@ -71,6 +71,7 @@ class BowlReboundStrategy(BaseStrategy):
         计算碗口反弹策略所需的所有指标
         """
         result = df.copy()
+        result = result.loc[:, ~result.columns.duplicated()].copy()
 
         # 1. 统一计算知行双线和位置状态，避免策略与B1定义分叉
         zhixing_df = calculate_zhixing_state(
@@ -101,8 +102,8 @@ class BowlReboundStrategy(BaseStrategy):
         # 阳线：收盘价 > 开盘价
         result['positive_candle'] = result['close'] > result['open']
         
-        # 总市值达标（优先从实时数据获取）
-        result['market_cap_ok'] = self._check_market_cap_realtime(result)
+        # 总市值达标（选股阶段禁止逐股实时请求，否则会把本地选股变成网络瓶颈）
+        result['market_cap_ok'] = self._check_market_cap(result)
         
         # 关键K线 = 放量 AND 阳线 AND 市值达标
         result['key_candle'] = (
@@ -120,53 +121,24 @@ class BowlReboundStrategy(BaseStrategy):
         
         return result
     
-    def _check_market_cap_realtime(self, df) -> pd.Series:
+    def _check_market_cap(self, df) -> pd.Series:
         """
-        检查总市值是否达标
-        优先从CSV数据获取，如果异常则从实时数据获取
+        检查总市值是否达标。
+
+        选股阶段只使用本地数据，避免逐股实时请求导致整体阻塞。
+        优先使用 market_cap 列；若缺失，则退化为不过滤，保证流程稳定与速度。
         """
-        import akshare as ak
-        
-        # 尝试从CSV数据获取
+        if df.empty:
+            return pd.Series(dtype=bool)
+
         if 'market_cap' in df.columns:
-            # 检查数据是否合理（单位应该是元）
-            sample_cap = df['market_cap'].dropna().iloc[-1] if not df['market_cap'].dropna().empty else 0
-            
-            # 如果市值在合理范围（10亿到1000亿之间），使用CSV数据
-            if 1e9 < sample_cap < 1e11:
-                return df['market_cap'] > self.params['CAP']
-        
-        # 从实时数据获取总市值
-        try:
-            # 从股票代码推断市场
-            stock_code = str(df['code'].iloc[0]) if 'code' in df.columns else None
-            
-            if stock_code:
-                # 获取实时数据
-                spot_df = ak.stock_individual_info_em(symbol=stock_code)
-                if not spot_df.empty:
-                    # 查找总市值
-                    total_cap_row = spot_df[spot_df['item'] == '总市值']
-                    if not total_cap_row.empty:
-                        total_cap = total_cap_row['value'].values[0]
-                        # 转换为数字（可能是字符串）
-                        if isinstance(total_cap, str):
-                            # 处理"33.19亿"格式
-                            if '亿' in total_cap:
-                                total_cap = float(total_cap.replace('亿', '')) * 1e8
-                            else:
-                                total_cap = float(total_cap)
-                        
-                        # 创建 Series
-                        return pd.Series([total_cap > self.params['CAP']] * len(df), index=df.index)
-        except Exception as e:
-            # 如果实时获取失败，尝试用收盘价估算
-            if 'close' in df.columns:
-                # 假设总股本2亿股，估算市值
-                estimated_cap = df['close'] * 2e8  # 粗略估计
-                return estimated_cap > self.params['CAP']
-        
-        # 默认返回True（不过滤）
+            market_cap = pd.to_numeric(df['market_cap'], errors='coerce')
+            valid_market_cap = market_cap.dropna()
+            if not valid_market_cap.empty:
+                sample_cap = valid_market_cap.iloc[-1]
+                if sample_cap > 1e8:
+                    return market_cap > self.params['CAP']
+
         return pd.Series([True] * len(df), index=df.index)
     
     def select_stocks(self, df, stock_name='') -> list:

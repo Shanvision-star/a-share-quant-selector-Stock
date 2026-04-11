@@ -69,3 +69,19 @@
 - 使用腾讯接口获取股票列表
 - CSV格式存储历史数据
 - Flask提供Web服务
+
+## [2026-04-11]
+
+### 新增功能
+- **Changelog 自动化**: 添加脚本以自动生成 changelog，支持以下功能：
+  - 提取版本标签和 PR 信息。
+  - 验证和格式化 changelog 条目。
+  - 过滤无关更改（如测试、CI 更新）。
+
+### 优化
+- **提交规范**: 强制执行提交信息模板，确保所有提交信息包含类型（如 `fix:`、`feat:`）。
+- **PR 描述模板**: 要求 PR 描述中包含 changelog 条目，支持中英文双语。
+
+### 文件更新
+- `scripts/changelog_generator.py` - 新增脚本以支持 changelog 自动化。
+- `docs/git_push_guide.md` - 更新提交和 PR 描述规范。

@@ -13,6 +13,11 @@ import random
 
 # ===================== 新增：并发库 =====================
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+
+# 市值缓存：每周刷新一次，避免每次数据更新都逐股调用 AKShare 实时接口
+_MARKET_CAP_CACHE_EXPIRY_DAYS = 7
+_market_cap_cache_lock = threading.Lock()
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -91,7 +96,44 @@ class AKShareFetcher:
         self.csv_manager = CSVManager(data_dir)
         self.full_data_dir = Path(data_dir)
         self.stock_names_file = Path(data_dir) / 'stock_names.json'
+        self._market_cap_cache_file = Path(data_dir) / 'market_cap_weekly_cache.json'
+        self._market_cap_cache: dict = {}   # {code: value_in_yuan}
+        self._market_cap_cache_date: str = ''
+        self._load_market_cap_weekly_cache()
     
+    # ── 市值周缓存 ──────────────────────────────────────────────────
+
+    def _load_market_cap_weekly_cache(self):
+        """从文件加载市值周缓存（线程安全）。"""
+        if not self._market_cap_cache_file.exists():
+            return
+        try:
+            with _market_cap_cache_lock:
+                with open(self._market_cap_cache_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                saved_date = data.get('date', '')
+                if saved_date:
+                    age = (datetime.now() - datetime.strptime(saved_date, '%Y-%m-%d')).days
+                    if age <= _MARKET_CAP_CACHE_EXPIRY_DAYS:
+                        self._market_cap_cache = data.get('caps', {})
+                        self._market_cap_cache_date = saved_date
+        except Exception:
+            pass  # 文件损坏时忽略，下次重新写入
+
+    def _save_market_cap_weekly_cache(self):
+        """将内存中的市值缓存写回文件（线程安全）。"""
+        try:
+            with _market_cap_cache_lock:
+                with open(self._market_cap_cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(
+                        {'date': self._market_cap_cache_date, 'caps': self._market_cap_cache},
+                        f, ensure_ascii=False
+                    )
+        except Exception:
+            pass
+
+    # ── 本地股票名称 ──────────────────────────────────────────────────
+
     def _load_local_stock_names(self):
         """从本地文件加载股票名称"""
         if self.stock_names_file.exists():
@@ -474,7 +516,18 @@ class AKShareFetcher:
             return None
     
     def _get_realtime_market_cap(self, stock_code):
-        """从实时数据获取总市值"""
+        """从实时数据获取总市值（带周级缓存，7天内命中则不发起网络请求）"""
+        # --- 检查周缓存 ---
+        with _market_cap_cache_lock:
+            cached_val = self._market_cap_cache.get(stock_code)
+            cache_date = self._market_cap_cache_date
+        if cached_val is not None and cache_date:
+            age_days = (datetime.now() - datetime.strptime(cache_date, '%Y-%m-%d')).days
+            if age_days <= _MARKET_CAP_CACHE_EXPIRY_DAYS:
+                return cached_val
+
+        # --- 缓存未命中或已过期，发起实时请求 ---
+        market_cap = None
         try:
             import akshare as ak
             spot_df = ak.stock_individual_info_em(symbol=stock_code)
@@ -484,13 +537,23 @@ class AKShareFetcher:
                     total_cap = total_cap_row['value'].values[0]
                     if isinstance(total_cap, str):
                         if '亿' in total_cap:
-                            return float(total_cap.replace('亿', '')) * 1e8
+                            market_cap = float(total_cap.replace('亿', '')) * 1e8
                         else:
-                            return float(total_cap)
-                    return float(total_cap)
+                            market_cap = float(total_cap)
+                    else:
+                        market_cap = float(total_cap)
         except Exception as e:
             print(f"  获取总市值失败: {e}")
-        return None
+
+        # --- 写入缓存 ---
+        if market_cap is not None:
+            today = datetime.now().strftime('%Y-%m-%d')
+            with _market_cap_cache_lock:
+                self._market_cap_cache[stock_code] = market_cap
+                self._market_cap_cache_date = today
+            self._save_market_cap_weekly_cache()
+
+        return market_cap
     
     def _generate_mock_data(self, stock_code, years=6):
         """生成模拟数据（当网络不可用时使用）"""
@@ -588,10 +651,11 @@ class AKShareFetcher:
         # 降级: 使用模拟数据
         return self._generate_mock_data(stock_code, years)
     
-    def fetch_stock_update(self, stock_code, days=10):
+    def fetch_stock_update(self, stock_code, days=10, prefetched_market_cap=None):
         """
         抓取近期数据用于增量更新
         优化：直接指定天数，避免计算误差
+        :param prefetched_market_cap: 预先批量获取的市值，传入则跳过每股单独API调用（大幅提速）
         """
         try:
             import requests
@@ -648,12 +712,15 @@ class AKShareFetcher:
                 if records:
                     df = pd.DataFrame(records)
                     df['date'] = pd.to_datetime(df['date'])
-                    # 从实时数据获取总市值
-                    market_cap = self._get_realtime_market_cap(stock_code)
-                    if market_cap:
-                        df['market_cap'] = market_cap
+                    # 优先用预先批量获取的市值，避免每股单独调用（性能瓶颈）
+                    if prefetched_market_cap is not None:
+                        df['market_cap'] = prefetched_market_cap
                     else:
-                        df['market_cap'] = abs(hash(stock_code)) % 500 * 100000000 + 5000000000
+                        market_cap = self._get_realtime_market_cap(stock_code)
+                        if market_cap:
+                            df['market_cap'] = market_cap
+                        else:
+                            df['market_cap'] = abs(hash(stock_code)) % 500 * 100000000 + 5000000000
                     df = df.sort_values('date', ascending=False)
                     return df
             
@@ -777,9 +844,15 @@ class AKShareFetcher:
             print(f"提示: 再次运行 init 命令可跳过失败股票，专注于成功获取的数据")
 
     # ===================== 优化版：并发更新 + 实时进度显示 =====================
-    def daily_update(self, max_stocks=None):
-        """每日增量更新 - 多线程并发版 + 实时进度显示"""
-        from datetime import datetime
+    def daily_update(self, max_stocks=None, date=None):
+        """每日增量更新 - 多线程并发版 + 实时进度显示
+        优化要点：
+          1. 先批量获取全市场市值（1次API调用），替代原来每股单独调用（1840次）
+          2. 只更新日期落后的股票，跳过已是最新的股票
+          3. 超时上限从600s提升到1800s
+        :param max_stocks: 限制更新股票数量（测试用）
+        :param date: 指定目标日期字符串(YYYY-MM-DD)，None表示自动推断
+        """
         existing_stocks = self.csv_manager.list_all_stocks()
         if not existing_stocks:
             print("没有找到已有数据，请先执行 init")
@@ -787,187 +860,191 @@ class AKShareFetcher:
         if max_stocks:
             existing_stocks = existing_stocks[:max_stocks]
 
-        now = datetime.now()
-        today = now.date()
-        current_time = now.time()
-        market_close_time = datetime.strptime("15:00", "%H:%M").time()
-        is_after_market_close = current_time >= market_close_time
-        target_date = today if is_after_market_close else today - timedelta(days=1)
-        # 无论收盘前后，均需回滚到最近的交易日（周一~周五）
-        # 注意：无法自动识别法定节假日，节假日当天运行时 target_date 可能仍是节假日，
-        # 但 API 不会返回该日数据，验证阶段会检测到并跳过缓存写入，不影响正确性。
-        while target_date.weekday() >= 5:  # 5=Saturday, 6=Sunday
-            target_date -= timedelta(days=1)
+        # ── 推算目标交易日 ──────────────────────────────────────────────
+        if date is None:
+            now = datetime.now()
+            today = now.date()
+            from datetime import time as dt_time
+            is_after_close = now.time() >= dt_time(15, 0)
+            target_date = today if is_after_close else today - timedelta(days=1)
+            while target_date.weekday() >= 5:
+                target_date -= timedelta(days=1)
+            if not is_after_close and not max_stocks:
+                print(f"⚠️ 未收盘，仍然检查是否缺失最近交易日数据 {target_date.strftime('%Y-%m-%d')}")
+        else:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+
         target_date_str = target_date.strftime('%Y-%m-%d')
 
-        if not is_after_market_close and not max_stocks:
-            print(f"⚠️ 未收盘，仍然检查是否缺失最近交易日数据 {target_date_str}")
-
-        # 检查缓存
+        # ── 检查缓存 ────────────────────────────────────────────────────
         update_cache_file = self.full_data_dir / '.update_cache.json'
         update_cache = {}
         if update_cache_file.exists():
             try:
                 with open(update_cache_file, 'r') as f:
                     update_cache = json.load(f)
-            except:
+            except Exception:
                 pass
 
-        cache_date = update_cache.get('last_update_date')
-        if cache_date == target_date_str and not max_stocks:
-            if is_after_market_close:
-                print("✓ 今日已更新")
-            else:
-                print(f"✓ 已同步到最近交易日 {target_date_str}")
+        if update_cache.get('last_update_date') == target_date_str and not max_stocks:
+            print("✓ 今日已更新")
             return
 
-        # 筛选需要更新的股票
-        stocks_to_update = []
+        # ── 只更新日期落后的股票（跳过已是最新的，节省时间）───────────
         print("  检查更新状态...")
+        stocks_to_update = []
         for code in existing_stocks:
-            path = self.csv_manager.get_stock_path(code)
-            if not path.exists():
-                stocks_to_update.append((code, 30))
-                continue
             try:
-                df_quick = pd.read_csv(path, nrows=1)
-                if df_quick.empty:
-                    stocks_to_update.append((code, 30))
+                df = self.csv_manager.read_stock(code)
+                if df is None or df.empty:
+                    stocks_to_update.append(code)
                     continue
-                latest_date = pd.to_datetime(df_quick.iloc[0]['date']).date()
+                latest_date = pd.to_datetime(df.iloc[0]['date']).date()
                 if latest_date < target_date:
-                    days_needed = (target_date - latest_date).days
-                    # 上限提升至 120，避免长假/长期未更新股票补不全
-                    stocks_to_update.append((code, min(days_needed + 5, 120)))
-            except:
-                stocks_to_update.append((code, 30))
+                    stocks_to_update.append(code)
+            except Exception:
+                stocks_to_update.append(code)
 
-        need_update = len(stocks_to_update)
-        print(f"  需要更新：{need_update} 只")
-
-        if need_update == 0:
-            print("✅ 所有股票已是最新数据")
+        if not stocks_to_update:
+            print(f"✓ 所有股票已是最新数据 ({target_date_str})")
             update_cache['last_update_date'] = target_date_str
             with open(update_cache_file, 'w') as f:
                 json.dump(update_cache, f)
             return
 
-        # 批量市值
+        print(f"  需要更新：{len(stocks_to_update)} 只")
+
+        # ── 一次性批量获取全市场市值（避免1840次单独API调用）─────────
+        print("\n正在批量获取市值数据（一次性）...")
         market_cap_map = {}
         try:
             import akshare as ak
             spot_df = ak.stock_zh_a_spot_em()
             for _, row in spot_df.iterrows():
                 code = str(row['代码']).zfill(6)
-                cap = row['总市值']
+                cap = row.get('总市值', 0)
                 if pd.notna(cap) and cap > 0:
-                    market_cap_map[code] = int(cap * 1e8) if cap < 1e10 else int(cap)
-        except:
-            pass
+                    if cap < 1e10:
+                        cap = int(cap * 1e8)
+                    else:
+                        cap = int(cap)
+                    market_cap_map[code] = cap
+            print(f"  ✓ 批量市值获取成功: {len(market_cap_map)} 只")
+        except Exception as e:
+            print(f"  ⚠️ 批量市值获取失败: {e}，K线数据仍会正常更新")
 
-        # ===================== 多线程并发更新 + 实时进度 =====================
-        print(f"\n开始并发更新 {need_update} 只股票...")
-        print("=" * 70)
-
-        total = need_update
-        completed = 0
+        # ── 并发更新 K 线数据 ──────────────────────────────────────────
+        days_to_fetch = 10
+        total = len(stocks_to_update)
         updated = 0
         failed = 0
+        completed = 0
+        TIMEOUT_SECONDS = 1800  # 30分钟，替代原600s
+        import threading
+        lock = threading.Lock()
+        start_time = time.time()
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            future_map = {}
-            for code, days in stocks_to_update:
-                fut = executor.submit(self._update_single_stock, code, days, market_cap_map)
-                future_map[fut] = (code, days)
+        print(f"\n开始并发更新 {total} 只股票...")
+        all_done = False
+        try:
+            with ThreadPoolExecutor(max_workers=16) as executor:
+                futures = {
+                    executor.submit(self._update_single_stock, code, days_to_fetch, market_cap_map): code
+                    for code in stocks_to_update
+                }
+                try:
+                    for future in as_completed(futures, timeout=TIMEOUT_SECONDS):
+                        code = futures[future]
+                        try:
+                            result = future.result()
+                        except Exception:
+                            result = False
+                        with lock:
+                            completed += 1
+                            if result:
+                                updated += 1
+                            else:
+                                failed += 1
+                            pct = completed / total * 100
+                            print(
+                                f"\r进度: {completed:4d}/{total} | {pct:5.1f}% | 更新: {updated} | 失败: {failed:3d} | 代码:{code}",
+                                end='', flush=True
+                            )
+                    all_done = True
+                except TimeoutError:
+                    elapsed = time.time() - start_time
+                    print(f"\n[更新] 超时({elapsed:.0f}s)，已完成 {completed}/{total}，取消剩余任务，继续使用本地数据...")
+        except Exception as e:
+            print(f"\n[更新] 并发执行异常: {e}")
 
-            all_done = False
-            try:
-                # 每只股票最多等 20 秒，总超时 = 只数 × 20s（但上限 10 分钟）
-                per_stock_timeout = 20
-                total_timeout = min(total * per_stock_timeout, 600)
-                for future in as_completed(future_map, timeout=total_timeout):
-                    code, _ = future_map[future]
-                    completed += 1
+        print()  # 换行
 
-                    try:
-                        ok = future.result()
-                        if ok:
-                            updated += 1
-                        else:
-                            failed += 1
-                    except Exception:
-                        failed += 1
-
-                    # 实时进度打印
-                    percent = (completed / total) * 100
-                    print(f"进度: {completed:4d}/{total:<4d} | {percent:5.1f}% | 更新:{updated:4d} | 失败:{failed:4d} | 代码:{code}")
-                all_done = True  # 正常走完所有 future，才标记完成
-            except Exception as _e:
-                # TimeoutError 或 KeyboardInterrupt：取消剩余任务，用已有数据继续
-                if isinstance(_e, KeyboardInterrupt):
-                    print(f"\n[更新] 用户中断，已完成 {completed}/{total}，取消剩余任务，继续使用本地数据...")
-                else:
-                    print(f"\n[更新] 超时({total_timeout}s)，已完成 {completed}/{total}，取消剩余任务，继续使用本地数据...")
-                for f in future_map:
-                    f.cancel()
-
-        # 只有全量完成 + 抽样验证实际数据已到达目标日期，才写入缓存。
-        # 【缺陷修复】原逻辑仅以 all_done=True 为条件即写缓存：
-        #   若 AKShare API 存在发布延迟（节后首日/盘后数据未及时发布），
-        #   update_single_stock 会"成功"地把旧数据写入 CSV，
-        #   all_done=True 后缓存被写为 target_date，下次启动直接跳过更新，
-        #   实际数据永远停留在旧日期，形成"缓存永久误判"。
-        # 【修复方案】写缓存前抽样验证：>=50% 的样本 CSV 首行日期 >= target_date 才写入。
+        # ── 完成后抽样验证，决定是否写缓存 ─────────────────────────────
         if all_done:
-            # 分层抽样：从 00/30/60/68 各前缀均匀取样，避免只抽 000xxx 前20只
-            _prefix_buckets = {}
-            for _sc in existing_stocks:
+            _prefix_buckets: dict = {}
+            for _sc in stocks_to_update:
                 _pfx = _sc[:2]
                 _prefix_buckets.setdefault(_pfx, []).append(_sc)
             _verify_codes = []
             for _pfx in sorted(_prefix_buckets):
                 _bucket = _prefix_buckets[_pfx]
-                # 每个前缀最多取5只，均匀分散
                 _step = max(1, len(_bucket) // 5)
                 _verify_codes.extend(_bucket[::_step][:5])
-            _verify_codes = _verify_codes[:30]  # 最多30只
+            _verify_codes = _verify_codes[:30]
             _reached = 0
             for _vc in _verify_codes:
                 try:
-                    _vp = self.csv_manager.get_stock_path(_vc)
-                    _vdf = pd.read_csv(_vp, nrows=1)
+                    _vpath = self.csv_manager.get_stock_path(_vc)
+                    _vdf = pd.read_csv(_vpath, nrows=1)
                     if not _vdf.empty:
                         _vd = pd.to_datetime(_vdf.iloc[0]['date']).date()
                         if _vd >= target_date:
                             _reached += 1
                 except Exception:
                     pass
-            _threshold = max(1, int(len(_verify_codes) * 0.5))  # 至少 50% 样本达到目标日
+            _threshold = max(1, int(len(_verify_codes) * 0.5))
             if _reached >= _threshold:
                 update_cache['last_update_date'] = target_date_str
                 with open(update_cache_file, 'w') as f:
                     json.dump(update_cache, f)
+                print(f"[更新] 抽样验证通过 ({_reached}/{len(_verify_codes)})，缓存已写入")
             else:
                 print(
-                    f"[更新] 抽样验证：{_reached}/{len(_verify_codes)} 只样本到达 {target_date_str}，"
-                    f"低于 50% 阈值，暂不写缓存，下次启动将重新检查（可能是数据发布延迟）"
+                    f"[更新] 抽样验证：{_reached}/{len(_verify_codes)} 只到达 {target_date_str}，"
+                    f"低于50%阈值，暂不写缓存，下次启动将重新检查（可能是数据发布延迟）"
                 )
         else:
-            print(f"[更新] 未全量完成，不写入缓存，下次启动将重新检查并补全剩余股票")
+            print(f"[更新] 未全量完成，不写入缓存，下次启动将重新检查并补全剩余 {total - completed} 只")
 
         print("=" * 70)
         print(f"✅ 并发更新完成！总计：{total} 只 | 成功：{updated} 只 | 失败：{failed} 只")
 
     def _update_single_stock(self, code, days_to_fetch, market_cap_map):
-        """单只股票更新任务（给线程池调用）"""
+        """单只股票更新任务（给线程池调用）
+        传入预先批量获取的 market_cap_map，跳过每股单独 API 调用，大幅提速。
+        """
         try:
-            existing_df = self.csv_manager.read_stock(code)
-            df = self.fetch_stock_update(code, days=days_to_fetch)
+            prefetched_cap = market_cap_map.get(code)  # None if not in map
+            df = self.fetch_stock_update(code, days=days_to_fetch,
+                                         prefetched_market_cap=prefetched_cap)
             if df is not None and not df.empty:
-                if code in market_cap_map:
-                    df['market_cap'] = market_cap_map[code]
                 self.csv_manager.update_stock(code, df)
                 return True
-        except:
+        except Exception:
             pass
         return False
+
+
+from datetime import datetime, timedelta
+
+def get_last_trading_day():
+    """获取最近的交易日"""
+    today = datetime.now()
+    while today.weekday() >= 5:  # 周六、周日
+        today -= timedelta(days=1)
+    return today.strftime("%Y-%m-%d")
+
+def is_trading_day(date_str):
+    """检查是否为交易日"""
+    date = datetime.strptime(date_str, "%Y-%m-%d")
+    return date.weekday() < 5  # 周一到周五为交易日

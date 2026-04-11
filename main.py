@@ -24,6 +24,7 @@ import argparse
 import platform
 from pathlib import Path
 from datetime import datetime
+from utils.akshare_fetcher import get_last_trading_day, is_trading_day
 
 # ===================== 系统路径初始化 =====================
 # 获取当前文件所在目录，作为项目根目录
@@ -97,7 +98,6 @@ def main():
     parser.add_argument('--b2-match', action='store_true', help='启用B2突破图形匹配（规则扫描版）')
     parser.add_argument('--b2-today', action='store_true', help='当日收盘B2选股：仅输出当日触发B2信号的股票')
     parser.add_argument('--b2-pattern-match', action='store_true', help='启用B2完美图形匹配（规则扫描+相似度打分，参考B1逻辑）')
-    parser.add_argument('--no-update', action='store_true', help='跳过数据更新，直接使用本地已有数据（网络不可用时使用）')
     parser.add_argument('--lookback-days', type=int, default=None, help='回看天数')
     parser.add_argument('--backtest-days', type=int, default=3, help='回溯天数（连续K小于阈值的天数）')
     parser.add_argument('--k-threshold', type=float, default=20.0, help='K值阈值')
@@ -117,6 +117,25 @@ def main():
 
     os.chdir(project_root)
     quant = QuantSystem(args.config)
+
+    # 检查未收盘状态和数据同步逻辑
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+
+    if now.hour < 15:
+        print("⚠️ 当前时间尚未收盘，检查最近交易日数据...")
+        last_trading_day = get_last_trading_day()
+        if last_trading_day != today:
+            print(f"⚠️ 最近交易日数据未更新：{last_trading_day}，开始更新...")
+            quant.update_data(date=last_trading_day)
+        else:
+            print("✅ 最近交易日数据已更新，无需操作。")
+    else:
+        print("✅ 当前已收盘，开始正常流程。")
+
+    # 非交易日提示，但不跳过选股（对最近交易日数据执行策略仍有意义）
+    if not is_trading_day(today):
+        print(f"ℹ️ 今天 {today} 不是交易日，将基于最近交易日数据执行选股任务。")
 
     # 命令路由
     if args.command == 'init':
@@ -140,8 +159,7 @@ def main():
         elif args.b2_today:
             quant.run_with_b2_today(
                 max_stocks=args.max_stocks,
-                max_workers=args.workers,
-                skip_update=args.no_update,
+                max_workers=args.workers
             )
         elif args.b2_pattern_match:
             min_sim = args.min_similarity if args.min_similarity is not None else 55.0

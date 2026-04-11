@@ -70,6 +70,59 @@ class QuantSystem:
             target_date -= timedelta(days=1)
         return target_date
 
+    def check_data_freshness(self, sample_size=50, stale_threshold_pct=30):
+        """策略执行前校验数据新鲜度。
+        抽样检查 CSV 首行日期，若过期比例超过阈值则返回 False 并打印警告。
+        :param sample_size: 抽样股票数量
+        :param stale_threshold_pct: 过期比例阈值（百分比），超过则认为数据不可信
+        :returns: (is_fresh: bool, stale_count: int, total_checked: int)
+        """
+        import pandas as pd
+        expected_date = self._get_expected_latest_trade_date()
+        all_stocks = self.csv_manager.list_all_stocks()
+        if not all_stocks:
+            return False, 0, 0
+
+        # 分层抽样：确保各板块均匀覆盖
+        import random
+        buckets: dict = {}
+        for code in all_stocks:
+            buckets.setdefault(code[:2], []).append(code)
+        sample = []
+        per_bucket = max(1, sample_size // max(len(buckets), 1))
+        for bucket in buckets.values():
+            sample.extend(random.sample(bucket, min(per_bucket, len(bucket))))
+        sample = sample[:sample_size]
+
+        stale = 0
+        checked = 0
+        for code in sample:
+            try:
+                path = self.csv_manager.get_stock_path(code)
+                df = pd.read_csv(path, nrows=1)
+                if df.empty:
+                    stale += 1
+                else:
+                    latest = pd.to_datetime(df.iloc[0]['date']).date()
+                    if latest < expected_date:
+                        stale += 1
+                checked += 1
+            except Exception:
+                stale += 1
+                checked += 1
+
+        stale_pct = (stale / checked * 100) if checked > 0 else 100
+        is_fresh = stale_pct <= stale_threshold_pct
+        if not is_fresh:
+            print(
+                f"\n⚠️  数据新鲜度警告：抽样 {checked} 只股票中 {stale} 只({stale_pct:.0f}%) "
+                f"数据早于 {expected_date}，超过 {stale_threshold_pct}% 阈值。"
+            )
+            print("   策略选股结果可能基于过期数据，建议先运行 'python main.py update' 更新数据。\n")
+        else:
+            print(f"✓ 数据新鲜度校验通过：{checked} 只样本中 {stale} 只({stale_pct:.0f}%) 过期（≤{stale_threshold_pct}%阈值）")
+        return is_fresh, stale, checked
+
     def _format_eta(self, seconds):
         """将剩余秒数格式化为易读的 ETA。"""
         if seconds is None or seconds < 0:
@@ -255,12 +308,15 @@ class QuantSystem:
         self.fetcher.daily_update(max_stocks=max_stocks)
         print("\n✓ 数据更新完成")
 
-    def update_data(self, max_stocks=None):
-        """手动触发每日更新"""
+    def update_data(self, max_stocks=None, date=None):
+        """手动触发每日更新
+        :param max_stocks: 限制更新的股票数量
+        :param date: 指定更新的日期（默认为 None 表示自动计算）
+        """
         print("=" * 60)
         print("🔄 每日增量更新")
         print("=" * 60)
-        self.fetcher.daily_update(max_stocks=max_stocks)
+        self.fetcher.daily_update(max_stocks=max_stocks, date=date)
         print("\n✓ 数据更新完成")
 
     # ===================== 策略选股核心模块 =====================
@@ -278,6 +334,10 @@ class QuantSystem:
         if max_stocks:
             print(f"   快速测试模式：只处理前 {max_stocks} 只股票")
         print("=" * 60)
+
+        # 数据新鲜度校验（策略前置检查，避免用过期数据选股）
+        if not max_stocks:
+            self.check_data_freshness()
 
         # 自动加载 strategy 目录下所有策略
         print("\n加载策略...")
@@ -361,66 +421,98 @@ class QuantSystem:
                 return 'no_signal', code, name, df
             return 'ok', code, name, strategy_hits, df
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
         future_to_code = {}
+        future_submitted_at = {}
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for code in process_codes:
                 future = executor.submit(_process_stock, code)
                 future_to_code[future] = code
+                future_submitted_at[future] = time.time()
 
             processed = 0
-            for future in as_completed(future_to_code):
-                processed += 1
-                try:
-                    result = future.result()
-                except Exception:
-                    invalid_count += 1
+            pending = set(future_to_code)
+            stall_reported_at = 0.0
+            while pending:
+                done, pending = wait(pending, timeout=2.0, return_when=FIRST_COMPLETED)
+
+                if not done:
+                    now_ts = time.time()
+                    if (now_ts - stall_reported_at) >= 5:
+                        stall_reported_at = now_ts
+                        oldest_pending = 0
+                        if pending:
+                            oldest_pending = int(now_ts - min(future_submitted_at[f] for f in pending))
+                        self._print_progress(
+                            "进度",
+                            processed,
+                            len(process_codes),
+                            progress_started_at,
+                            extra_text=(
+                                f"| 有效 {valid_count} 只 | 命中 {len(selected_codes)} 只 "
+                                f"| 运行中 {len(pending)} 只 | 最久等待 {oldest_pending}s"
+                            ),
+                            stage_name="联合策略并发选股",
+                            total_started_at=selection_started_at,
+                        )
                     continue
 
-                if not result:
-                    continue
+                for future in done:
+                    processed += 1
+                    try:
+                        result = future.result()
+                    except Exception:
+                        invalid_count += 1
+                        result = None
 
-                status = result[0]
-                if status == 'ok':
-                    _, code, name, strategy_hits, raw_df = result
-                    valid_count += 1
-                    for strategy_name, signal_list, df_with_indicators in strategy_hits:
-                        filtered_signals = []
-                        for s in signal_list:
-                            cat = s.get('category', 'unknown')
-                            category_count[cat] = category_count.get(cat, 0) + 1
-                            if category == 'all' or cat == category:
-                                filtered_signals.append(s)
+                    if result:
+                        status = result[0]
+                        if status == 'ok':
+                            _, code, name, strategy_hits, raw_df = result
+                            valid_count += 1
+                            for strategy_name, signal_list, df_with_indicators in strategy_hits:
+                                filtered_signals = []
+                                for s in signal_list:
+                                    cat = s.get('category', 'unknown')
+                                    category_count[cat] = category_count.get(cat, 0) + 1
+                                    if category == 'all' or cat == category:
+                                        filtered_signals.append(s)
 
-                        if filtered_signals:
-                            results[strategy_name].append({
-                                'code': code,
-                                'name': name,
-                                'signals': filtered_signals,
-                            })
-                            selected_codes.add(code)
-                            if return_data:
-                                indicators_dict[code] = df_with_indicators
+                                if filtered_signals:
+                                    results[strategy_name].append({
+                                        'code': code,
+                                        'name': name,
+                                        'signals': filtered_signals,
+                                    })
+                                    selected_codes.add(code)
+                                    if return_data:
+                                        indicators_dict[code] = df_with_indicators
 
-                    if return_data and code not in indicators_dict:
-                        indicators_dict[code] = raw_df
-                elif status == 'no_signal':
-                    valid_count += 1
-                elif status == 'invalid':
-                    invalid_count += 1
+                            if return_data and code not in indicators_dict:
+                                indicators_dict[code] = raw_df
+                        elif status == 'no_signal':
+                            valid_count += 1
+                        elif status == 'invalid':
+                            invalid_count += 1
 
-                now_ts = time.time()
-                if processed == len(process_codes) or processed % 100 == 0 or (now_ts - last_progress_at) >= 5:
-                    last_progress_at = now_ts
-                    self._print_progress(
-                        "进度",
-                        processed,
-                        len(process_codes),
-                        progress_started_at,
-                        extra_text=f"| 有效 {valid_count} 只 | 命中 {len(selected_codes)} 只",
-                        stage_name="联合策略并发选股",
-                        total_started_at=selection_started_at,
-                    )
+                    now_ts = time.time()
+                    if processed == len(process_codes) or processed % 50 == 0 or (now_ts - last_progress_at) >= 2:
+                        last_progress_at = now_ts
+                        oldest_pending = 0
+                        if pending:
+                            oldest_pending = int(now_ts - min(future_submitted_at[f] for f in pending))
+                        self._print_progress(
+                            "进度",
+                            processed,
+                            len(process_codes),
+                            progress_started_at,
+                            extra_text=(
+                                f"| 有效 {valid_count} 只 | 命中 {len(selected_codes)} 只 "
+                                f"| 剩余 {len(pending)} 只 | 最久等待 {oldest_pending}s"
+                            ),
+                            stage_name="联合策略并发选股",
+                            total_started_at=selection_started_at,
+                        )
 
         for strategy_name, signals in results.items():
             print(f"  ✓ {strategy_name}: 共 {len(signals)} 只")

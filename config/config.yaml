@@ -1,0 +1,18 @@
+# ============================================
+# A股量化选股系统 - 主配置文件
+# ============================================
+# 注意：此文件包含敏感信息时不应提交到Git仓库
+# 请从 config.yaml.template 复制并填入你的配置
+
+data_dir: data
+
+dingtalk:
+  webhook_url: "https://oapi.dingtalk.com/robot/send?access_token=0533d744709492cf7dea26741755af9701e2714e398a2efcec1855a5a095ac3c"
+  secret: "SEC5535ade06d2e7da677917363013278fe01f7c118bb3f71801a7ce786686fcfe9"
+
+schedule:
+  time: "17:00"
+
+update:
+  lookback_days: 10
+  skip_failed: true

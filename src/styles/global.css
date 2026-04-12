@@ -1,0 +1,97 @@
+/* TradingView 暗色主题 */
+:root {
+  --bg-primary: #131722;
+  --bg-secondary: #1e222d;
+  --bg-tertiary: #2a2e39;
+  --text-primary: #d1d4dc;
+  --text-secondary: #787b86;
+  --text-accent: #2962ff;
+  --color-up: #ef5350;
+  --color-down: #26a69a;
+  --border-color: #363a45;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #434651;
+}
+
+/* Element Plus 暗色覆盖 */
+.el-menu {
+  background-color: var(--bg-secondary) !important;
+  border-right: 1px solid var(--border-color) !important;
+}
+.el-menu-item {
+  color: var(--text-secondary) !important;
+}
+.el-menu-item:hover,
+.el-menu-item.is-active {
+  color: var(--text-primary) !important;
+  background-color: var(--bg-tertiary) !important;
+}
+.el-table {
+  --el-table-bg-color: var(--bg-secondary);
+  --el-table-tr-bg-color: var(--bg-secondary);
+  --el-table-header-bg-color: var(--bg-tertiary);
+  --el-table-row-hover-bg-color: var(--bg-tertiary);
+  --el-table-text-color: var(--text-primary);
+  --el-table-header-text-color: var(--text-secondary);
+  --el-table-border-color: var(--border-color);
+}
+.el-pagination {
+  --el-pagination-text-color: var(--text-secondary);
+  --el-pagination-bg-color: var(--bg-secondary);
+  --el-pagination-button-bg-color: var(--bg-tertiary);
+}
+.el-card {
+  --el-card-bg-color: var(--bg-secondary);
+  --el-card-border-color: var(--border-color);
+  color: var(--text-primary);
+}
+.el-input__wrapper {
+  background-color: var(--bg-tertiary) !important;
+  box-shadow: 0 0 0 1px var(--border-color) inset !important;
+}
+.el-input__inner {
+  color: var(--text-primary) !important;
+}
+.el-tabs__item {
+  color: var(--text-secondary) !important;
+}
+.el-tabs__item.is-active {
+  color: var(--text-accent) !important;
+}
+
+/* 涨跌颜色 */
+.price-up { color: var(--color-up); }
+.price-down { color: var(--color-down); }
+.price-flat { color: var(--text-secondary); }

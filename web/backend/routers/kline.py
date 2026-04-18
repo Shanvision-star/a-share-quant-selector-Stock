@@ -8,13 +8,13 @@ router = APIRouter(prefix="/api", tags=["K线数据"])
 async def get_kline(
     code: str,
     period: str = Query("daily", pattern="^(daily|weekly)$"),
-    limit: int = Query(250, ge=30, le=1000),
+    limit: int = Query(2600, ge=120, le=3200),
 ):
     """
     获取 K 线数据
     - code: 股票代码（如 000001）
     - period: daily / weekly
-    - limit: 返回条数（30-1000）
+    - limit: 返回条数（120-3200，默认约10年日线）
     """
     from web.backend.services.kline_service import get_kline
     result = get_kline(code, period, limit)

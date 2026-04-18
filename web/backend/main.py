@@ -9,12 +9,16 @@ sys.path.insert(0, str(project_root))
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from web.backend.services.sqlite_service import init_database
 
 app = FastAPI(
     title="A股量化选股系统 API",
     description="量化选股系统 Web 接口",
     version="2.0.0",
 )
+
+# Initialize the database
+init_database()
 
 # CORS 配置（开发阶段允许所有来源）
 app.add_middleware(
@@ -26,7 +30,7 @@ app.add_middleware(
 )
 
 # 注册路由
-from web.backend.routers import kline, strategy, stock, update, config_api, backtest
+from web.backend.routers import kline, strategy, stock, update, config_api, backtest, trajectory, txt_export
 
 app.include_router(kline.router)
 app.include_router(strategy.router)
@@ -34,6 +38,16 @@ app.include_router(stock.router)
 app.include_router(update.router)
 app.include_router(config_api.router)
 app.include_router(backtest.router)
+app.include_router(trajectory.router)
+app.include_router(txt_export.router)
+
+
+@app.on_event("startup")
+async def prewarm_stock_metric_snapshot():
+    try:
+        stock.trigger_metric_snapshot_prewarm()
+    except Exception:
+        pass
 
 
 @app.get("/api/health")

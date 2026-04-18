@@ -38,6 +38,10 @@ class StrategyRegistry:
         self.strategies[strategy_name] = strategy
         
         return strategy
+
+    def _log(self, message):
+        """使用 ASCII 友好的输出，避免 Windows 默认控制台编码导致注册中断。"""
+        print(message)
     
     def get_strategy(self, name):
         """获取已注册的策略"""
@@ -90,10 +94,10 @@ class StrategyRegistry:
                         
                         # 注册策略（排除基类）
                         self.register(attr, name=attr_name)
-                        print(f"  ✓ 注册策略: {attr_name}")
+                        self._log(f"  [OK] 注册策略: {attr_name}")
                         
             except Exception as e:
-                print(f"  ✗ 加载 {module_name} 失败: {e}")
+                self._log(f"  [ERR] 加载 {module_name} 失败: {e}")
     
     def run_strategy(self, strategy_name, stock_data_dict):
         """
@@ -108,8 +112,8 @@ class StrategyRegistry:
         strategy = self.strategies[strategy_name]
         total_stocks = len(stock_data_dict)
         
-        print(f"\n执行策略: {strategy_name}")
-        print(f"  共 {total_stocks} 只股票待分析...")
+        self._log(f"\n执行策略: {strategy_name}")
+        self._log(f"  共 {total_stocks} 只股票待分析...")
         signals = []
         processed = 0
         
@@ -121,9 +125,9 @@ class StrategyRegistry:
             processed += 1
             # 每100只股票显示一次进度
             if processed % 100 == 0 or processed == total_stocks:
-                print(f"  进度: [{processed}/{total_stocks}] 已分析 {processed} 只，选出 {len(signals)} 只...")
+                self._log(f"  进度: [{processed}/{total_stocks}] 已分析 {processed} 只，选出 {len(signals)} 只...")
         
-        print(f"  ✓ 选股完成: 共 {len(signals)} 只股票符合策略")
+        self._log(f"  [OK] 选股完成: 共 {len(signals)} 只股票符合策略")
         return {strategy_name: signals}
     
     def run_all(self, stock_data_dict, return_indicators=False):
@@ -138,8 +142,8 @@ class StrategyRegistry:
         total_stocks = len(stock_data_dict)
         
         for strategy_name, strategy in self.strategies.items():
-            print(f"\n执行策略: {strategy_name}")
-            print(f"  共 {total_stocks} 只股票待分析...")
+            self._log(f"\n执行策略: {strategy_name}")
+            self._log(f"  共 {total_stocks} 只股票待分析...")
             signals = []
             processed = 0
             
@@ -163,10 +167,10 @@ class StrategyRegistry:
                 processed += 1
                 # 每100只股票显示一次进度
                 if processed % 100 == 0 or processed == total_stocks:
-                    print(f"  进度: [{processed}/{total_stocks}] 已分析 {processed} 只，选出 {len(signals)} 只...")
+                    self._log(f"  进度: [{processed}/{total_stocks}] 已分析 {processed} 只，选出 {len(signals)} 只...")
             
             results[strategy_name] = signals
-            print(f"  [OK] 选股完成: 共 {len(signals)} 只股票符合策略")
+            self._log(f"  [OK] 选股完成: 共 {len(signals)} 只股票符合策略")
         
         if return_indicators:
             return results, indicators_dict

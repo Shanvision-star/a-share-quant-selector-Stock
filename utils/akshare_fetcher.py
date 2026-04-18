@@ -25,6 +25,7 @@ from utils.csv_manager import CSVManager
 
 # 设置请求会话
 session = requests.Session()
+session.trust_env = False
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/javascript, */*',
@@ -598,55 +599,113 @@ class AKShareFetcher:
         df = df.sort_values('date', ascending=False)
         
         return df
+
+    def _normalize_history_df(self, df, stock_code, market_cap=None):
+        """统一标准化历史行情字段，尽量保留成交额和换手率。"""
+        if df is None or df.empty:
+            return None
+
+        normalized = df.rename(columns={
+            '日期': 'date',
+            '开盘': 'open',
+            '最高': 'high',
+            '最低': 'low',
+            '收盘': 'close',
+            '成交量': 'volume',
+            '成交额': 'amount',
+            '换手率': 'turnover',
+        }).copy()
+
+        required_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+        if any(column not in normalized.columns for column in required_columns):
+            return None
+
+        for optional_column in ['amount', 'turnover']:
+            if optional_column not in normalized.columns:
+                normalized[optional_column] = pd.NA
+
+        normalized = normalized[['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'turnover']]
+        normalized['date'] = pd.to_datetime(normalized['date'])
+
+        for column in ['open', 'high', 'low', 'close', 'volume', 'amount', 'turnover']:
+            normalized[column] = pd.to_numeric(normalized[column], errors='coerce')
+
+        normalized = normalized.dropna(subset=['date', 'open', 'high', 'low', 'close'])
+        normalized['volume'] = normalized['volume'].fillna(0).astype(int)
+        normalized['amount'] = normalized['amount'].fillna(0.0)
+        normalized['turnover'] = normalized['turnover'].fillna(0.0)
+
+        if market_cap is None:
+            market_cap = self._get_realtime_market_cap(stock_code)
+
+        normalized['market_cap'] = market_cap if market_cap else 0
+
+        return normalized.sort_values('date', ascending=False).reset_index(drop=True)
+
+    def _fetch_stock_history_eastmoney(self, stock_code, start_date, end_date, prefetched_market_cap=None):
+        """直接调用 EastMoney K 线接口，返回成交额和换手率。"""
+        try:
+            market_code = 1 if stock_code.startswith('6') else 0
+            url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+            params = {
+                "fields1": "f1,f2,f3,f4,f5,f6",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f116",
+                "ut": "7eea3edcaed734bea9cbfc24409ed989",
+                "klt": "101",
+                "fqt": "1",
+                "secid": f"{market_code}.{stock_code}",
+                "beg": start_date,
+                "end": end_date,
+            }
+            response = session.get(url, params=params, timeout=15)
+            response.raise_for_status()
+            data_json = response.json()
+            if not (data_json.get("data") and data_json["data"].get("klines")):
+                return None
+
+            df = pd.DataFrame([item.split(",") for item in data_json["data"]["klines"]])
+            df.columns = [
+                "日期",
+                "开盘",
+                "收盘",
+                "最高",
+                "最低",
+                "成交量",
+                "成交额",
+                "振幅",
+                "涨跌幅",
+                "涨跌额",
+                "换手率",
+                "股票代码",
+            ]
+            return self._normalize_history_df(df, stock_code, market_cap=prefetched_market_cap)
+        except Exception:
+            return None
     
     def fetch_stock_history(self, stock_code, years=6):
         """
         抓取单只股票历史数据
         前复权，按日期倒序排列
         """
-        # 方法1: 直接HTTP请求
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365 * years)
+        start_str = start_date.strftime("%Y%m%d")
+        end_str = end_date.strftime("%Y%m%d")
+
+        # 方法1: 直接走 EastMoney 历史接口，能返回成交额和换手率。
+        df = self._fetch_stock_history_eastmoney(stock_code, start_str, end_str)
+        if df is not None and not df.empty:
+            print(f"[OK] EastMoney获取 {len(df)}条")
+            return df
+
+        # 方法2: 腾讯接口兜底（无换手率时保底可用）。
         try:
             df = self._fetch_stock_history_http(stock_code, years)
             if df is not None and not df.empty:
-                print(f"✓ (HTTP获取 {len(df)}条)")
-                return df
-            else:
-                print(f"  HTTP返回空数据，尝试akshare...")
-        except Exception as e:
-            print(f"  HTTP异常: {e}，尝试akshare...")
-        
-        # 方法2: akshare
-        try:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=365 * years)
-            start_str = start_date.strftime("%Y%m%d")
-            end_str = end_date.strftime("%Y%m%d")
-            
-            df = ak.stock_zh_a_hist(
-                symbol=stock_code,
-                period="daily",
-                start_date=start_str,
-                end_date=end_str,
-                adjust="qfq"
-            )
-            
-            if df is not None and not df.empty:
-                df = df.rename(columns={
-                    '日期': 'date', '开盘': 'open', '最高': 'high', '最低': 'low',
-                    '收盘': 'close', '成交量': 'volume', '成交额': 'amount', '换手率': 'turnover'
-                })
-                df = df[['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'turnover']]
-                # 从实时数据获取总市值
-                market_cap = self._get_realtime_market_cap(stock_code)
-                if market_cap:
-                    df['market_cap'] = market_cap
-                else:
-                    df['market_cap'] = (hash(stock_code) % 100 + 50) * 1000000000
-                df['date'] = pd.to_datetime(df['date'])
-                df = df.sort_values('date', ascending=False)
+                print(f"[OK] HTTP获取 {len(df)}条")
                 return df
         except Exception as e:
-            print(f"  akshare获取失败，使用模拟数据...")
+            print(f"  HTTP异常: {e}，使用模拟数据...")
         
         # 降级: 使用模拟数据
         return self._generate_mock_data(stock_code, years)
@@ -657,6 +716,19 @@ class AKShareFetcher:
         优化：直接指定天数，避免计算误差
         :param prefetched_market_cap: 预先批量获取的市值，传入则跳过每股单独API调用（大幅提速）
         """
+        lookback_days = max(days * 4, 30)
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=lookback_days)
+
+        df = self._fetch_stock_history_eastmoney(
+            stock_code,
+            start_date.strftime("%Y%m%d"),
+            end_date.strftime("%Y%m%d"),
+            prefetched_market_cap=prefetched_market_cap,
+        )
+        if df is not None and not df.empty:
+            return df.head(max(days + 5, 20)).copy()
+
         try:
             import requests
             
@@ -705,8 +777,8 @@ class AKShareFetcher:
                             'high': float(item[3]),  # 最高
                             'low': float(item[4]),   # 最低
                             'volume': int(float(item[5])),
-                            'amount': 0,
-                            'turnover': 0,
+                            'amount': pd.NA,
+                            'turnover': pd.NA,
                         })
                 
                 if records:
@@ -844,7 +916,7 @@ class AKShareFetcher:
             print(f"提示: 再次运行 init 命令可跳过失败股票，专注于成功获取的数据")
 
     # ===================== 优化版：并发更新 + 实时进度显示 =====================
-    def daily_update(self, max_stocks=None, date=None):
+    def daily_update(self, max_stocks=None, date=None, progress_callback=None, on_stock_ready=None):
         """每日增量更新 - 多线程并发版 + 实时进度显示
         优化要点：
           1. 先批量获取全市场市值（1次API调用），替代原来每股单独调用（1840次）
@@ -852,11 +924,10 @@ class AKShareFetcher:
           3. 超时上限从600s提升到1800s
         :param max_stocks: 限制更新股票数量（测试用）
         :param date: 指定目标日期字符串(YYYY-MM-DD)，None表示自动推断
+        :param progress_callback: 可选回调，接收实时统计信息 dict
+        :param on_stock_ready: 可选回调 (code, df)，每只股票更新成功后立即调用（pipeline 模式用于内联策略扫描）
         """
         existing_stocks = self.csv_manager.list_all_stocks()
-        if not existing_stocks:
-            print("没有找到已有数据，请先执行 init")
-            return
         if max_stocks:
             existing_stocks = existing_stocks[:max_stocks]
 
@@ -875,6 +946,69 @@ class AKShareFetcher:
             target_date = datetime.strptime(date, "%Y-%m-%d").date()
 
         target_date_str = target_date.strftime('%Y-%m-%d')
+        scan_total = len(existing_stocks)
+        checked_count = 0
+        stocks_to_update = []
+        updated = 0
+        failed = 0
+        completed = 0
+        verify_total = 0
+        verify_reached = 0
+        cache_written = False
+        cache_hit = False
+
+        def emit_progress(progress, message, phase='update', current_code=''):
+            if not progress_callback:
+                return
+
+            total_to_update = len(stocks_to_update)
+            payload = {
+                'progress': max(0, min(100, int(progress))),
+                'message': message,
+                'phase': phase,
+                'scan_total': scan_total,
+                'checked': checked_count,
+                'to_update': total_to_update,
+                'up_to_date': max(0, checked_count - total_to_update),
+                'completed': completed,
+                'updated': updated,
+                'failed': failed,
+                'remaining': max(total_to_update - completed, 0),
+                'verify_total': verify_total,
+                'verify_reached': verify_reached,
+                'cache_written': cache_written,
+                'cache_hit': cache_hit,
+            }
+            if current_code:
+                payload['current_code'] = current_code
+            try:
+                progress_callback(payload)
+            except Exception:
+                pass
+
+        def build_summary(status, message):
+            total_to_update = len(stocks_to_update)
+            return {
+                'status': status,
+                'message': message,
+                'target_date': target_date_str,
+                'scan_total': scan_total,
+                'checked': checked_count,
+                'to_update': total_to_update,
+                'up_to_date': max(0, checked_count - total_to_update),
+                'completed': completed,
+                'updated': updated,
+                'failed': failed,
+                'remaining': max(total_to_update - completed, 0),
+                'verify_total': verify_total,
+                'verify_reached': verify_reached,
+                'cache_written': cache_written,
+                'cache_hit': cache_hit,
+            }
+
+        if not existing_stocks:
+            print("没有找到已有数据，请先执行 init")
+            return build_summary('error', '没有找到已有数据，请先执行 init')
 
         # ── 检查缓存 ────────────────────────────────────────────────────
         update_cache_file = self.full_data_dir / '.update_cache.json'
@@ -887,32 +1021,52 @@ class AKShareFetcher:
                 pass
 
         if update_cache.get('last_update_date') == target_date_str and not max_stocks:
+            cache_hit = True
             print("✓ 今日已更新")
-            return
+            message = f"{target_date_str} 数据已是最新，跳过更新（缓存命中）"
+            emit_progress(100, message, phase='complete')
+            return build_summary('done', message)
 
         # ── 只更新日期落后的股票（跳过已是最新的，节省时间）───────────
         print("  检查更新状态...")
-        stocks_to_update = []
-        for code in existing_stocks:
+        emit_progress(1, f"开始检查 {scan_total} 只股票的数据状态...", phase='scan')
+        for idx, code in enumerate(existing_stocks, start=1):
+            checked_count = idx
             try:
                 df = self.csv_manager.read_stock(code)
                 if df is None or df.empty:
                     stocks_to_update.append(code)
-                    continue
-                latest_date = pd.to_datetime(df.iloc[0]['date']).date()
-                if latest_date < target_date:
-                    stocks_to_update.append(code)
+                else:
+                    latest_date = pd.to_datetime(df.iloc[0]['date']).date()
+                    if latest_date < target_date:
+                        stocks_to_update.append(code)
             except Exception:
                 stocks_to_update.append(code)
+
+            if idx == 1 or idx % 50 == 0 or idx == scan_total:
+                emit_progress(
+                    int(idx / max(scan_total, 1) * 25),
+                    f"检查更新状态... {idx}/{scan_total}",
+                    phase='scan',
+                    current_code=code,
+                )
 
         if not stocks_to_update:
             print(f"✓ 所有股票已是最新数据 ({target_date_str})")
             update_cache['last_update_date'] = target_date_str
             with open(update_cache_file, 'w') as f:
                 json.dump(update_cache, f)
-            return
+            cache_written = True
+            message = f"所有股票已是最新数据 ({target_date_str})"
+            emit_progress(100, message, phase='complete')
+            return build_summary('done', message)
 
         print(f"  需要更新：{len(stocks_to_update)} 只")
+        emit_progress(
+            30,
+            f"状态检查完成：共 {scan_total} 只，需更新 {len(stocks_to_update)} 只",
+            phase='scan_complete',
+        )
 
         # ── 一次性批量获取全市场市值（避免1840次单独API调用）─────────
         print("\n正在批量获取市值数据（一次性）...")
@@ -930,21 +1084,29 @@ class AKShareFetcher:
                         cap = int(cap)
                     market_cap_map[code] = cap
             print(f"  ✓ 批量市值获取成功: {len(market_cap_map)} 只")
+            emit_progress(
+                35,
+                f"批量市值获取成功：{len(market_cap_map)} 只，准备并发更新 {len(stocks_to_update)} 只股票",
+                phase='market_cap',
+            )
         except Exception as e:
             print(f"  ⚠️ 批量市值获取失败: {e}，K线数据仍会正常更新")
+            emit_progress(
+                35,
+                f"批量市值获取失败，继续更新K线数据：{len(stocks_to_update)} 只待更新",
+                phase='market_cap',
+            )
 
         # ── 并发更新 K 线数据 ──────────────────────────────────────────
         days_to_fetch = 10
         total = len(stocks_to_update)
-        updated = 0
-        failed = 0
-        completed = 0
         TIMEOUT_SECONDS = 1800  # 30分钟，替代原600s
         import threading
         lock = threading.Lock()
         start_time = time.time()
 
         print(f"\n开始并发更新 {total} 只股票...")
+        emit_progress(40, f"开始并发更新 {total} 只股票...", phase='update')
         all_done = False
         try:
             with ThreadPoolExecutor(max_workers=16) as executor:
@@ -952,16 +1114,22 @@ class AKShareFetcher:
                     executor.submit(self._update_single_stock, code, days_to_fetch, market_cap_map): code
                     for code in stocks_to_update
                 }
+                emit_step = 1 if total <= 20 else 10
                 try:
                     for future in as_completed(futures, timeout=TIMEOUT_SECONDS):
                         code = futures[future]
                         try:
-                            result = future.result()
+                            result_tuple = future.result()
+                            # _update_single_stock now returns (bool, df_or_None)
+                            if isinstance(result_tuple, tuple):
+                                success, stock_df = result_tuple
+                            else:
+                                success, stock_df = bool(result_tuple), None
                         except Exception:
-                            result = False
+                            success, stock_df = False, None
                         with lock:
                             completed += 1
-                            if result:
+                            if success:
                                 updated += 1
                             else:
                                 failed += 1
@@ -970,12 +1138,31 @@ class AKShareFetcher:
                                 f"\r进度: {completed:4d}/{total} | {pct:5.1f}% | 更新: {updated} | 失败: {failed:3d} | 代码:{code}",
                                 end='', flush=True
                             )
+                            if completed == 1 or completed % emit_step == 0 or completed == total:
+                                emit_progress(
+                                    40 + int(completed / total * 50),
+                                    f"并发更新中：{completed}/{total}，成功 {updated}，失败 {failed}",
+                                    phase='update',
+                                    current_code=code,
+                                )
+                        # pipeline 回调：股票更新成功后立即用内存 df 通知调用方
+                        if on_stock_ready and success and stock_df is not None:
+                            try:
+                                on_stock_ready(code, stock_df)
+                            except Exception:
+                                pass
                     all_done = True
                 except TimeoutError:
                     elapsed = time.time() - start_time
                     print(f"\n[更新] 超时({elapsed:.0f}s)，已完成 {completed}/{total}，取消剩余任务，继续使用本地数据...")
+                    emit_progress(
+                        92,
+                        f"更新超时：已执行 {completed}/{total}，成功 {updated}，失败 {failed}",
+                        phase='update',
+                    )
         except Exception as e:
             print(f"\n[更新] 并发执行异常: {e}")
+            emit_progress(92, f"并发更新异常：{e}", phase='update')
 
         print()  # 换行
 
@@ -991,8 +1178,10 @@ class AKShareFetcher:
                 _step = max(1, len(_bucket) // 5)
                 _verify_codes.extend(_bucket[::_step][:5])
             _verify_codes = _verify_codes[:30]
+            verify_total = len(_verify_codes)
+            emit_progress(94, f"开始抽样验证 {verify_total} 只股票...", phase='verify')
             _reached = 0
-            for _vc in _verify_codes:
+            for idx, _vc in enumerate(_verify_codes, start=1):
                 try:
                     _vpath = self.csv_manager.get_stock_path(_vc)
                     _vdf = pd.read_csv(_vpath, nrows=1)
@@ -1002,11 +1191,21 @@ class AKShareFetcher:
                             _reached += 1
                 except Exception:
                     pass
+                verify_reached = _reached
+                if idx == 1 or idx % 5 == 0 or idx == verify_total:
+                    emit_progress(
+                        94 + int(idx / max(verify_total, 1) * 5),
+                        f"抽样验证中：{verify_reached}/{verify_total} 只到达 {target_date_str}",
+                        phase='verify',
+                        current_code=_vc,
+                    )
+
             _threshold = max(1, int(len(_verify_codes) * 0.5))
             if _reached >= _threshold:
                 update_cache['last_update_date'] = target_date_str
                 with open(update_cache_file, 'w') as f:
                     json.dump(update_cache, f)
+                cache_written = True
                 print(f"[更新] 抽样验证通过 ({_reached}/{len(_verify_codes)})，缓存已写入")
             else:
                 print(
@@ -1019,9 +1218,25 @@ class AKShareFetcher:
         print("=" * 70)
         print(f"✅ 并发更新完成！总计：{total} 只 | 成功：{updated} 只 | 失败：{failed} 只")
 
+        if all_done:
+            final_message = (
+                f"{target_date_str} 数据更新完成：扫描 {scan_total} 只，"
+                f"需更新 {total} 只，成功 {updated} 只，失败 {failed} 只"
+            )
+            emit_progress(100, final_message, phase='complete')
+            return build_summary('done', final_message)
+
+        final_message = (
+            f"{target_date_str} 数据更新未全量完成：已执行 {completed}/{total}，"
+            f"成功 {updated} 只，失败 {failed} 只"
+        )
+        emit_progress(100, final_message, phase='complete')
+        return build_summary('partial', final_message)
+
     def _update_single_stock(self, code, days_to_fetch, market_cap_map):
         """单只股票更新任务（给线程池调用）
         传入预先批量获取的 market_cap_map，跳过每股单独 API 调用，大幅提速。
+        返回 (success: bool, df_or_None)：成功时 df 可用于 pipeline 模式内联策略扫描。
         """
         try:
             prefetched_cap = market_cap_map.get(code)  # None if not in map
@@ -1029,10 +1244,10 @@ class AKShareFetcher:
                                          prefetched_market_cap=prefetched_cap)
             if df is not None and not df.empty:
                 self.csv_manager.update_stock(code, df)
-                return True
+                return (True, df)
         except Exception:
             pass
-        return False
+        return (False, None)
 
 
 from datetime import datetime, timedelta

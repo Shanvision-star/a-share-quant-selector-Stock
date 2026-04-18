@@ -54,7 +54,21 @@ python3 main.py run
 
 # 并发选股（加速处理，按机器线程数自动扩展；单核时自动降级）
 python3 main.py run --workers 10
+
+# 启动 FastAPI 后端（供前端 /api 代理，监听 8001）
+cd web && npm run backend
+
+# 新开终端启动前端开发服务（监听 5173）
+cd web && npm run dev
 ```
+
+## 🌐 Web 前后端联调（FastAPI + Vite）
+
+- 前端开发地址：`http://127.0.0.1:5173`
+- 后端 API 地址：`http://127.0.0.1:8001`
+- 前端代理规则：`/api -> http://localhost:8001`（见 `web/frontend/vite.config.ts`）
+- 一键启动后端（Windows）：`cd .\web && npm run backend`
+- 启动前端开发服务：`cd .\web && npm run dev`
 
 ## 📊 策略说明
 
@@ -298,6 +312,8 @@ EMA(EMA(CLOSE, 10), 10)
 | 7. 阶段型B1前瞻扫描 | `.\.venv\Scripts\python.exe -u .\run_b1_scan.py` | 启动前预警扫描，实时显示进度。 |
 | 8. 快速验证（小样本） | `.\.venv\Scripts\python.exe .\main.py run --max-stocks 500 --b1-match` | 小规模验证参数与流程是否正常。 |
 | 9. 启动 Web 管理界面 | `.\.venv\Scripts\python.exe .\main.py web` | 本地查看数据与图形。 |
+| 10. 一键启动 Web API 后端 | `cd .\web && npm run backend` | 启动 FastAPI（8001），供前端 `/api` 代理。 |
+| 11. 启动前端开发服务 | `cd .\web && npm run dev` | 启动 Vite（5173），访问 `http://127.0.0.1:5173`。 |
 
 > 说明：上面是“按步骤”的推荐流程；后面的章节保留“完整参数命令表”，用于进阶调参。
 
@@ -371,6 +387,8 @@ EMA(EMA(CLOSE, 10), 10)
 | `.\.venv\Scripts\python.exe .\main.py backtest --backtest-days 3 --k-threshold 20 --trend-drop-pct 5` | 自定义回溯参数，验证低位 K 值与趋势线回落条件。 |
 | `.\.venv\Scripts\python.exe .\main.py web` | 启动 Web 服务（默认地址与端口）。 |
 | `.\.venv\Scripts\python.exe .\main.py web --host 0.0.0.0 --port 5000` | 自定义 Web 服务监听地址与端口。 |
+| `cd .\web && npm run backend` | 一键启动 FastAPI Web 后端（`0.0.0.0:8001`，供 Vite 代理）。 |
+| `cd .\web && npm run dev` | 启动 Vite 前端开发服务（`0.0.0.0:5173`，`/api` 自动转发到 `8001`）。 |
 | `.\.venv\Scripts\python.exe .\main.py schedule` | 启动内置定时调度循环。 |
 | `.\.venv\Scripts\python.exe .\main.py run --config config/config.yaml` | 指定配置文件运行（测试/生产隔离）。 |
 | `.\.venv\Scripts\python.exe .\main.py --version` | 输出 Python、akshare、pandas、系统版本信息。 |

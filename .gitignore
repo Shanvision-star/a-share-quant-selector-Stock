@@ -48,3 +48,7 @@ nohup.out
 *.key
 *.pem
 *.crt
+
+# Web dependency artifacts
+web/node_modules/
+web/package-lock.json

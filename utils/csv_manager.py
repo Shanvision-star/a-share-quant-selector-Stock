@@ -62,8 +62,38 @@ class CSVManager:
         if existing_df.empty:
             return self.write_stock(stock_code, new_df)
         
-        # 合并数据
-        combined = pd.concat([existing_df, new_df], ignore_index=True)
+        existing_df = existing_df.copy()
+        new_df = new_df.copy()
+
+        existing_df['date'] = pd.to_datetime(existing_df['date'])
+        new_df['date'] = pd.to_datetime(new_df['date'])
+
+        existing_by_date = existing_df.set_index('date')
+        incoming_by_date = new_df.set_index('date')
+
+        # 以新数据为主，但对缺失字段保留历史已存在的真实值，避免回退链路把成交额/换手率覆盖成空值。
+        combined = incoming_by_date.combine_first(existing_by_date).reset_index()
+
+        for column in ['amount', 'turnover', 'market_cap']:
+            if column in combined.columns:
+                combined[column] = pd.to_numeric(combined[column], errors='coerce').fillna(0).astype(float)
+
+        if all(column in combined.columns for column in ['close', 'volume', 'amount']):
+            close_values = pd.to_numeric(combined['close'], errors='coerce').fillna(0)
+            volume_values = pd.to_numeric(combined['volume'], errors='coerce').fillna(0)
+            amount_values = pd.to_numeric(combined['amount'], errors='coerce').fillna(0)
+            estimated_amount = close_values * volume_values * 100
+            amount_missing = (amount_values <= 0) & (estimated_amount > 0)
+            combined.loc[amount_missing, 'amount'] = estimated_amount[amount_missing]
+
+        if all(column in combined.columns for column in ['amount', 'turnover', 'market_cap']):
+            amount_values = pd.to_numeric(combined['amount'], errors='coerce').fillna(0)
+            turnover_values = pd.to_numeric(combined['turnover'], errors='coerce').fillna(0)
+            market_cap_values = pd.to_numeric(combined['market_cap'], errors='coerce').fillna(0)
+            estimated_turnover = (amount_values / market_cap_values.replace(0, pd.NA) * 100).fillna(0)
+            turnover_missing = (turnover_values <= 0) & (estimated_turnover > 0)
+            combined.loc[turnover_missing, 'turnover'] = estimated_turnover[turnover_missing]
+
         return self.write_stock(stock_code, combined)
     
     def list_all_stocks(self):

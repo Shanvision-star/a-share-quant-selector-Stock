@@ -1,0 +1,11 @@
+{
+  "name": "web",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "backend": "cd .. && .\\.venv\\Scripts\\python.exe .\\scripts\\run_web_backend.py --host 0.0.0.0 --port 8001",
+    "dev": "cd frontend && npm run dev -- --host 0.0.0.0",
+    "build": "cd frontend && npm run build",
+    "serve": "cd frontend && npm run preview -- --host 0.0.0.0"
+  }
+}

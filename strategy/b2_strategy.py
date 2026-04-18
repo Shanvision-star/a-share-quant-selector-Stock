@@ -111,6 +111,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+from strategy.base_strategy import BaseStrategy
 
 # ── 技术指标依赖说明 ──────────────────────────────────────────────────────────
 # KDJ               : 随机指标，用于判断超买/超卖区间，核心是 J 值
@@ -881,6 +882,7 @@ class B2CaseAnalyzer:
             "big_up_turnover_sum": big_up_result.get("turnover_sum", 0.0), # 大阳线换手率总和（%）
             # B1 日 J 值（反映调整充分程度）
             "j_at_b1":             b1_result["j_val"],
+            "j_at_b2":             None if np.isnan(b2_j) else round(b2_j, 2),
             # 匹配的经典案例信息
             "matched_case_name":   matched_case_name,
             "matched_case_id":     matched_case_id,
@@ -924,7 +926,7 @@ class B2CaseAnalyzer:
           b. J 值 < b1_kdj_threshold（默认 13）
              含义：KDJ 中的 J 值进入深度超卖区间，说明短期内卖盘已经充分释放，
              反弹弹性大。J < 13 是对"洗盘是否充分"的量化评判。
-             688031 案例中：B1 日 J = 0.67，几乎触底，极度充分。
+             688031 案例中：B1 日 J = -4.05，几乎触底，极度充分。
 
           c. near_short_trend = True  ← 收盘价贴近短期趋势线
              含义：价格虽然回调，但始终没有跌破短期趋势支撑，说明主力在该位置有
@@ -1391,6 +1393,86 @@ class B2PatternLibrary:
 
         logger.info("[B2] 扫描完成，命中 %d / %d", len(results), total)
         return results
+
+
+class B2Strategy(BaseStrategy):
+    """将 B2 规则扫描适配为 Web 端统一策略接口。"""
+
+    SIGNAL_CATEGORY = "b2_breakout"
+
+    def __init__(self, params: Optional[dict] = None):
+        merged_params = dict(params or {})
+        super().__init__("B2二次突破策略", merged_params)
+        self.library = B2PatternLibrary(config_params=merged_params)
+
+    def calculate_indicators(self, df) -> pd.DataFrame:
+        return df.copy()
+
+    def select_stocks(self, df, stock_name='') -> list:
+        return []
+
+    def analyze_stock(self, stock_code, stock_name, df):
+        if df is None or df.empty or len(df) < 60:
+            return None
+
+        if stock_name:
+            invalid_keywords = ('退', '未知', '退市', '已退')
+            if any(keyword in stock_name for keyword in invalid_keywords):
+                return None
+            if stock_name.startswith('ST') or stock_name.startswith('*ST'):
+                return None
+
+        best_result = None
+        for case_cfg in self.library.pattern_templates:
+            try:
+                result = self.library.analyzer.analyze(stock_code, df, case_cfg)
+            except Exception as exc:
+                logger.warning("[B2] Web 扫描 %s 时发生异常: %s", stock_code, exc)
+                continue
+
+            if not result:
+                continue
+
+            if (
+                best_result is None
+                or result.get("pattern_priority", 0) > best_result.get("pattern_priority", 0)
+                or (
+                    result.get("pattern_priority", 0) == best_result.get("pattern_priority", 0)
+                    and result.get("b2_vol_ratio", 0) > best_result.get("b2_vol_ratio", 0)
+                )
+            ):
+                best_result = result
+
+        if not best_result:
+            return None
+
+        signal = {
+            "date": best_result.get("b2_date", ""),
+            "close": best_result.get("b2_close"),
+            "trigger_price": best_result.get("b2_close"),
+            "j_value": best_result.get("j_at_b2", best_result.get("j_at_b1")),
+            "volume_ratio": best_result.get("b2_vol_ratio"),
+            "category": self.SIGNAL_CATEGORY,
+            "reason": (
+                f"{best_result.get('pattern_label', 'B2')} | "
+                f"案例: {best_result.get('matched_case_name', '-')} | "
+                f"涨幅: {best_result.get('b2_pct_chg', 0):.1f}% | "
+                f"量比: {best_result.get('b2_vol_ratio', 0):.2f}"
+            ),
+            "matched_case_name": best_result.get("matched_case_name"),
+            "matched_case_id": best_result.get("matched_case_id"),
+            "pattern_type": best_result.get("pattern_type"),
+            "pattern_label": best_result.get("pattern_label"),
+            "pattern_priority": best_result.get("pattern_priority"),
+            "stop_loss_price": best_result.get("stop_loss_price"),
+            "raw_result": best_result,
+        }
+
+        return {
+            "code": stock_code,
+            "name": stock_name,
+            "signals": [signal],
+        }
 
     # ────────────────── 结果导出 + 通知 ──────────────────────────────────────
 

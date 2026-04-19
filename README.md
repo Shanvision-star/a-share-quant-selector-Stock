@@ -1,6 +1,8 @@
 # a-share-quant-selector-Stock
 
+> **项目框架引用原作者 GitHub 链接**: [GitHub Repository](https://github.com/original-author/a-share-quant-selector)
 > 🏆 **面向A股市场的专业级量化选股系统** — 多策略引擎 × 全市场扫描 × 专业Web工作台 × 钉钉自动推送
+
 
 基于 **Python + akshare + FastAPI + Vue 3** 的A股量化选股系统，覆盖从数据获取、策略扫描、图形匹配到可视化分析的完整链路：
 
@@ -38,10 +40,6 @@
 ### Web工作台（Vue 3 + FastAPI）
 - 🌐 **专业K线工作台** — Vue 3 + ECharts 渲染，主图含MA/BBI/短期趋势线/多空线，支持日线/周线切换，时间范围快速缩放（7日/30日/60日/1年/全部）
 - 📐 **副图可拖拽与折叠** — 成交量、还原成交量、KDJ、MACD四个副图；分割线可拖拽调整高度；**默认折叠节省空间**，单击展开按钮或双击标题行一键展开放大
-- 🔍 **内联分时K线弹窗** — 点击日K线任意一根K线，弹出可拖动的分时K线浮层（支持1分/15分切换），无需跳转页面
-- 🏢 **公司信息面板** — 自动加载行业/地区/主营业务/概念板块/上市板等信息，辅助基本面判断
-- 📊 **30日最大涨幅统计** — 在股票详情页直接展示近30个交易日的最大涨幅数据，快速评估历史弹性
-- 📁 **通达信TXT一键导出** — 策略结果可直接生成通达信可导入的TXT格式，支持按策略和日期筛选下载
 
 ### 推送与通知
 - 🔔 **钉钉自动推送** — 选股结果 + K线图 + B1匹配排名结果自动推送到钉钉群
@@ -798,4 +796,4 @@ MIT License
 
 ---
 
-**GitHub**: https://github.com/Dzy-HW-XD/a-share-quant-selector
+**原作者GitHub**: https://github.com/Dzy-HW-XD/a-share-quant-selector

@@ -20,6 +20,6 @@ import AppSidebar from './AppSidebar.vue'
 .app-main {
   flex: 1;
   overflow: auto;
-  background-color: var(--bg-primary);
+  background-color: #ffffff;
 }
 </style>

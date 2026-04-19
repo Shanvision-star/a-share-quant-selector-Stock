@@ -1,21 +1,33 @@
 <script setup lang="ts">
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   priceInfo: any
-}>()
+  stockInfo?: any
+  side?: 'left' | 'right'
+}>(), {
+  side: 'right',
+})
 
 function getPriceClass(val: number) {
   if (val > 0) return 'price-up'
   if (val < 0) return 'price-down'
   return 'price-flat'
 }
+
+function getBoardClass(board: string) {
+  if (board === '创业板') return 'board-cy'
+  if (board === '科创板') return 'board-kc'
+  if (board === '北交所') return 'board-bj'
+  return 'board-zb'
+}
 </script>
 
 <template>
-  <div class="stock-info-panel" v-if="priceInfo">
+  <div class="stock-info-panel" :class="{ 'is-left': props.side === 'left' }" v-if="priceInfo">
     <!-- 标题 -->
     <div class="panel-header">
       <span class="stock-code">{{ priceInfo.code }}</span>
       <span class="stock-name">{{ priceInfo.name }}</span>
+      <span v-if="priceInfo.board" class="board-tag" :class="getBoardClass(priceInfo.board)">{{ priceInfo.board }}</span>
     </div>
 
     <!-- 价格大字 -->
@@ -58,6 +70,44 @@ function getPriceClass(val: number) {
       <div class="info-row"><span class="label">J</span><span>{{ priceInfo.j }}</span></div>
     </div>
 
+    <!-- 公司信息（来自 stockInfo 懒加载，有缓存）-->
+    <div class="info-section" v-if="stockInfo && (stockInfo.industry || stockInfo.region || stockInfo.main_business)">
+      <div class="section-title">公司信息</div>
+      <div class="info-row" v-if="stockInfo.industry"><span class="label">行业</span><span>{{ stockInfo.industry }}</span></div>
+      <div class="info-row" v-if="stockInfo.region"><span class="label">地区</span><span>{{ stockInfo.region }}</span></div>
+      <div class="info-row-full" v-if="stockInfo.main_business">
+        <span class="label">主要产品研发方向</span>
+        <div class="info-value-wrap">{{ stockInfo.main_business }}</div>
+      </div>
+    </div>
+    <div class="info-section" v-else-if="!stockInfo">
+      <div class="section-title">公司信息</div>
+      <div class="concept-loading">加载中...</div>
+    </div>
+
+    <!-- 概念标签 -->
+    <div class="info-section">
+      <div class="section-title">概念板块</div>
+      <div v-if="!stockInfo" class="concept-loading">加载中...</div>
+      <div v-else-if="stockInfo.concept_tags && stockInfo.concept_tags.length" class="concept-tags">
+        <span v-for="tag in stockInfo.concept_tags" :key="tag" class="concept-tag">{{ tag }}</span>
+      </div>
+      <div v-else class="concept-loading">暂无概念数据</div>
+    </div>
+
+    <!-- 近期表现 -->
+    <div class="info-section" v-if="priceInfo.max_gain_30d != null || priceInfo.max_daily_gain_30d != null">
+      <div class="section-title">近30日表现</div>
+      <div class="info-row" v-if="priceInfo.max_gain_30d != null">
+        <span class="label">最大涨幅</span>
+        <span class="price-up">{{ priceInfo.max_gain_30d > 0 ? '+' : '' }}{{ priceInfo.max_gain_30d }}%</span>
+      </div>
+      <div class="info-row" v-if="priceInfo.max_daily_gain_30d != null">
+        <span class="label">单日最大涨幅</span>
+        <span class="price-up">{{ priceInfo.max_daily_gain_30d > 0 ? '+' : '' }}{{ priceInfo.max_daily_gain_30d }}%</span>
+      </div>
+    </div>
+
     <div class="info-date">数据日期: {{ priceInfo.latest_date }}</div>
   </div>
 </template>
@@ -70,6 +120,10 @@ function getPriceClass(val: number) {
   border-left: 1px solid var(--border-color);
   overflow-y: auto;
   height: 100%;
+}
+.stock-info-panel.is-left {
+  border-left: none;
+  border-right: 1px solid var(--border-color);
 }
 .panel-header {
   margin-bottom: 12px;
@@ -110,5 +164,65 @@ function getPriceClass(val: number) {
   font-size: 11px;
   color: var(--text-secondary);
   text-align: center;
+}
+/* ── 板块标签 ─────────────────────────────────────────────────── */
+.board-tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: #fff;
+  margin-left: 4px;
+  vertical-align: middle;
+  line-height: 1.5;
+}
+.board-zb { background: #409eff; }
+.board-cy { background: #67c23a; }
+.board-kc { background: #f56c6c; }
+.board-bj { background: #e6a23c; }
+/* ── 区块标题 ─────────────────────────────────────────────────── */
+.section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #303133);
+  margin-bottom: 6px;
+}
+/* ── 主营业务换行 ─────────────────────────────────────────────── */
+.info-row-full {
+  padding: 3px 0;
+  font-size: 13px;
+}
+.info-row-full .label {
+  color: var(--text-secondary);
+  display: block;
+  margin-bottom: 2px;
+}
+.info-value-wrap {
+  font-size: 12px;
+  color: var(--text-primary, #606266);
+  line-height: 1.5;
+  word-break: break-all;
+  max-height: 80px;
+  overflow-y: auto;
+}
+/* ── 概念标签 ─────────────────────────────────────────────────── */
+.concept-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.concept-tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 5px;
+  background: rgba(64, 158, 255, 0.1);
+  color: #409eff;
+  border: 1px solid rgba(64, 158, 255, 0.3);
+  border-radius: 3px;
+  line-height: 1.5;
+}
+.concept-loading {
+  font-size: 11px;
+  color: var(--text-secondary, #909399);
 }
 </style>

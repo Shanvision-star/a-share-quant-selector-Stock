@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { House, Refresh, Setting, DataAnalysis } from '@element-plus/icons-vue'
+import { House, Refresh, Setting, DataAnalysis, List } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,19 +27,23 @@ function navigate(path: string) {
     >
       <el-menu-item index="/">
         <el-icon><House /></el-icon>
-        <template #title>Home</template>
+        <template #title>首页总览</template>
+      </el-menu-item>
+      <el-menu-item index="/strategy-results">
+        <el-icon><List /></el-icon>
+        <template #title>策略结果</template>
       </el-menu-item>
       <el-menu-item index="/update">
         <el-icon><Refresh /></el-icon>
-        <template #title>Update</template>
+        <template #title>数据更新</template>
       </el-menu-item>
       <el-menu-item index="/settings">
         <el-icon><Setting /></el-icon>
-        <template #title>Settings</template>
+        <template #title>参数设置</template>
       </el-menu-item>
       <el-menu-item index="/backtest">
         <el-icon><DataAnalysis /></el-icon>
-        <template #title>Backtest</template>
+        <template #title>回测</template>
       </el-menu-item>
     </el-menu>
     <div class="sidebar-toggle" @click="isCollapsed = !isCollapsed">

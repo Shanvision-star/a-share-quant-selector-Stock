@@ -11,7 +11,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'page-change', page: number): void
-  (e: 'sort-change', prop: string, order: string): void
+  (e: 'sort-change', prop: string, order: string | null): void
   (e: 'row-click', code: string): void
 }>()
 
@@ -36,8 +36,8 @@ function handleSortChange({ prop, order }: any) {
       @sort-change="handleSortChange"
       style="cursor: pointer"
     >
-      <el-table-column prop="code" label="代码" width="90" />
-      <el-table-column prop="name" label="名称" width="100" />
+      <el-table-column prop="code" label="代码" width="90" sortable="custom" />
+      <el-table-column prop="name" label="名称" width="110" sortable="custom" />
       <el-table-column prop="latest_price" label="最新价" width="90" sortable="custom" align="right">
         <template #default="{ row }">
           <span :class="getPriceClass(row.change_pct)">{{ row.latest_price }}</span>
@@ -51,10 +51,19 @@ function handleSortChange({ prop, order }: any) {
         </template>
       </el-table-column>
       <el-table-column prop="market_cap" label="市值(亿)" width="100" sortable="custom" align="right" />
-      <el-table-column prop="latest_date" label="日期" width="110" />
+      <el-table-column prop="k_value" label="K" width="80" sortable="custom" align="right">
+        <template #default="{ row }">{{ Number(row.k_value ?? 0).toFixed(2) }}</template>
+      </el-table-column>
+      <el-table-column prop="d_value" label="D" width="80" sortable="custom" align="right">
+        <template #default="{ row }">{{ Number(row.d_value ?? 0).toFixed(2) }}</template>
+      </el-table-column>
+      <el-table-column prop="j_value" label="J" width="80" sortable="custom" align="right">
+        <template #default="{ row }">{{ Number(row.j_value ?? 0).toFixed(2) }}</template>
+      </el-table-column>
+      <el-table-column prop="latest_date" label="日期" width="110" sortable="custom" />
       <el-table-column label="走势" width="140" align="center">
         <template #default="{ row }">
-          <MiniKline :code="row.code" :days="30" />
+          <MiniKline :code="row.code" :days="30" :data-points="row.mini_kline || []" />
         </template>
       </el-table-column>
     </el-table>

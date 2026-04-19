@@ -642,8 +642,126 @@ class AKShareFetcher:
 
         return normalized.sort_values('date', ascending=False).reset_index(drop=True)
 
-    def _fetch_stock_history_eastmoney(self, stock_code, start_date, end_date, prefetched_market_cap=None):
-        """直接调用 EastMoney K 线接口，返回成交额和换手率。"""
+    def fetch_intraday_kline(self, stock_code: str, date: str, klt: int = 1) -> list:
+        """获取单日分时/分钟K线数据。
+        stock_code: 6位股票代码
+        date      : 'YYYY-MM-DD'
+        klt       : 1=1分钟, 5=5分钟, 15=15分钟
+        返回 [{time, open, close, high, low, volume}, ...]
+
+        策略:
+        1. 先尝试 push2.eastmoney.com kline 接口（仅当天有1分钟数据）
+        2. 若返回数据不属于请求日期，回退到 baostock（支持多年5/15/30/60分钟历史）
+        """
+        if klt not in (1, 5, 15):
+            klt = 1
+        # Step 1: 尝试 push2 实时接口
+        result = self._fetch_intraday_push2(stock_code, date, klt)
+        if result:
+            return result
+        # Step 2: 回退到 baostock 历史分钟数据
+        bs_freq = '5' if klt <= 5 else '15'
+        return self._fetch_intraday_baostock(stock_code, date, bs_freq)
+
+    def _fetch_intraday_push2(self, stock_code: str, date: str, klt: int) -> list:
+        """push2.eastmoney.com 实时分钟K线（仅最近交易日有效）"""
+        try:
+            import requests as _req
+            from datetime import datetime as _dt, timedelta as _td
+            market_code = 1 if stock_code.startswith('6') else 0
+            beg_clean = date.replace('-', '')
+            end_clean = (_dt.strptime(date, '%Y-%m-%d') + _td(days=1)).strftime('%Y%m%d')
+            url = "https://push2.eastmoney.com/api/qt/stock/kline/get"
+            params = {
+                "fields1": "f1,f2,f3,f4,f5,f6",
+                "fields2": "f51,f52,f53,f54,f55,f56",
+                "ut":      "7eea3edcaed734bea9cbfc24409ed989",
+                "klt":     str(klt),
+                "fqt":     "0",
+                "secid":   f"{market_code}.{stock_code}",
+                "beg":     beg_clean,
+                "end":     end_clean,
+                "lmt":     "500",
+            }
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://quote.eastmoney.com/",
+            }
+            resp = _req.get(url, params=params, headers=headers, timeout=15)
+            resp.raise_for_status()
+            data_json = resp.json()
+            klines = (data_json.get("data") or {}).get("klines") or []
+            result = []
+            for line in klines:
+                parts = line.split(",")
+                if len(parts) < 6:
+                    continue
+                bar_time = parts[0]
+                if not bar_time.startswith(date):
+                    continue
+                result.append({
+                    "time":   bar_time,
+                    "open":   round(float(parts[1]), 2),
+                    "close":  round(float(parts[2]), 2),
+                    "high":   round(float(parts[3]), 2),
+                    "low":    round(float(parts[4]), 2),
+                    "volume": int(float(parts[5])),
+                })
+            return result
+        except Exception:
+            return []
+
+    def _fetch_intraday_baostock(self, stock_code: str, date: str, frequency: str = '5') -> list:
+        """baostock 历史分钟K线，支持多年数据。frequency: '5','15','30','60'"""
+        try:
+            import baostock as bs
+            market_prefix = 'sh' if stock_code.startswith('6') else 'sz'
+            bs_code = f"{market_prefix}.{stock_code}"
+            lg = bs.login()
+            if lg.error_code != '0':
+                return []
+            try:
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    fields='date,time,open,high,low,close,volume',
+                    start_date=date,
+                    end_date=date,
+                    frequency=frequency,
+                )
+                result = []
+                while rs.next():
+                    row = rs.get_row_data()
+                    if not row or len(row) < 7:
+                        continue
+                    raw_time = row[1]  # '20230803093500000'
+                    hh = raw_time[8:10]
+                    mm = raw_time[10:12]
+                    bar_time = f"{date} {hh}:{mm}"
+                    try:
+                        result.append({
+                            "time":   bar_time,
+                            "open":   round(float(row[2]), 2),
+                            "high":   round(float(row[3]), 2),
+                            "low":    round(float(row[4]), 2),
+                            "close":  round(float(row[5]), 2),
+                            "volume": int(float(row[6])),
+                        })
+                    except (ValueError, IndexError):
+                        continue
+                return result
+            finally:
+                bs.logout()
+        except Exception:
+            return []
+
+    def _fetch_stock_history_eastmoney(self, stock_code, start_date, end_date, prefetched_market_cap=None, fqt: int = 1):
+        """直接调用 EastMoney K 线接口，返回成交额和换手率。
+        fqt: 0=不复权, 1=前复权（默认）, 2=后复权
+        """
         try:
             market_code = 1 if stock_code.startswith('6') else 0
             url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
@@ -652,7 +770,7 @@ class AKShareFetcher:
                 "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f116",
                 "ut": "7eea3edcaed734bea9cbfc24409ed989",
                 "klt": "101",
-                "fqt": "1",
+                "fqt": str(fqt),
                 "secid": f"{market_code}.{stock_code}",
                 "beg": start_date,
                 "end": end_date,
@@ -682,6 +800,34 @@ class AKShareFetcher:
         except Exception:
             return None
     
+    def fetch_kline_for_display(self, stock_code: str, fqt: int = 1, years: int = 10):
+        """仅供图表展示，不写 CSV。
+        fqt: 0=不复权, 1=前复权（默认，读本地 CSV）, 2=后复权
+
+        边界值:
+          fqt 不在 (0,1,2) → 强制为 1
+          fqt==1 → 直接读 CSV，避免网络请求，且与策略数据完全一致
+          远端拉取失败 → 返回 None，调用方负责 fallback
+        """
+        if fqt not in (0, 1, 2):
+            fqt = 1
+
+        if fqt == 1:
+            df = self.csv_manager.read_stock(stock_code)
+            return df if not df.empty else None
+
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365 * years)
+        df = self._fetch_stock_history_eastmoney(
+            stock_code,
+            start_date.strftime("%Y%m%d"),
+            end_date.strftime("%Y%m%d"),
+            fqt=fqt,
+        )
+        if df is None or df.empty:
+            return None
+        return df
+
     def fetch_stock_history(self, stock_code, years=6):
         """
         抓取单只股票历史数据
@@ -1028,17 +1174,24 @@ class AKShareFetcher:
             return build_summary('done', message)
 
         # ── 只更新日期落后的股票（跳过已是最新的，节省时间）───────────
+        # P1: 只读第一行(nrows=1)判断日期，不读全量CSV（~100x加速）
         print("  检查更新状态...")
         emit_progress(1, f"开始检查 {scan_total} 只股票的数据状态...", phase='scan')
+        latest_date_map: dict = {}  # code→date，供快/慢路径分拣复用
         for idx, code in enumerate(existing_stocks, start=1):
             checked_count = idx
             try:
-                df = self.csv_manager.read_stock(code)
-                if df is None or df.empty:
+                _path = self.csv_manager.get_stock_path(code)
+                if not _path.exists() or _path.stat().st_size == 0:
+                    stocks_to_update.append(code)
+                    continue
+                _df1 = pd.read_csv(_path, nrows=1, usecols=['date'])
+                if _df1.empty:
                     stocks_to_update.append(code)
                 else:
-                    latest_date = pd.to_datetime(df.iloc[0]['date']).date()
-                    if latest_date < target_date:
+                    _ld = pd.to_datetime(_df1.iloc[0]['date']).date()
+                    latest_date_map[code] = _ld
+                    if _ld < target_date:
                         stocks_to_update.append(code)
             except Exception:
                 stocks_to_update.append(code)
@@ -1071,18 +1224,33 @@ class AKShareFetcher:
         # ── 一次性批量获取全市场市值（避免1840次单独API调用）─────────
         print("\n正在批量获取市值数据（一次性）...")
         market_cap_map = {}
+        spot_data_map: dict = {}  # key=code, value=今日行情dict（快路径用）
         try:
             import akshare as ak
             spot_df = ak.stock_zh_a_spot_em()
-            for _, row in spot_df.iterrows():
-                code = str(row['代码']).zfill(6)
-                cap = row.get('总市值', 0)
-                if pd.notna(cap) and cap > 0:
-                    if cap < 1e10:
-                        cap = int(cap * 1e8)
-                    else:
-                        cap = int(cap)
-                    market_cap_map[code] = cap
+            # P3: 向量化处理替代 iterrows（~50-100x 加速）
+            spot_df['_code'] = spot_df['代码'].astype(str).str.zfill(6)
+            _cap_col = spot_df['总市值'] if '总市值' in spot_df.columns else pd.Series(0.0, index=spot_df.index)
+            _valid = pd.notna(_cap_col) & (_cap_col > 0)
+            _vdf = spot_df[_valid].copy()
+            _vdf['_cap'] = _vdf['总市值'].apply(lambda c: int(c * 1e8) if c < 1e10 else int(c))
+            market_cap_map = dict(zip(_vdf['_code'], _vdf['_cap']))
+
+            def _scol(col):
+                return _vdf[col].fillna(0) if col in _vdf.columns else pd.Series(0.0, index=_vdf.index)
+
+            for _c, _cap, _o, _cl, _h, _l, _vol, _amt, _tr in zip(
+                _vdf['_code'], _vdf['_cap'],
+                _scol('今开').astype(float), _scol('最新价').astype(float),
+                _scol('最高').astype(float), _scol('最低').astype(float),
+                _scol('成交量').astype(float), _scol('成交额').astype(float),
+                _scol('换手率').astype(float),
+            ):
+                spot_data_map[str(_c)] = {
+                    'date': target_date_str, 'open': float(_o), 'close': float(_cl),
+                    'high': float(_h), 'low': float(_l), 'volume': int(_vol),
+                    'amount': float(_amt), 'turnover': float(_tr), 'market_cap': int(_cap),
+                }
             print(f"  ✓ 批量市值获取成功: {len(market_cap_map)} 只")
             emit_progress(
                 35,
@@ -1097,22 +1265,77 @@ class AKShareFetcher:
                 phase='market_cap',
             )
 
-        # ── 并发更新 K 线数据 ──────────────────────────────────────────
+        # ── 按缺失天数拆分快/慢路径 ──────────────────────────────────────
+        # P2: 直接查 latest_date_map（扫描阶段已缓存），不再重新读文件
+        # 快路径条件（全部满足才走快路径）：
+        #   1. 仅缺失1个交易日（防止多日缺失用快照后丢失历史行）
+        #   2. is_after_close == True（防止盘中实时价写入当收盘价 R3）
+        #   3. spot_data_map 中存在该股
+        #   4. spot_data_map[code]['close'] > 0（停牌过滤）
+        fast_path_stocks: list = []
+        slow_path_stocks: list = []
+        for _code in stocks_to_update:
+            _ld = latest_date_map.get(_code)
+            if _ld is not None:
+                _delta = (target_date - _ld).days
+                _weeks, _rem = divmod(_delta, 7)
+                _days_behind = _weeks * 5 + min(_rem, 5)
+            else:
+                _days_behind = 999
+            _spot = spot_data_map.get(_code)
+            if (
+                _days_behind == 1
+                and is_after_close
+                and _spot is not None
+                and float(_spot.get('close', 0)) > 0
+            ):
+                fast_path_stocks.append(_code)
+            else:
+                slow_path_stocks.append(_code)
+
+        # ── 快路径：单日缺失，直接用 spot_data_map 写入（零额外HTTP）────────
+        fast_success = 0
+        fast_skipped = 0
+        if fast_path_stocks:
+            emit_progress(
+                36,
+                f"快路径写入 {len(fast_path_stocks)} 只单日缺失股票...",
+                phase='fast_update',
+            )
+            import threading as _threading_fa
+            _lock_fa = _threading_fa.Lock()
+            for _code in fast_path_stocks:
+                _ok = self.csv_manager.prepend_row(_code, spot_data_map[_code])
+                with _lock_fa:
+                    completed += 1
+                    if _ok:
+                        updated += 1
+                        fast_success += 1
+                    else:
+                        failed += 1
+                        fast_skipped += 1
+            emit_progress(
+                39,
+                f"快路径完成：成功 {fast_success}，跳过/失败 {fast_skipped}，慢路径待处理 {len(slow_path_stocks)} 只",
+                phase='fast_update',
+            )
+
+        # ── 并发更新 K 线数据（慢路径：多日缺失）──────────────────────────
         days_to_fetch = 10
-        total = len(stocks_to_update)
+        total = len(slow_path_stocks)
         TIMEOUT_SECONDS = 1800  # 30分钟，替代原600s
         import threading
         lock = threading.Lock()
         start_time = time.time()
 
-        print(f"\n开始并发更新 {total} 只股票...")
+        print(f"\n开始并发更新 {total} 只股票（慢路径）...")
         emit_progress(40, f"开始并发更新 {total} 只股票...", phase='update')
         all_done = False
         try:
             with ThreadPoolExecutor(max_workers=16) as executor:
                 futures = {
                     executor.submit(self._update_single_stock, code, days_to_fetch, market_cap_map): code
-                    for code in stocks_to_update
+                    for code in slow_path_stocks
                 }
                 emit_step = 1 if total <= 20 else 10
                 try:

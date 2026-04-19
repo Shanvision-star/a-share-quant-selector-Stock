@@ -128,6 +128,22 @@ def init_database():
         ON strategy_results(run_id, strategy_filter, code, signal_date, category)
     """)
 
+    # 表 6: intraday_klines - 分时K线缓存（按股票+日期+周期唯一）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS intraday_klines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL,
+            date TEXT NOT NULL,
+            period INTEGER NOT NULL,
+            bars_json TEXT NOT NULL,
+            fetched_at TEXT NOT NULL
+        )
+    """)
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_intraday_code_date_period
+        ON intraday_klines(code, date, period)
+    """)
+
     # 记录 schema version
     cursor.execute(
         "INSERT OR REPLACE INTO app_meta(key, value) VALUES (?, ?)",

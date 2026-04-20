@@ -9,13 +9,163 @@ from pathlib import Path
 
 import yaml
 
-from utils.csv_manager import CSVManager
+from EmQuantAPI import c
+import ctypes
+
 from utils.dingtalk_notifier import DingTalkNotifier
 from utils.tdx_exporter import export_b1_pre_signal_tdx
 from strategy.b1_case_analyzer import B1CaseStrategy
+from utils.csv_manager import CSVManager
 
-# Adjust base path to project root
-base = Path(__file__).resolve().parent.parent
+# Adjust base path to project root (run_b1_scan.py is in project root)
+base = Path(__file__).resolve().parent
+
+# Load EmQuantAPI DLL（失败时静默，不影响主流程）
+def load_emquantapi_dll():
+    dll_path = r"E:\\ApplicationInstall\\EMQuantAPI_Python\\python3\\libs\\windows\\EmQuantAPI_x64.dll"
+    try:
+        ctypes.CDLL(dll_path)
+    except OSError:
+        pass
+
+load_emquantapi_dll()
+
+import pandas as pd
+from datetime import datetime, timedelta
+
+# EmQuantAPI 登录状态（懒初始化，只登录一次）
+_emquant_logged_in = False
+
+def _emquant_login():
+    """使用缓存凭证登录 EmQuantAPI（只执行一次）。
+    若账户未开通 Python API 权限（ErrorCode=10001003），静默返回 False，不影响主流程。
+    """
+    global _emquant_logged_in
+    if _emquant_logged_in:
+        return True
+    try:
+        result = c.start("ForceLogin=1")
+        if result.ErrorCode != 0:
+            # 静默：权限不足时不打印警告，避免日志噪音
+            return False
+        _emquant_logged_in = True
+        print("[INFO] EmQuantAPI 登录成功，实时数据补充已启用", flush=True)
+        return True
+    except Exception as e:
+        return False
+
+
+def _to_emquant_code(code: str) -> str:
+    """将 6 位纯数字代码转换为 EmQuantAPI 格式（如 600000 → 600000.SH）。"""
+    code = str(code).strip().upper()
+    # 已有后缀
+    if '.' in code:
+        return code
+    if len(code) != 6:
+        return code
+    prefix = code[:3]
+    if prefix in ('600', '601', '603', '605', '688', '689', '900'):
+        return code + '.SH'
+    if prefix in ('000', '001', '002', '003', '300', '301'):
+        return code + '.SZ'
+    if prefix in ('430', '831', '832', '833', '834', '835', '836', '837',
+                  '838', '839', '870', '871', '872', '873', '920'):
+        return code + '.BJ'
+    # 兜底
+    first = code[0]
+    if first == '6':
+        return code + '.SH'
+    return code + '.SZ'
+
+
+def fetch_stock_data_emquantapi(code: str, lookback_days: int = 250):
+    """通过 EmQuantAPI c.csd() 拉取日 K 线，返回与 CSVManager 列格式一致的 DataFrame。
+    列：date, open, high, low, close, volume, amount, turnover
+    失败或未登录时返回 None。
+    """
+    if not _emquant_login():
+        return None
+
+    em_code = _to_emquant_code(code)
+    end_date = datetime.today().strftime("%Y-%m-%d")
+    start_date = (datetime.today() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+
+    try:
+        result = c.csd(
+            em_code,
+            "OPEN,HIGH,LOW,CLOSE,VOLUME,AMOUNT,TURNOVERRATE",
+            start_date,
+            end_date,
+            "Period=1,Adjustflag=1,Order=1,Ispandas=1",
+        )
+        # Ispandas=1 时直接返回 DataFrame
+        if isinstance(result, pd.DataFrame) and not result.empty:
+            df = result.reset_index()
+            df = df.rename(columns={
+                'DATETIME': 'date',
+                'OPEN':     'open',
+                'HIGH':     'high',
+                'LOW':      'low',
+                'CLOSE':    'close',
+                'VOLUME':   'volume',
+                'AMOUNT':   'amount',
+                'TURNOVERRATE': 'turnover',
+            })
+            # 保留需要的列（忽略多余列）
+            keep = [c for c in ('date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'turnover') if c in df.columns]
+            df = df[keep].copy()
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+            return df
+
+        # Ispandas=0 时是 EmQuantData 对象
+        if hasattr(result, 'ErrorCode') and result.ErrorCode != 0:
+            print(f"[WARN] EmQuantAPI csd 错误 ({em_code}) ErrorCode={result.ErrorCode}: {result.ErrorMsg}", flush=True)
+            return None
+
+        # 手动组装 DataFrame（非 Pandas 模式）
+        if hasattr(result, 'Dates') and result.Dates and hasattr(result, 'Data') and result.Data:
+            rows = []
+            for i, dt in enumerate(result.Dates):
+                row = {'date': str(dt)[:10]}
+                for ind in ('OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME', 'AMOUNT', 'TURNOVERRATE'):
+                    vals = result.Data.get(ind, result.Data.get(ind.lower(), []))
+                    row[ind.lower() if ind != 'TURNOVERRATE' else 'turnover'] = vals[i] if i < len(vals) else None
+                rows.append(row)
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={'turnoverrate': 'turnover'})
+            return df if not df.empty else None
+
+    except Exception as e:
+        print(f"[WARN] EmQuantAPI 拉取数据异常 ({em_code}): {e}", flush=True)
+
+    return None
+
+
+def fetch_stock_data(code):
+    """数据加载主入口。
+    优先级：
+      1. 本地 CSVManager（速度快、数据稳定，主力数据源）
+      2. EmQuantAPI（实时补充，当本地无数据时使用）
+    返回标准 DataFrame（含 date/open/high/low/close/volume 等列），或 None。
+    """
+    # 优先：本地 CSV
+    try:
+        df = cm.read_stock(code)
+        if df is not None and not df.empty:
+            return df
+    except Exception as e:
+        print(f"[WARN] CSVManager 加载数据失败 ({code}): {e}", flush=True)
+
+    # 备用：EmQuantAPI（实时数据）
+    try:
+        df = fetch_stock_data_emquantapi(code)
+        if df is not None and not df.empty:
+            return df
+    except Exception as e:
+        print(f"[WARN] EmQuantAPI 加载数据失败 ({code}): {e}", flush=True)
+
+    return None
+
 cm = CSVManager(str(base / 'data'))
 strategy = B1CaseStrategy()
 
@@ -113,10 +263,8 @@ for idx, code in enumerate(sample, start=1):
         print(f"正在扫描: [{idx}/{total}] {pct:5.1f}% 当前 {code}", flush=True)
 
     try:
-        df = cm.read_stock(code)
-        if df is None or df.empty or len(df) < 50:
-            pass
-        else:
+        df = fetch_stock_data(code)
+        if df is not None and not df.empty:
             r = strategy.scan_pre_signal(df, lookback_days=100)
             if r['detected']:
                 prepared_df = strategy.prepare_indicators(df)
@@ -198,3 +346,13 @@ if stage_results:
     for k, v in s.items():
         print(f'  {k}: {v}', flush=True)
 print('done', flush=True)
+
+def _test_data_loading():
+    """独立调用验证：fetch_stock_data 是否能正确加载数据（仅用于调试，不影响主流程）。"""
+    test_codes = ["603920", "688519", "600519"]
+    for code in test_codes:
+        df = fetch_stock_data(code)
+        if df is not None and not df.empty:
+            print(f"[TEST OK] {code}: {len(df)} 行, 列={list(df.columns)}", flush=True)
+        else:
+            print(f"[TEST FAIL] {code}: 无数据", flush=True)

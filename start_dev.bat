@@ -5,12 +5,12 @@ title A-Share Quant Dev Server
 cd /d "%~dp0"
 
 echo [1/2] 启动后端 FastAPI (port 8001)...
-start "后端 API" cmd /k ".venv\Scripts\uvicorn.exe web.backend.main:app --host 0.0.0.0 --port 8001 --reload"
+start "后端 API" /d "%~dp0" cmd /k ".venv\Scripts\python.exe scripts\run_web_backend.py --host 0.0.0.0 --port 8001"
 
 timeout /t 2 >nul
 
 echo [2/2] 启动前端 Vite (port 5173)...
-start "前端 Vite" cmd /k "cd web\frontend && npm run dev"
+start "前端 Vite" /d "%~dp0web\frontend" cmd /k "npm run dev"
 
 echo.
 echo 后端: http://localhost:8001/api/health

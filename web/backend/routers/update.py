@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Query
 from sse_starlette.sse import EventSourceResponse
 import json
+from typing import List
 
 router = APIRouter(prefix="/api", tags=["数据更新"])
 
@@ -31,3 +32,25 @@ async def get_data_status():
     from web.backend.services.data_service import get_data_status
     status = get_data_status()
     return {"success": True, "data": status}
+
+
+@router.get("/market-cap")
+async def get_market_cap(codes: str = Query(None, description="逗号分隔的股票代码；为空则返回全部")):
+    """
+    从内存缓存（AKShareFetcher._market_cap_cache）按需返回市值。
+    前端在收到 market_cap_complete 事件后调用此接口刷新显示的市值数据。
+    返回：{code: 市值（亿元）}
+    """
+    from web.backend.services.data_service import fetcher
+    from utils.akshare_fetcher import _market_cap_cache_lock
+
+    with _market_cap_cache_lock:
+        cache: dict = dict(fetcher._market_cap_cache)
+
+    if codes:
+        code_list = [c.strip().zfill(6) for c in codes.split(',') if c.strip()]
+        result = {c: round(cache.get(c, 0) / 1e8, 2) for c in code_list}
+    else:
+        result = {c: round(v / 1e8, 2) for c, v in cache.items()}
+
+    return {"success": True, "data": result, "total": len(result)}

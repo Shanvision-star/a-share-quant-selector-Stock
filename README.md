@@ -50,14 +50,15 @@
 ## 🚀 快速开始
 
 ```bash
-# 1. 克隆项目
+# 1. 克隆项目（推荐选择web分支）
 git clone https://github.com/Shanvision-star/a-share-quant-selector-Stock
 cd a-share-quant-selector-Stock
 
 # 2. 创建并激活虚拟环境（推荐，避免依赖污染全局环境）
 python3 -m venv .venv
-source .venv/bin/activate          # Linux/macOS
+source .venv/bin/activate          # Linux/macOS / Git Bash
 .venv\Scripts\Activate.ps1        # Windows PowerShell
+.venv\Scripts\activate.bat        # Windows CMD（命令提示符）
 
 # 3. 安装依赖（Python后端）
 pip install -r requirements.txt
@@ -92,6 +93,7 @@ start_dev.bat
 # 终端1：启动 FastAPI 后端（供前端 /api 代理，监听 8001）
 cd web && npm run backend
 # 等价于：uvicorn web.backend.main:app --host 0.0.0.0 --port 8001 --reload
+# Windows 提示：Git Bash / PowerShell 7+ 支持 &&；旧版 PowerShell 5 请改用分号：cd web; npm run backend
 
 # 终端2：启动前端 Vite 开发服务（监听 5173，/api 自动代理到 8001）
 cd web && npm run dev
@@ -418,7 +420,7 @@ EMA(EMA(CLOSE, 10), 10)
 | 步骤 | 命令 | 说明 |
 |------|------|------|
 | 1. 创建虚拟环境（首次） | `python -m venv .venv` | 首次部署建议执行；已有可跳过。 |
-| 2. 激活虚拟环境 | `.\.venv\Scripts\Activate.ps1` | 激活后再安装和运行。 |
+| 2. 激活虚拟环境 | PowerShell: `.\.venv\Scripts\Activate.ps1`<br>Git Bash: `source .venv/Scripts/activate`<br>CMD: `.venv\Scripts\activate.bat` | 按当前终端类型选择对应命令；激活后再安装和运行。 |
 | 3. 安装依赖 | `pip install -r requirements.txt` | 安装项目运行所需 Python 包。 |
 | 4. 初始化历史数据（首次） | `.\.venv\Scripts\python.exe .\main.py init` | 首次全量抓取；已有数据可跳过。 |
 | 5. 日常执行主流程 | `.\.venv\Scripts\python.exe .\main.py run` | 更新数据 + 选股 + 通知。 |
@@ -426,8 +428,8 @@ EMA(EMA(CLOSE, 10), 10)
 | 7. 阶段型B1前瞻扫描 | `.\.venv\Scripts\python.exe -u .\run_b1_scan.py` | 启动前预警扫描，实时显示进度。 |
 | 8. 快速验证（小样本） | `.\.venv\Scripts\python.exe .\main.py run --max-stocks 500 --b1-match` | 小规模验证参数与流程是否正常。 |
 | 9. 启动 Web 管理界面 | `.\.venv\Scripts\python.exe .\main.py web` | 本地查看数据与图形。 |
-| 10. 一键启动 Web API 后端 | `cd .\web && npm run backend` | 启动 FastAPI（8001），供前端 `/api` 代理。 |
-| 11. 启动前端开发服务 | `cd .\web && npm run dev` | 启动 Vite（5173），访问 `http://127.0.0.1:5173`。 |
+| 10. 一键启动 Web API 后端 | `cd web && npm run backend` | 启动 FastAPI（8001），供前端 `/api` 代理。PowerShell 5 用 `;` 替换 `&&`：`cd web; npm run backend`。 |
+| 11. 启动前端开发服务 | `cd web && npm run dev` | 启动 Vite（5173），访问 `http://127.0.0.1:5173`。PowerShell 5 用 `;` 替换 `&&`：`cd web; npm run dev`。 |
 
 > 说明：上面是“按步骤”的推荐流程；后面的章节保留“完整参数命令表”，用于进阶调参。
 
@@ -501,8 +503,8 @@ EMA(EMA(CLOSE, 10), 10)
 | `.\.venv\Scripts\python.exe .\main.py backtest --backtest-days 3 --k-threshold 20 --trend-drop-pct 5` | 自定义回溯参数，验证低位 K 值与趋势线回落条件。 |
 | `.\.venv\Scripts\python.exe .\main.py web` | 启动 Web 服务（默认地址与端口）。 |
 | `.\.venv\Scripts\python.exe .\main.py web --host 0.0.0.0 --port 5000` | 自定义 Web 服务监听地址与端口。 |
-| `cd .\web && npm run backend` | 一键启动 FastAPI Web 后端（`0.0.0.0:8001`，供 Vite 代理）。 |
-| `cd .\web && npm run dev` | 启动 Vite 前端开发服务（`0.0.0.0:5173`，`/api` 自动转发到 `8001`）。 |
+| `cd web && npm run backend` | 一键启动 FastAPI Web 后端（`0.0.0.0:8001`，供 Vite 代理）。PowerShell 5 用 `;` 替换 `&&`：`cd web; npm run backend`。 |
+| `cd web && npm run dev` | 启动 Vite 前端开发服务（`0.0.0.0:5173`，`/api` 自动转发到 `8001`）。PowerShell 5 用 `;` 替换 `&&`：`cd web; npm run dev`。 |
 | `.\.venv\Scripts\python.exe .\main.py schedule` | 启动内置定时调度循环。 |
 | `.\.venv\Scripts\python.exe .\main.py run --config config/config.yaml` | 指定配置文件运行（测试/生产隔离）。 |
 | `.\.venv\Scripts\python.exe .\main.py --version` | 输出 Python、akshare、pandas、系统版本信息。 |

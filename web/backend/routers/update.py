@@ -2,7 +2,10 @@
 from fastapi import APIRouter, Query
 from sse_starlette.sse import EventSourceResponse
 import json
+import logging
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["数据更新"])
 
@@ -29,9 +32,98 @@ async def trigger_update(
 @router.get("/data/status")
 async def get_data_status():
     """获取数据新鲜度报告"""
+    logger.debug("GET /api/data/status 被调用")
     from web.backend.services.data_service import get_data_status
     status = get_data_status()
+    logger.debug("GET /api/data/status 返回: total_stocks=%s, is_fresh=%s", status.get("total_stocks"), status.get("is_fresh"))
     return {"success": True, "data": status}
+
+
+@router.get("/data/init-status")
+async def get_init_status():
+    """
+    首次运行检测：判断本地数据目录是否为空或严重过期。
+    返回:
+      state: "empty"  — 本地无数据，需要全量初始化
+             "stale"  — 数据严重过期（max_lag_days 由调用方判断）
+             "ready"  — 数据基本正常
+      message: 人类可读说明
+      total_stocks: 本地股票CSV总数
+      max_lag_days: 最旧数据与今日相差天数（粗略估算）
+    """
+    logger.debug("GET /api/data/init-status 被调用")
+    try:
+        from web.backend.services.data_service import csv_manager
+        from web.backend.services.strategy_service import get_latest_trade_date
+        from datetime import datetime
+
+        all_stocks = csv_manager.list_all_stocks()
+        total = len(all_stocks)
+        logger.debug("init-status: 共检测到 %d 只股票CSV", total)
+
+        if total == 0:
+            result = {
+                "state": "empty",
+                "message": "本地数据目录为空，请先执行全量数据初始化。",
+                "total_stocks": 0,
+                "max_lag_days": 0,
+            }
+            logger.info("init-status: state=empty，本地无数据")
+            return {"success": True, "data": result}
+
+        # 抽样检查最旧数据日期
+        import random
+        sample = random.sample(all_stocks, min(20, total))
+        expected_date = get_latest_trade_date()
+        max_lag = 0
+
+        for code in sample:
+            df = csv_manager.read_stock(code)
+            if not df.empty:
+                stock_date = df.iloc[0]['date']
+                if hasattr(stock_date, 'strftime'):
+                    stock_date_str = stock_date.strftime('%Y-%m-%d')
+                else:
+                    stock_date_str = str(stock_date)[:10]
+                try:
+                    lag = (datetime.strptime(expected_date, '%Y-%m-%d') - datetime.strptime(stock_date_str, '%Y-%m-%d')).days
+                    if lag > max_lag:
+                        max_lag = lag
+                except Exception:
+                    pass
+
+        logger.debug("init-status: expected_date=%s, max_lag_days=%d", expected_date, max_lag)
+
+        if max_lag > 30:
+            result = {
+                "state": "stale",
+                "message": f"本地数据已超过 {max_lag} 天未更新，建议重新同步行情数据。",
+                "total_stocks": total,
+                "max_lag_days": max_lag,
+            }
+            logger.info("init-status: state=stale, max_lag_days=%d", max_lag)
+        else:
+            result = {
+                "state": "ready",
+                "message": f"本地数据正常，共 {total} 只股票，最新数据距今 {max_lag} 天。",
+                "total_stocks": total,
+                "max_lag_days": max_lag,
+            }
+            logger.debug("init-status: state=ready, total=%d", total)
+
+        return {"success": True, "data": result}
+
+    except Exception as e:
+        logger.exception("init-status 检测异常: %s", e)
+        return {
+            "success": False,
+            "data": {
+                "state": "ready",
+                "message": f"状态检测失败（{e}），默认跳过初始化。",
+                "total_stocks": 0,
+                "max_lag_days": 0,
+            },
+        }
 
 
 @router.get("/market-cap")

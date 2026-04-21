@@ -24,3 +24,8 @@ schedule:
 update:
   lookback_days: 10
   skip_failed: true
+  # Baostock 备选链路熔断参数（网络异常时用于限流降压）
+  baostock_circuit:
+    failure_threshold: 3
+    cooldown_seconds: 120
+    cooldown_log_interval_seconds: 20

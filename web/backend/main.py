@@ -1,10 +1,29 @@
 """FastAPI 应用入口"""
 import sys
+import logging
+import os
 from pathlib import Path
 
 # 确保项目根目录在 sys.path
 project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
+
+# 配置日志：默认 INFO，可通过 WEB_LOG_LEVEL 覆盖。
+log_level_name = os.getenv("WEB_LOG_LEVEL", "INFO").upper()
+log_level = getattr(logging, log_level_name, logging.INFO)
+logging.basicConfig(
+    level=log_level,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+# 第三方库噪音压制
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

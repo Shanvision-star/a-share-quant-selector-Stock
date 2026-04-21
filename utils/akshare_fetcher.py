@@ -10,14 +10,22 @@ from pathlib import Path
 import json
 import requests
 import random
+import yaml
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # ===================== 新增：并发库 =====================
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
-# 市值缓存：每周刷新一次，避免每次数据更新都逐股调用 AKShare 实时接口
-_MARKET_CAP_CACHE_EXPIRY_DAYS = 7
+# 市值缓存：每月刷新一次，避免每次数据更新都逐股调用 AKShare 实时接口
+_MARKET_CAP_CACHE_EXPIRY_DAYS = 30
 _market_cap_cache_lock = threading.Lock()
+
+# Baostock 备选链路短时熔断参数：异常时临时冷却，避免逐股重复 login/logout 放大耗时。
+_BAOSTOCK_FAILURE_THRESHOLD = 3
+_BAOSTOCK_COOLDOWN_SECONDS = 120
+_BAOSTOCK_COOLDOWN_LOG_INTERVAL_SECONDS = 20
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -33,6 +41,19 @@ session.headers.update({
     'Referer': 'https://quote.eastmoney.com/',
     'Connection': 'keep-alive',
 })
+
+# 并发更新时显式增大连接池并配置重试，降低连接抖动导致的慢更新。
+_retry = Retry(
+    total=2,
+    connect=2,
+    read=2,
+    backoff_factor=0.2,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=frozenset(['GET']),
+)
+_adapter = HTTPAdapter(pool_connections=32, pool_maxsize=64, max_retries=_retry)
+session.mount('http://', _adapter)
+session.mount('https://', _adapter)
 
 
 # 备选A股股票列表（当网络获取失败时使用）
@@ -96,10 +117,21 @@ class AKShareFetcher:
     def __init__(self, data_dir="data"):
         self.csv_manager = CSVManager(data_dir)
         self.full_data_dir = Path(data_dir)
+        self.project_root = Path(__file__).resolve().parents[1]
+        self.runtime_config_file = self.project_root / 'config' / 'config.yaml'
         self.stock_names_file = Path(data_dir) / 'stock_names.json'
         self._market_cap_cache_file = Path(data_dir) / 'market_cap_weekly_cache.json'
         self._market_cap_cache: dict = {}   # {code: value_in_yuan}
         self._market_cap_cache_date: str = ''
+        self._baostock_circuit_lock = threading.Lock()
+        self._baostock_consecutive_failures = 0
+        self._baostock_cooldown_until = 0.0
+        self._baostock_last_error = ''
+        self._baostock_last_cooldown_log_ts = 0.0
+        self._baostock_failure_threshold = _BAOSTOCK_FAILURE_THRESHOLD
+        self._baostock_cooldown_seconds = _BAOSTOCK_COOLDOWN_SECONDS
+        self._baostock_cooldown_log_interval_seconds = _BAOSTOCK_COOLDOWN_LOG_INTERVAL_SECONDS
+        self._load_runtime_tuning_config()
         self._load_market_cap_weekly_cache()
     
     # ── 市值周缓存 ──────────────────────────────────────────────────
@@ -153,6 +185,88 @@ class AKShareFetcher:
         except Exception as e:
             print(f"  保存股票名称失败: {e}")
 
+    @staticmethod
+    def _as_positive_int(value, default):
+        """将配置值转为正整数，非法值回退 default。"""
+        try:
+            parsed = int(value)
+            return parsed if parsed > 0 else default
+        except Exception:
+            return default
+
+    def _load_runtime_tuning_config(self):
+        """加载运行时调优配置（每次更新前热加载一次）。"""
+        failure_threshold = _BAOSTOCK_FAILURE_THRESHOLD
+        cooldown_seconds = _BAOSTOCK_COOLDOWN_SECONDS
+        cooldown_log_interval_seconds = _BAOSTOCK_COOLDOWN_LOG_INTERVAL_SECONDS
+
+        try:
+            if self.runtime_config_file.exists():
+                with open(self.runtime_config_file, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f) or {}
+                update_cfg = config.get('update') or {}
+                circuit_cfg = update_cfg.get('baostock_circuit') or {}
+                failure_threshold = self._as_positive_int(
+                    circuit_cfg.get('failure_threshold'),
+                    failure_threshold,
+                )
+                cooldown_seconds = self._as_positive_int(
+                    circuit_cfg.get('cooldown_seconds'),
+                    cooldown_seconds,
+                )
+                cooldown_log_interval_seconds = self._as_positive_int(
+                    circuit_cfg.get('cooldown_log_interval_seconds'),
+                    cooldown_log_interval_seconds,
+                )
+        except Exception as e:
+            print(f"  读取运行时调优配置失败，使用默认值: {e}")
+
+        with self._baostock_circuit_lock:
+            self._baostock_failure_threshold = failure_threshold
+            self._baostock_cooldown_seconds = cooldown_seconds
+            self._baostock_cooldown_log_interval_seconds = cooldown_log_interval_seconds
+
+    def _get_baostock_cooldown_status(self):
+        """返回 (是否冷却中, 剩余秒数, 最近错误)。"""
+        now = time.time()
+        with self._baostock_circuit_lock:
+            if self._baostock_cooldown_until > now:
+                remaining = max(1, int(self._baostock_cooldown_until - now))
+                return True, remaining, self._baostock_last_error
+            if self._baostock_cooldown_until > 0:
+                # 冷却结束后重置时间戳
+                self._baostock_cooldown_until = 0.0
+            return False, 0, self._baostock_last_error
+
+    def _record_baostock_failure(self, reason):
+        """记录失败并在达到阈值时开启短时冷却。"""
+        now = time.time()
+        reason_text = str(reason)[:180]
+        with self._baostock_circuit_lock:
+            self._baostock_consecutive_failures += 1
+            self._baostock_last_error = reason_text
+            if self._baostock_consecutive_failures >= self._baostock_failure_threshold:
+                self._baostock_cooldown_until = now + self._baostock_cooldown_seconds
+                self._baostock_consecutive_failures = 0
+                return True, self._baostock_cooldown_seconds, reason_text
+        return False, 0, reason_text
+
+    def _record_baostock_success(self):
+        """成功一次即清空连续失败计数。"""
+        with self._baostock_circuit_lock:
+            self._baostock_consecutive_failures = 0
+            self._baostock_cooldown_until = 0.0
+            self._baostock_last_error = ''
+
+    def _should_log_baostock_cooldown(self):
+        """冷却日志节流，避免并发下刷屏。"""
+        now = time.time()
+        with self._baostock_circuit_lock:
+            if now - self._baostock_last_cooldown_log_ts >= self._baostock_cooldown_log_interval_seconds:
+                self._baostock_last_cooldown_log_ts = now
+                return True
+        return False
+
     def _fetch_market_cap_tencent(self, stock_codes):
         """使用腾讯接口批量获取市值数据（akshare备选方案）"""
         market_cap_map = {}
@@ -202,6 +316,107 @@ class AKShareFetcher:
             print(f"  腾讯接口获取市值失败: {e}")
         
         return market_cap_map
+
+    def _fetch_spot_snapshot_map(self, target_date_str, stock_codes=None):
+        """拉取当日行情快照供快路径使用，不改变市值30天刷新策略。"""
+        spot_data_map = {}
+        code_filter = set(stock_codes) if stock_codes else None
+
+        def _put_snapshot(code, open_v, close_v, high_v, low_v, volume_v, amount_v, turnover_v, market_cap_v):
+            if not code:
+                return
+            code = str(code).zfill(6)
+            if code_filter is not None and code not in code_filter:
+                return
+            try:
+                close_val = float(close_v or 0)
+                if close_val <= 0:
+                    return
+                cap_val = float(market_cap_v or 0)
+                if cap_val > 0 and cap_val < 1e10:
+                    cap_val *= 1e8
+                spot_data_map[code] = {
+                    'date': target_date_str,
+                    'open': float(open_v or 0),
+                    'close': close_val,
+                    'high': float(high_v or 0),
+                    'low': float(low_v or 0),
+                    'volume': int(float(volume_v or 0)),
+                    'amount': float(amount_v or 0),
+                    'turnover': float(turnover_v or 0),
+                    'market_cap': int(cap_val) if cap_val > 0 else 0,
+                }
+            except Exception:
+                return
+
+        # 优先使用 akshare 一次性快照。
+        try:
+            _spot_df = ak.stock_zh_a_spot_em()
+            if not _spot_df.empty:
+                _spot_df['_code'] = _spot_df['代码'].astype(str).str.zfill(6)
+
+                def _sc(col):
+                    return _spot_df[col].fillna(0) if col in _spot_df.columns else pd.Series(0.0, index=_spot_df.index)
+
+                for _code, _o, _cl, _h, _l, _vol, _amt, _tr, _cap in zip(
+                    _spot_df['_code'],
+                    _sc('今开').astype(float),
+                    _sc('最新价').astype(float),
+                    _sc('最高').astype(float),
+                    _sc('最低').astype(float),
+                    _sc('成交量').astype(float),
+                    _sc('成交额').astype(float),
+                    _sc('换手率').astype(float),
+                    _sc('总市值').astype(float),
+                ):
+                    _put_snapshot(_code, _o, _cl, _h, _l, _vol, _amt, _tr, _cap)
+                if spot_data_map:
+                    return spot_data_map
+        except Exception:
+            pass
+
+        # akshare 失败时，回退东方财富分页快照。
+        try:
+            _page = 1
+            _page_size = 100
+            _fs = 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23,m:1+t:62,m:4+t:4'
+            while True:
+                _url = 'https://push2.eastmoney.com/api/qt/clist/get'
+                _params = {
+                    'pn': _page,
+                    'pz': _page_size,
+                    'po': 1,
+                    'np': 1,
+                    'fltt': 2,
+                    'invt': 2,
+                    'fid': 'f3',
+                    'fs': _fs,
+                    'fields': 'f12,f17,f2,f15,f16,f5,f6,f8,f20',
+                }
+                _resp = session.get(_url, params=_params, timeout=(4, 20))
+                _resp.raise_for_status()
+                _diff = (_resp.json().get('data') or {}).get('diff', [])
+                if not _diff:
+                    break
+                for _item in _diff:
+                    _put_snapshot(
+                        _item.get('f12', ''),
+                        _item.get('f17', 0),
+                        _item.get('f2', 0),
+                        _item.get('f15', 0),
+                        _item.get('f16', 0),
+                        _item.get('f5', 0),
+                        _item.get('f6', 0),
+                        _item.get('f8', 0),
+                        _item.get('f20', 0),
+                    )
+                if len(_diff) < _page_size:
+                    break
+                _page += 1
+        except Exception:
+            pass
+
+        return spot_data_map
     
     def _fetch_stock_list_http(self):
         """使用腾讯接口获取股票列表 - 覆盖5000+只A股"""
@@ -741,7 +956,7 @@ class AKShareFetcher:
                 "beg": start_date,
                 "end": end_date,
             }
-            response = session.get(url, params=params, timeout=15)
+            response = session.get(url, params=params, timeout=(4, 15))
             response.raise_for_status()
             data_json = response.json()
             if not (data_json.get("data") and data_json["data"].get("klines")):
@@ -841,20 +1056,27 @@ class AKShareFetcher:
         if df is not None and not df.empty:
             return df.head(max(days + 5, 20)).copy()
 
-        # ── 备选1: Baostock（TCP协议，不经过HTTP代理，稳定）──────────────
-        df = self._fetch_update_baostock(stock_code, days, prefetched_market_cap)
+        # ── 备选1: 新浪财经（HTTP链路，避免每股登录/登出开销）────────────
+        df = self._fetch_update_sina(stock_code, days, prefetched_market_cap)
         if df is not None and not df.empty:
             return df
 
-        # ── 备选2: 新浪财经 ─────────────────────────────────────────────
-        df = self._fetch_update_sina(stock_code, days, prefetched_market_cap)
+        # ── 备选2: Baostock（TCP协议，网络异常时兜底）──────────────────
+        df = self._fetch_update_baostock(stock_code, days, prefetched_market_cap)
         if df is not None and not df.empty:
             return df
 
         return None
 
     def _fetch_update_baostock(self, stock_code, days=10, prefetched_market_cap=None):
-        """备选1: Baostock 增量更新，支持 amount/turnover 完整字段"""
+        """备选2: Baostock 增量更新，支持 amount/turnover 完整字段（带短时熔断）。"""
+        cooling_down, wait_seconds, last_error = self._get_baostock_cooldown_status()
+        if cooling_down:
+            if self._should_log_baostock_cooldown():
+                suffix = f" 最近错误: {last_error}" if last_error else ""
+                print(f"  Baostock冷却中，暂时跳过 {wait_seconds}s。{suffix}")
+            return None
+
         try:
             import baostock as bs
             market_prefix = 'sh' if stock_code.startswith('6') else 'sz'
@@ -864,6 +1086,11 @@ class AKShareFetcher:
             end_date = datetime.now().strftime('%Y-%m-%d')
             lg = bs.login()
             if lg.error_code != '0':
+                opened, cooldown_s, err = self._record_baostock_failure(
+                    f"login {lg.error_code}: {getattr(lg, 'error_msg', '')}"
+                )
+                if opened:
+                    print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
                 return None
             try:
                 rs = bs.query_history_k_data_plus(
@@ -872,6 +1099,13 @@ class AKShareFetcher:
                     start_date=start_date, end_date=end_date,
                     frequency='d', adjustflag='2',
                 )
+                if rs.error_code != '0':
+                    opened, cooldown_s, err = self._record_baostock_failure(
+                        f"query {rs.error_code}: {getattr(rs, 'error_msg', '')}"
+                    )
+                    if opened:
+                        print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
+                    return None
                 records = []
                 while rs.error_code == '0' and rs.next():
                     row = rs.get_row_data()
@@ -889,20 +1123,26 @@ class AKShareFetcher:
                     except (ValueError, IndexError):
                         continue
             finally:
-                bs.logout()
+                try:
+                    bs.logout()
+                except Exception:
+                    pass
             if not records:
                 return None
             df = pd.DataFrame(records)
             df['date'] = pd.to_datetime(df['date'])
             df['market_cap'] = prefetched_market_cap if prefetched_market_cap is not None else 0
             df = df.sort_values('date', ascending=False)
+            self._record_baostock_success()
             return df.head(max(days + 5, 20)).copy()
         except Exception as e:
-            print(f"  Baostock备选失败({stock_code}): {e}")
+            opened, cooldown_s, err = self._record_baostock_failure(e)
+            if opened:
+                print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
             return None
 
     def _fetch_update_sina(self, stock_code, days=10, prefetched_market_cap=None):
-        """备选2: 新浪财经 K线接口，支持完整字段"""
+        """备选1: 新浪财经 K线接口，支持完整字段"""
         try:
             market_code = 'sh' if stock_code.startswith('6') else 'sz'
             symbol = f"{market_code}{stock_code}"
@@ -913,7 +1153,7 @@ class AKShareFetcher:
                 f"/CN_MarketData.getKLineData?symbol={symbol}&scale=240"
                 f"&ma=no&datalen={lookback_days}"
             )
-            resp = requests.get(url, timeout=15, headers={
+            resp = session.get(url, timeout=(4, 15), headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Referer': 'https://finance.sina.com.cn/',
             })
@@ -1083,16 +1323,25 @@ class AKShareFetcher:
         :param progress_callback: 可选回调，接收实时统计信息 dict
         :param on_stock_ready: 可选回调 (code, df)，每只股票更新成功后立即调用（pipeline 模式用于内联策略扫描）
         """
+        self._load_runtime_tuning_config()
+        print(
+            "  Baostock熔断配置："
+            f"失败阈值={self._baostock_failure_threshold}，"
+            f"冷却={self._baostock_cooldown_seconds}s，"
+            f"日志节流={self._baostock_cooldown_log_interval_seconds}s"
+        )
+
         existing_stocks = self.csv_manager.list_all_stocks()
         if max_stocks:
             existing_stocks = existing_stocks[:max_stocks]
 
         # ── 推算目标交易日 ──────────────────────────────────────────────
+        now = datetime.now()
+        today = now.date()
+        from datetime import time as dt_time
+        is_after_close = now.time() >= dt_time(15, 0)
+
         if date is None:
-            now = datetime.now()
-            today = now.date()
-            from datetime import time as dt_time
-            is_after_close = now.time() >= dt_time(15, 0)
             target_date = today if is_after_close else today - timedelta(days=1)
             while target_date.weekday() >= 5:
                 target_date -= timedelta(days=1)
@@ -1100,6 +1349,8 @@ class AKShareFetcher:
                 print(f"⚠️ 未收盘，仍然检查是否缺失最近交易日数据 {target_date.strftime('%Y-%m-%d')}")
         else:
             target_date = datetime.strptime(date, "%Y-%m-%d").date()
+
+        can_use_spot_fast_path = is_after_close and target_date == today
 
         target_date_str = target_date.strftime('%Y-%m-%d')
         scan_total = len(existing_stocks)
@@ -1341,33 +1592,78 @@ class AKShareFetcher:
             finally:
                 _bg_done.set()
 
-        import threading
-        _bg_cap_thread = threading.Thread(target=_bg_refresh_market_cap, daemon=True, name='market-cap-bg')
-        _bg_cap_thread.start()
+        # 仅当缓存超过 30 天（或无缓存）时才启动后台刷新线程
+        _cap_cache_date = getattr(self, '_market_cap_cache_date', None)
+        if _cap_cache_date:
+            try:
+                _cap_age_days = (datetime.now() - datetime.strptime(_cap_cache_date, '%Y-%m-%d')).days
+            except Exception:
+                _cap_age_days = 999
+        else:
+            _cap_age_days = 999
+        _need_cap_refresh = _cap_age_days > _MARKET_CAP_CACHE_EXPIRY_DAYS or not market_cap_map
+        if _need_cap_refresh:
+            _bg_cap_thread = threading.Thread(target=_bg_refresh_market_cap, daemon=True, name='market-cap-bg')
+            _bg_cap_thread.start()
+        else:
+            _bg_done.set()  # 无需刷新，立即标记完成
 
         _cached_count = len(market_cap_map)
         if _cached_count > 0:
+            _refresh_note = "后台刷新中，" if _need_cap_refresh else f"缓存仍有效（{_cap_age_days}天前），"
             emit_progress(
                 35,
-                f"使用缓存市值（{_cached_count} 只），后台刷新中，准备并发更新 {len(stocks_to_update)} 只股票",
-                phase='market_cap',
+                f"使用缓存市值（{_cached_count} 只），{_refresh_note}准备并发更新 {len(stocks_to_update)} 只股票",
+                phase='market_cap_refresh' if _need_cap_refresh else 'market_cap_cached',
+                market_cap_refresh_needed=_need_cap_refresh,
+                market_cap_cached_count=_cached_count,
+                market_cap_cache_age_days=_cap_age_days,
             )
         else:
             # 首次克隆无缓存：等待后台最多 10s，让市值数据准备好
             print("  [市值] 缓存为空，等待后台线程初始化市值（最多10秒）...")
-            emit_progress(32, "首次运行，等待市值数据初始化（最多10秒）...", phase='market_cap')
+            emit_progress(
+                32,
+                "首次运行，等待市值数据初始化（最多10秒）...",
+                phase='market_cap_refresh',
+                market_cap_refresh_needed=True,
+                market_cap_cached_count=0,
+                market_cap_cache_age_days=None,
+            )
             _bg_done.wait(timeout=10)
             emit_progress(
                 35,
                 f"市值初始化完成：{len(market_cap_map)} 只，准备并发更新 {len(stocks_to_update)} 只股票",
-                phase='market_cap',
+                phase='market_cap_refresh',
+                market_cap_refresh_needed=True,
+                market_cap_cached_count=len(market_cap_map),
+                market_cap_cache_age_days=None,
+            )
+
+        # 快路径依赖当日 spot 快照，必须与 30 天市值刷新策略解耦。
+        if can_use_spot_fast_path and not spot_data_map:
+            emit_progress(
+                35,
+                "加载当日行情快照（用于快路径）...",
+                phase='market_cap_refresh' if _need_cap_refresh else 'market_cap_cached',
+            )
+            _spot_snapshot = self._fetch_spot_snapshot_map(
+                target_date_str=target_date_str,
+                stock_codes=stocks_to_update,
+            )
+            if _spot_snapshot:
+                spot_data_map.update(_spot_snapshot)
+            emit_progress(
+                36,
+                f"当日行情快照就绪：{len(spot_data_map)} 只，可进入快路径分流",
+                phase='market_cap_refresh' if _need_cap_refresh else 'market_cap_cached',
             )
 
         # ── 按缺失天数拆分快/慢路径 ──────────────────────────────────────
         # P2: 直接查 latest_date_map（扫描阶段已缓存），不再重新读文件
         # 快路径条件（全部满足才走快路径）：
         #   1. 仅缺失1个交易日（防止多日缺失用快照后丢失历史行）
-        #   2. is_after_close == True（防止盘中实时价写入当收盘价 R3）
+        #   2. can_use_spot_fast_path == True（仅允许当日收盘后使用实时快照）
         #   3. spot_data_map 中存在该股
         #   4. spot_data_map[code]['close'] > 0（停牌过滤）
         fast_path_stocks: list = []
@@ -1383,7 +1679,7 @@ class AKShareFetcher:
             _spot = spot_data_map.get(_code)
             if (
                 _days_behind == 1
-                and is_after_close
+                and can_use_spot_fast_path
                 and _spot is not None
                 and float(_spot.get('close', 0)) > 0
             ):
@@ -1394,6 +1690,7 @@ class AKShareFetcher:
         # ── 快路径：单日缺失，直接用 spot_data_map 写入（零额外HTTP）────────
         fast_success = 0
         fast_skipped = 0
+        fast_total = len(fast_path_stocks)
         if fast_path_stocks:
             emit_progress(
                 36,
@@ -1402,7 +1699,8 @@ class AKShareFetcher:
             )
             import threading as _threading_fa
             _lock_fa = _threading_fa.Lock()
-            for _code in fast_path_stocks:
+            fast_emit_step = 1 if fast_total <= 20 else 10
+            for fast_index, _code in enumerate(fast_path_stocks, start=1):
                 _ok = self.csv_manager.prepend_row(_code, spot_data_map[_code])
                 with _lock_fa:
                     completed += 1
@@ -1412,6 +1710,16 @@ class AKShareFetcher:
                     else:
                         failed += 1
                         fast_skipped += 1
+                    if fast_index == 1 or fast_index % fast_emit_step == 0 or fast_index == fast_total:
+                        emit_progress(
+                            36 + int(fast_index / max(fast_total, 1) * 3),
+                            (
+                                f"快路径更新中：{fast_index}/{fast_total}，"
+                                f"总完成 {completed}/{len(stocks_to_update)}，成功 {updated}，失败 {failed}"
+                            ),
+                            phase='fast_update',
+                            current_code=_code,
+                        )
             emit_progress(
                 39,
                 f"快路径完成：成功 {fast_success}，跳过/失败 {fast_skipped}，慢路径待处理 {len(slow_path_stocks)} 只",
@@ -1421,14 +1729,18 @@ class AKShareFetcher:
         # ── 并发更新 K 线数据（慢路径：多日缺失）──────────────────────────
         days_to_fetch = 10
         total = len(slow_path_stocks)
+        total_to_update_all = len(stocks_to_update)
+        slow_completed = 0
         TIMEOUT_SECONDS = 1800  # 30分钟，替代原600s
-        import threading
         lock = threading.Lock()
         start_time = time.time()
 
-        print(f"\n开始并发更新 {total} 只股票（慢路径）...")
-        emit_progress(40, f"开始并发更新 {total} 只股票...", phase='update')
-        all_done = False
+        if total > 0:
+            print(f"\n开始并发更新 {total} 只股票（慢路径）...")
+            emit_progress(40, f"开始并发更新 {total} 只股票...", phase='update')
+        else:
+            emit_progress(40, "慢路径无需更新，直接进入抽样验证...", phase='update')
+        all_done = total == 0
         try:
             with ThreadPoolExecutor(max_workers=16) as executor:
                 futures = {
@@ -1450,19 +1762,23 @@ class AKShareFetcher:
                             success, stock_df = False, None
                         with lock:
                             completed += 1
+                            slow_completed += 1
                             if success:
                                 updated += 1
                             else:
                                 failed += 1
-                            pct = completed / total * 100
+                            pct = slow_completed / total * 100
                             print(
-                                f"\r进度: {completed:4d}/{total} | {pct:5.1f}% | 更新: {updated} | 失败: {failed:3d} | 代码:{code}",
+                                f"\r进度: {slow_completed:4d}/{total} | {pct:5.1f}% | 更新: {updated} | 失败: {failed:3d} | 代码:{code}",
                                 end='', flush=True
                             )
-                            if completed == 1 or completed % emit_step == 0 or completed == total:
+                            if slow_completed == 1 or slow_completed % emit_step == 0 or slow_completed == total:
                                 emit_progress(
-                                    40 + int(completed / total * 50),
-                                    f"并发更新中：{completed}/{total}，成功 {updated}，失败 {failed}",
+                                    40 + int(slow_completed / total * 50),
+                                    (
+                                        f"并发更新中：慢路径 {slow_completed}/{total}，"
+                                        f"累计完成 {completed}/{total_to_update_all}，成功 {updated}，失败 {failed}"
+                                    ),
                                     phase='update',
                                     current_code=code,
                                 )
@@ -1475,10 +1791,16 @@ class AKShareFetcher:
                     all_done = True
                 except TimeoutError:
                     elapsed = time.time() - start_time
-                    print(f"\n[更新] 超时({elapsed:.0f}s)，已完成 {completed}/{total}，取消剩余任务，继续使用本地数据...")
+                    print(
+                        f"\n[更新] 超时({elapsed:.0f}s)，慢路径已完成 {slow_completed}/{total}，"
+                        f"累计完成 {completed}/{total_to_update_all}，取消剩余任务，继续使用本地数据..."
+                    )
                     emit_progress(
                         92,
-                        f"更新超时：已执行 {completed}/{total}，成功 {updated}，失败 {failed}",
+                        (
+                            f"更新超时：慢路径已执行 {slow_completed}/{total}，"
+                            f"累计完成 {completed}/{total_to_update_all}，成功 {updated}，失败 {failed}"
+                        ),
                         phase='update',
                     )
         except Exception as e:
@@ -1534,10 +1856,13 @@ class AKShareFetcher:
                     f"低于50%阈值，暂不写缓存，下次启动将重新检查（可能是数据发布延迟）"
                 )
         else:
-            print(f"[更新] 未全量完成，不写入缓存，下次启动将重新检查并补全剩余 {total - completed} 只")
+            print(
+                f"[更新] 未全量完成，不写入缓存，下次启动将重新检查并补全剩余 "
+                f"{max(total_to_update_all - completed, 0)} 只"
+            )
 
         print("=" * 70)
-        print(f"✅ 并发更新完成！总计：{total} 只 | 成功：{updated} 只 | 失败：{failed} 只")
+        print(f"✅ 并发更新完成！总计：{total_to_update_all} 只 | 成功：{updated} 只 | 失败：{failed} 只")
 
         # ── 等待后台市值刷新线程（最多30秒），完成后推送市值更新事件 ────
         if not _bg_done.is_set():
@@ -1558,13 +1883,13 @@ class AKShareFetcher:
         if all_done:
             final_message = (
                 f"{target_date_str} 数据更新完成：扫描 {scan_total} 只，"
-                f"需更新 {total} 只，成功 {updated} 只，失败 {failed} 只"
+                f"需更新 {total_to_update_all} 只，成功 {updated} 只，失败 {failed} 只"
             )
             emit_progress(100, final_message, phase='complete')
             return build_summary('done', final_message)
 
         final_message = (
-            f"{target_date_str} 数据更新未全量完成：已执行 {completed}/{total}，"
+            f"{target_date_str} 数据更新未全量完成：已执行 {completed}/{total_to_update_all}，"
             f"成功 {updated} 只，失败 {failed} 只"
         )
         emit_progress(100, final_message, phase='complete')

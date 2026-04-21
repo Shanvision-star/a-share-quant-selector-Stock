@@ -754,6 +754,8 @@ def build_strategy_result_snapshot(
                         'processed': overall_processed,
                         'total': total_stocks,
                         'matched': overall_matched,
+                        'current_code': stock_analysis.get('code', ''),
+                        'current_name': stock_analysis.get('name', ''),
                     },
                 )
 
@@ -761,7 +763,7 @@ def build_strategy_result_snapshot(
                 emitted_rows
                 or overall_processed == total_stocks
                 or overall_processed == 1
-                or overall_processed % 50 == 0
+                or overall_processed % 10 == 0
             )
             if progress_callback and should_emit_progress:
                 progress_callback(
@@ -774,6 +776,8 @@ def build_strategy_result_snapshot(
                         'processed': overall_processed,
                         'total': total_stocks,
                         'matched': overall_matched,
+                        'current_code': stock_analysis.get('code', ''),
+                        'current_name': stock_analysis.get('name', ''),
                     },
                 )
 

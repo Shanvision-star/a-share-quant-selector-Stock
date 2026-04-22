@@ -1,0 +1,25 @@
+title: 完整开发工作流（自动解释 + 自动总结）
+author: Quant System
+version: 1.1
+auto_enable: true
+trigger:
+  on: code.generate, code.modify, plan.execute
+skills:
+  - explain-before-code
+  - summary-after-code
+  - planning
+  - project-guideline-check
+  - quant-best-practices
+prompt: |
+  【开发前说明（用于学习）】
+  1. 本次将修改的文件清单
+  2. 核心实现逻辑与关键代码结构
+  3. 设计思路：为什么这样实现更合理
+  4. 与现有项目架构的关系（复用/扩展）
+  5. 量化注意事项：无未来函数、数据逻辑、策略兼容性
+
+  【开发后总结（用于学习）】
+  1. 本次实现/修复的功能
+  2. 解决了哪些原有问题
+  3. 实现中关键知识点与可复用模式
+  4. 可运行的验证命令（贴合项目规范）

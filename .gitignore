@@ -52,3 +52,6 @@ nohup.out
 # Web dependency artifacts
 web/node_modules/
 web/package-lock.json
+
+# Local git worktrees
+.worktrees/

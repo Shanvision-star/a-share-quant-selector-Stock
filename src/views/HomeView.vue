@@ -36,6 +36,13 @@ const searchText = computed({
 const sortBy = computed(() => queryStateStore.home.sortBy)
 const sortOrder = computed(() => queryStateStore.home.sortOrder)
 let searchTimer: ReturnType<typeof setTimeout> | null = null
+const HOME_SORT_FIELDS = ['code', 'name', 'latest_price', 'change_pct', 'market_cap', 'latest_date', 'k_value', 'd_value', 'j_value'] as const
+
+type HomeSortField = (typeof HOME_SORT_FIELDS)[number]
+
+function isHomeSortField(prop: string): prop is HomeSortField {
+  return HOME_SORT_FIELDS.includes(prop as HomeSortField)
+}
 
 // ─── 首次运行检测 ───
 const showInitDialog = ref(false)
@@ -143,7 +150,9 @@ async function startInitInline() {
           if (data.status === 'error') {
             ElMessage.error(data.message || '初始化失败')
           }
-        } catch { /* ignore */ }
+        } catch (error) {
+          console.warn('[HomeView] 初始化流事件解析失败', { error, dataText })
+        }
       }
     }
   } catch (e: any) {
@@ -226,8 +235,12 @@ function onSortChange(prop: string, order: string | null) {
   if (!prop) {
     queryStateStore.setHomeSort('code', 'asc')
   } else {
+    const safeProp = isHomeSortField(prop) ? prop : 'code'
+    if (!isHomeSortField(prop)) {
+      console.warn('[HomeView] 收到不支持的排序字段，已回退到 code', { prop })
+    }
     queryStateStore.setHomeSort(
-      prop as 'code' | 'name' | 'latest_price' | 'change_pct' | 'market_cap' | 'latest_date' | 'k_value' | 'd_value' | 'j_value',
+      safeProp,
       order === 'ascending' ? 'asc' : 'desc',
     )
   }

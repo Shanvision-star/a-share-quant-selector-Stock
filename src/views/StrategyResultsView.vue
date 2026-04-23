@@ -326,7 +326,9 @@ async function startRebuild() {
         try {
           const data = JSON.parse(dataText)
           handleEvent(eventName, data)
-        } catch { /* ignore */ }
+        } catch (error) {
+          console.warn('[StrategyResultsView] 重建流事件解析失败', { error, dataText, eventName })
+        }
       }
     }
   } catch (e: any) {

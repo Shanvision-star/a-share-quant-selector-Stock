@@ -1,7 +1,9 @@
 import asyncio
+import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+from web.backend.routers import stock as stock_router
 from web.backend.services.stock_list_service import build_stock_list_response, paginate_codes
 
 
@@ -217,3 +219,94 @@ class StockListServiceTest(unittest.TestCase):
         self.assertEqual(payload["total"], 3)
         self.assertEqual([item["code"] for item in payload["data"]], ["000001", "000003"])
         self.assertEqual(calls["build"], [("000001", True), ("000003", True)])
+
+    def test_build_stock_list_response_metric_snapshot_uses_full_stocks_for_search(self):
+        stocks = ["000001", "000002", "000003"]
+        stock_names = {"000001": "甲", "000002": "乙", "000003": "丙"}
+
+        def ensure_metric_snapshot(codes, *_args, **_kwargs):
+            self.assertEqual(codes, stocks)
+            return {
+                "sorted_codes": {
+                    "change_pct": ["000003", "000002", "000001"],
+                }
+            }
+
+        payload = build_stock_list_response(
+            stocks=stocks,
+            stock_names=stock_names,
+            csv_manager=object(),
+            page=1,
+            per_page=10,
+            search="乙",
+            sort_by="change_pct",
+            sort_order="asc",
+            ensure_metric_snapshot=ensure_metric_snapshot,
+            build_stock_item=lambda code, *_args, **_kwargs: {"code": code},
+            trigger_metric_snapshot_prewarm=lambda *_args: self.fail("prewarm should not run"),
+        )
+
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual([item["code"] for item in payload["data"]], ["000002"])
+
+    def test_build_stock_list_response_non_metric_prewarm_uses_full_stocks_for_search(self):
+        stocks = ["000002", "000001", "000003"]
+        stock_names = {"000001": "甲", "000002": "乙", "000003": "丙"}
+
+        def trigger_metric_snapshot_prewarm(codes, *_args):
+            self.assertEqual(codes, stocks)
+
+        payload = build_stock_list_response(
+            stocks=stocks,
+            stock_names=stock_names,
+            csv_manager=object(),
+            page=1,
+            per_page=10,
+            search="乙",
+            sort_by="code",
+            sort_order="asc",
+            ensure_metric_snapshot=lambda *_args, **_kwargs: self.fail("snapshot should not run"),
+            build_stock_item=lambda code, *_args, **_kwargs: {"code": code},
+            trigger_metric_snapshot_prewarm=trigger_metric_snapshot_prewarm,
+        )
+
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual([item["code"] for item in payload["data"]], ["000002"])
+
+    def test_build_metric_snapshot_sets_event_when_build_is_superseded(self):
+        original_state = {}
+        with stock_router._METRIC_SNAPSHOT_LOCK:
+            original_state = dict(stock_router._METRIC_SNAPSHOT_STATE)
+            stock_router._METRIC_SNAPSHOT_STATE["generation"] = 99
+            stock_router._METRIC_SNAPSHOT_STATE["signature"] = ("999999",)
+            stock_router._METRIC_SNAPSHOT_STATE["building"] = True
+            stock_router._METRIC_SNAPSHOT_STATE["ready"] = False
+            stock_router._METRIC_SNAPSHOT_STATE["event"] = threading.Event()
+            stock_router._METRIC_SNAPSHOT_STATE["items_by_code"] = {}
+            stock_router._METRIC_SNAPSHOT_STATE["sorted_codes"] = {}
+
+        build_event = threading.Event()
+        try:
+            with patch("web.backend.routers.stock._build_stock_item", return_value={
+                "code": "000001",
+                "latest_price": 1.0,
+                "change_pct": 1.0,
+                "market_cap": 1.0,
+                "latest_date": "2026-01-01",
+                "k_value": 1.0,
+                "d_value": 1.0,
+                "j_value": 1.0,
+            }):
+                stock_router._build_metric_snapshot(
+                    stocks=["000001"],
+                    stock_names={},
+                    csv_manager=object(),
+                    signature=("000001",),
+                    generation=1,
+                    build_event=build_event,
+                )
+            self.assertTrue(build_event.is_set())
+        finally:
+            with stock_router._METRIC_SNAPSHOT_LOCK:
+                stock_router._METRIC_SNAPSHOT_STATE.clear()
+                stock_router._METRIC_SNAPSHOT_STATE.update(original_state)

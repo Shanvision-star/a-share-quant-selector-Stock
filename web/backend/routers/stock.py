@@ -167,7 +167,14 @@ def invalidate_stock_list_cache():
         _METRIC_SNAPSHOT_STATE['sorted_codes'] = {}
 
 
-def _build_metric_snapshot(stocks: list[str], stock_names: dict, csv_manager, signature: tuple[str, ...], generation: int):
+def _build_metric_snapshot(
+    stocks: list[str],
+    stock_names: dict,
+    csv_manager,
+    signature: tuple[str, ...],
+    generation: int,
+    build_event: threading.Event | None = None,
+):
     items_by_code: dict[str, dict] = {}
     worker_count = min(16, max(4, (os.cpu_count() or 4) * 2))
 
@@ -202,10 +209,14 @@ def _build_metric_snapshot(stocks: list[str], stock_names: dict, csv_manager, si
                 _METRIC_SNAPSHOT_STATE['building'] = False
                 _METRIC_SNAPSHOT_STATE['ready'] = False
                 _METRIC_SNAPSHOT_STATE['event'].set()
+        if build_event:
+            build_event.set()
         return
 
     with _METRIC_SNAPSHOT_LOCK:
         if _METRIC_SNAPSHOT_STATE['generation'] != generation or _METRIC_SNAPSHOT_STATE['signature'] != signature:
+            if build_event:
+                build_event.set()
             return
 
         _METRIC_SNAPSHOT_STATE['items_by_code'] = items_by_code
@@ -215,6 +226,8 @@ def _build_metric_snapshot(stocks: list[str], stock_names: dict, csv_manager, si
         _METRIC_SNAPSHOT_STATE['event'].set()
 
     _save_metric_snapshot_to_disk(signature, items_by_code, sorted_codes)
+    if build_event:
+        build_event.set()
 
 
 def _ensure_metric_snapshot(stocks: list[str], stock_names: dict, csv_manager, wait: bool):
@@ -270,11 +283,11 @@ def _ensure_metric_snapshot(stocks: list[str], stock_names: dict, csv_manager, w
 
     if start_build:
         if wait:
-            _build_metric_snapshot(stocks, stock_names, csv_manager, signature, generation)
+            _build_metric_snapshot(stocks, stock_names, csv_manager, signature, generation, event)
         else:
             threading.Thread(
                 target=_build_metric_snapshot,
-                args=(stocks, stock_names, csv_manager, signature, generation),
+                args=(stocks, stock_names, csv_manager, signature, generation, event),
                 daemon=True,
             ).start()
     elif wait:

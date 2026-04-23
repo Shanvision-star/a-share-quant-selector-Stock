@@ -86,23 +86,24 @@ def build_stock_list_response(
 ) -> dict:
     """编排股票列表查询并返回统一响应结构。"""
     page, per_page = normalize_pagination(page, per_page)
-    filtered_codes = filter_codes(stocks, stock_names, search)
+    all_codes = list(stocks)
+    filtered_codes = filter_codes(all_codes, stock_names, search)
+    allowed_codes = set(filtered_codes) if search else None
     reverse = sort_order == "desc"
 
     if sort_by in _SORT_NEEDS_METRICS:
-        snapshot = ensure_metric_snapshot(filtered_codes, stock_names, csv_manager, wait=True)
+        snapshot = ensure_metric_snapshot(all_codes, stock_names, csv_manager, wait=True)
         snapshot_sorted_codes = snapshot.get("sorted_codes") if isinstance(snapshot, dict) else None
         if isinstance(snapshot_sorted_codes, dict) and snapshot_sorted_codes.get(sort_by):
             ordered_codes = snapshot_sorted_codes[sort_by]
             if reverse:
                 ordered_codes = list(reversed(ordered_codes))
-            if search:
-                allowed_codes = set(filtered_codes)
+            if allowed_codes is not None:
                 ordered_codes = [code for code in ordered_codes if code in allowed_codes]
             page_codes, total = paginate_codes(ordered_codes, page=page, per_page=per_page)
         else:
             fallback_items = []
-            for code in filtered_codes:
+            for code in all_codes:
                 item = build_stock_item(
                     code,
                     stock_names,
@@ -118,6 +119,8 @@ def build_stock_list_response(
                 reverse=reverse,
             )
             fallback_codes = [item["code"] for item in fallback_items]
+            if allowed_codes is not None:
+                fallback_codes = [code for code in fallback_codes if code in allowed_codes]
             page_codes, total = paginate_codes(fallback_codes, page=page, per_page=per_page)
 
         stock_list = []
@@ -132,11 +135,13 @@ def build_stock_list_response(
             if full_item:
                 stock_list.append(full_item)
     else:
-        trigger_metric_snapshot_prewarm(filtered_codes, stock_names, csv_manager)
+        trigger_metric_snapshot_prewarm(all_codes, stock_names, csv_manager)
         if sort_by == "name":
-            ordered_codes = sort_codes(filtered_codes, stock_names, sort_by="name", reverse=reverse)
+            ordered_codes = sort_codes(all_codes, stock_names, sort_by="name", reverse=reverse)
         else:
-            ordered_codes = sort_codes(filtered_codes, stock_names, sort_by="code", reverse=reverse)
+            ordered_codes = sort_codes(all_codes, stock_names, sort_by="code", reverse=reverse)
+        if allowed_codes is not None:
+            ordered_codes = [code for code in ordered_codes if code in allowed_codes]
         page_codes, total = paginate_codes(ordered_codes, page=page, per_page=per_page)
 
         stock_list = []

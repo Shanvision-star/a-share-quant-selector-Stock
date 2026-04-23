@@ -1,6 +1,7 @@
 """策略执行服务 - 调用 strategy_registry"""
 import asyncio
 import concurrent.futures
+import copy
 import json
 import queue
 import sys
@@ -15,6 +16,7 @@ sys.path.insert(0, str(project_root))
 from strategy.strategy_registry import get_registry
 from utils.csv_manager import CSVManager
 from web.backend.services import strategy_result_repository as repo
+from web.backend.services.config_service import get_config_with_revision, save_config, update_config_with_revision
 
 csv_manager = CSVManager(str(project_root / "data"))
 WEB_STRATEGY_RESULTS_FILE = project_root / "data" / "web_strategy_results.json"
@@ -23,6 +25,7 @@ WEB_STRATEGY_SCHEMA_VERSION = 1
 _STRATEGY_CACHE = {}
 _STRATEGY_CACHE_LOCK = threading.Lock()
 _STRATEGY_CACHE_TTL_SECONDS = 300
+_CONFIG_UPDATE_LOCK = threading.Lock()
 _STRATEGY_REBUILD_STATE_LOCK = threading.Lock()
 # Web 端重建状态保存在进程内，用于驱动 SSE 进度展示并阻止重复重建。
 _STRATEGY_REBUILD_STATE = {
@@ -39,6 +42,10 @@ _STRATEGY_REBUILD_STATE = {
     'matched': 0,
     'last_status': 'idle',
 }
+
+
+class ConfigRefreshError(RuntimeError):
+    """配置已回滚，但运行时刷新失败。"""
 
 
 def _json_default(value):
@@ -1234,33 +1241,103 @@ def run_strategy(strategy_filter: str = 'all', target_date: str = None) -> dict:
     return payload
 
 
-def get_strategies_config() -> list:
+def _clear_strategy_cache() -> None:
+    with _STRATEGY_CACHE_LOCK:
+        _STRATEGY_CACHE.clear()
+
+
+def _invalidate_persisted_strategy_results() -> None:
+    try:
+        WEB_STRATEGY_RESULTS_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _validate_strategy_config_update(strategy_name: str, new_params: dict) -> dict:
     registry = get_registry('config/strategy_params.yaml')
     registry.auto_register_from_directory('strategy')
+    strategy = registry.get_strategy(strategy_name)
+    if strategy is None:
+        raise ValueError(f"未知策略: {strategy_name}")
+    if not new_params:
+        raise ValueError("参数不能为空")
+
+    validated_params = {}
+    current_params = strategy.params
+    param_meta = _PARAM_META.get(strategy_name, {})
+    for key, value in new_params.items():
+        if key not in current_params:
+            raise ValueError(f"未知参数: {key}")
+
+        expected_value = current_params[key]
+        if isinstance(expected_value, bool):
+            if not isinstance(value, bool):
+                raise ValueError(f"参数 {key} 必须为布尔值")
+        elif isinstance(expected_value, int) and not isinstance(expected_value, bool):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"参数 {key} 必须为整数")
+        elif isinstance(expected_value, float):
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(f"参数 {key} 必须为数字")
+            value = float(value)
+        elif isinstance(expected_value, str):
+            if not isinstance(value, str):
+                raise ValueError(f"参数 {key} 必须为字符串")
+
+        meta = param_meta.get(key, {})
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            min_value = meta.get('min')
+            max_value = meta.get('max')
+            if min_value is not None and value < min_value:
+                raise ValueError(f"参数 {key} 不能小于 {min_value}")
+            if max_value is not None and value > max_value:
+                raise ValueError(f"参数 {key} 不能大于 {max_value}")
+
+        validated_params[key] = value
+
+    return validated_params
+
+
+def get_strategies_config() -> dict:
+    registry = get_registry('config/strategy_params.yaml')
+    registry.auto_register_from_directory('strategy')
+    raw_config, revision, updated_at = get_config_with_revision()
+    strategies = registry.get_registered_strategies()
     configs = []
-    for name, strategy in registry.strategies.items():
+    for name, strategy in strategies.items():
         configs.append({
             'strategy_name': name,
-            'params': strategy.params,
+            'params': raw_config.get(name, strategy.params),
             'param_meta': _PARAM_META.get(name, {}),
             'case_examples': _get_case_examples_for_strategy(name),
         })
-    return configs
+    return {
+        'revision': revision,
+        'updated_at': updated_at,
+        'configs': configs,
+    }
 
 
-def update_strategy_config(strategy_name: str, new_params: dict) -> bool:
-    import yaml
-    config_file = project_root / 'config' / 'strategy_params.yaml'
+def update_strategy_config(strategy_name: str, new_params: dict, expected_revision: str) -> tuple[bool, str]:
+    validated_params = _validate_strategy_config_update(strategy_name, new_params)
+    with _CONFIG_UPDATE_LOCK:
+        original_config, _, _ = get_config_with_revision()
+        original_config = copy.deepcopy(original_config)
+        success, revision = update_config_with_revision(strategy_name, validated_params, expected_revision)
+        if not success:
+            return False, revision
 
-    with open(config_file, 'r', encoding='utf-8') as file:
-        config = yaml.safe_load(file) or {}
-
-    if strategy_name not in config:
-        config[strategy_name] = {}
-
-    config[strategy_name].update(new_params)
-
-    with open(config_file, 'w', encoding='utf-8') as file:
-        yaml.dump(config, file, allow_unicode=True, default_flow_style=False)
-
-    return True
+        registry = get_registry('config/strategy_params.yaml')
+        try:
+            registry.reload_params()
+            _invalidate_persisted_strategy_results()
+            _clear_strategy_cache()
+            return True, revision
+        except Exception as exc:
+            try:
+                save_config(original_config)
+                registry.reload_params()
+                _clear_strategy_cache()
+            except Exception as rollback_exc:
+                raise ConfigRefreshError("配置刷新失败，且回滚失败") from rollback_exc
+            raise ConfigRefreshError("配置刷新失败，已回滚") from exc

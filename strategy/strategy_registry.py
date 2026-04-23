@@ -3,6 +3,7 @@
 """
 import importlib
 import sys
+import threading
 from pathlib import Path
 import yaml
 
@@ -12,7 +13,9 @@ class StrategyRegistry:
     
     def __init__(self, params_file="config/strategy_params.yaml"):
         self.strategies = {}
+        self.strategy_classes = {}
         self.params_file = Path(params_file)
+        self._lock = threading.RLock()
         self.params = self._load_params()
     
     def _load_params(self):
@@ -28,16 +31,27 @@ class StrategyRegistry:
         :param strategy_class: 策略类
         :param name: 策略名称（默认使用类名）
         """
-        strategy_name = name or strategy_class.__name__
-        
-        # 获取该策略的参数
-        params = self.params.get(strategy_name, {})
-        
-        # 实例化策略
-        strategy = strategy_class(params=params)
-        self.strategies[strategy_name] = strategy
-        
-        return strategy
+        with self._lock:
+            strategy_name = name or strategy_class.__name__
+            self.strategy_classes[strategy_name] = strategy_class
+            
+            # 获取该策略的参数
+            params = self.params.get(strategy_name, {})
+            
+            # 实例化策略
+            strategy = strategy_class(params=params)
+            self.strategies[strategy_name] = strategy
+            
+            return strategy
+
+    def reload_params(self):
+        """重新加载参数并刷新运行时策略实例。"""
+        with self._lock:
+            self.params = self._load_params()
+            strategy_names = list(self.strategy_classes.keys())
+            for strategy_name in strategy_names:
+                strategy_class = self.strategy_classes[strategy_name]
+                self.register(strategy_class, name=strategy_name)
 
     def _log(self, message):
         """使用 ASCII 友好的输出，避免 Windows 默认控制台编码导致注册中断。"""
@@ -45,59 +59,67 @@ class StrategyRegistry:
     
     def get_strategy(self, name):
         """获取已注册的策略"""
-        return self.strategies.get(name)
+        with self._lock:
+            return self.strategies.get(name)
     
     def list_strategies(self):
         """列出所有已注册的策略"""
-        return list(self.strategies.keys())
+        with self._lock:
+            return list(self.strategies.keys())
+
+    def get_registered_strategies(self):
+        """获取已注册策略快照。"""
+        with self._lock:
+            return dict(self.strategies)
     
     def auto_register_from_directory(self, strategy_dir="strategy"):
         """
         自动从目录加载策略
         导入所有非 _ 开头的 .py 文件
         """
-        strategy_path = Path(strategy_dir)
-        if not strategy_path.exists():
-            strategy_path = Path(__file__).parent
-        
-        # 添加策略目录到路径
-        if str(strategy_path) not in sys.path:
-            sys.path.insert(0, str(strategy_path))
-        
-        # 遍历策略文件
-        for py_file in strategy_path.glob("*.py"):
-            if py_file.name.startswith("_"):
-                continue
+        with self._lock:
+            strategy_path = Path(strategy_dir)
+            if not strategy_path.exists():
+                strategy_path = Path(__file__).parent
             
-            module_name = py_file.stem
+            # 添加策略目录到路径
+            if str(strategy_path) not in sys.path:
+                sys.path.insert(0, str(strategy_path))
             
-            try:
-                # 动态导入模块
-                if module_name in sys.modules:
-                    module = sys.modules[module_name]
-                else:
-                    module = importlib.import_module(module_name)
+            # 遍历策略文件
+            for py_file in strategy_path.glob("*.py"):
+                if py_file.name.startswith("_"):
+                    continue
                 
-                # 查找策略类（继承自 BaseStrategy 的类）
-                from strategy.base_strategy import BaseStrategy
+                module_name = py_file.stem
                 
-                seen_strategy_classes = set()
-                for attr_name in dir(module):
-                    attr = getattr(module, attr_name)
-                    if (isinstance(attr, type) and 
-                        issubclass(attr, BaseStrategy) and 
-                        attr is not BaseStrategy and
-                        attr.__module__ == module.__name__):
-                        if attr in seen_strategy_classes:
-                            continue
-                        seen_strategy_classes.add(attr)
-                        
-                        # 注册策略（排除基类）
-                        self.register(attr, name=attr_name)
-                        self._log(f"  [OK] 注册策略: {attr_name}")
-                        
-            except Exception as e:
-                self._log(f"  [ERR] 加载 {module_name} 失败: {e}")
+                try:
+                    # 动态导入模块
+                    if module_name in sys.modules:
+                        module = sys.modules[module_name]
+                    else:
+                        module = importlib.import_module(module_name)
+                    
+                    # 查找策略类（继承自 BaseStrategy 的类）
+                    from strategy.base_strategy import BaseStrategy
+                    
+                    seen_strategy_classes = set()
+                    for attr_name in dir(module):
+                        attr = getattr(module, attr_name)
+                        if (isinstance(attr, type) and 
+                            issubclass(attr, BaseStrategy) and 
+                            attr is not BaseStrategy and
+                            attr.__module__ == module.__name__):
+                            if attr in seen_strategy_classes:
+                                continue
+                            seen_strategy_classes.add(attr)
+                            
+                            # 注册策略（排除基类）
+                            self.register(attr, name=attr_name)
+                            self._log(f"  [OK] 注册策略: {attr_name}")
+                            
+                except Exception as e:
+                    self._log(f"  [ERR] 加载 {module_name} 失败: {e}")
     
     def run_strategy(self, strategy_name, stock_data_dict):
         """
@@ -106,10 +128,11 @@ class StrategyRegistry:
         :param stock_data_dict: {code: (name, df)} 格式的股票数据
         :return: {strategy_name: [signals]} 格式的结果
         """
-        if strategy_name not in self.strategies:
+        with self._lock:
+            strategy = self.strategies.get(strategy_name)
+        if strategy is None:
             return {}
-        
-        strategy = self.strategies[strategy_name]
+
         total_stocks = len(stock_data_dict)
         
         self._log(f"\n执行策略: {strategy_name}")
@@ -141,7 +164,7 @@ class StrategyRegistry:
         indicators_dict = {}  # 存储计算了指标的数据
         total_stocks = len(stock_data_dict)
         
-        for strategy_name, strategy in self.strategies.items():
+        for strategy_name, strategy in self.get_registered_strategies().items():
             self._log(f"\n执行策略: {strategy_name}")
             self._log(f"  共 {total_stocks} 只股票待分析...")
             signals = []
@@ -179,10 +202,13 @@ class StrategyRegistry:
 
 # 全局注册器实例
 _registry = None
+_registry_lock = threading.Lock()
 
 def get_registry(params_file="config/strategy_params.yaml"):
     """获取全局策略注册器"""
     global _registry
     if _registry is None:
-        _registry = StrategyRegistry(params_file)
+        with _registry_lock:
+            if _registry is None:
+                _registry = StrategyRegistry(params_file)
     return _registry

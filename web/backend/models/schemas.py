@@ -109,3 +109,4 @@ class ConfigUpdateRequest(BaseModel):
     """策略参数更新请求"""
     strategy_name: str
     params: Dict[str, Any]
+    expected_revision: str

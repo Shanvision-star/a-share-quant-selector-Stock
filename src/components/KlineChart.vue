@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import { getKline, getIntradayKline } from '@/api'
+import { createRequestManager, isAbortError } from '@/api/requestManager'
 
 const props = withDefaults(defineProps<{
   code: string
@@ -54,6 +55,7 @@ const zoomPresets = computed(() =>
 let renderSeq = 0
 const loading = ref(false)
 const containerHeight = ref(600)
+const requestManager = createRequestManager()
 const chartState = reactive({
   errorMessage: '',
   emptyMessage: '',
@@ -296,6 +298,8 @@ async function renderChart() {
   if (!chartRef.value) return
 
   const seq = ++renderSeq
+  const requestKey = `kline:${props.code}:${props.period}:${props.adjust}`
+  const controller = requestManager.start(requestKey)
   loading.value = true
   chartState.errorMessage = ''
   chartState.emptyMessage = ''
@@ -309,7 +313,12 @@ async function renderChart() {
     }
 
     // 当前组件自己取 K 线数据，父组件只负责传入叠加用的策略信号和显示开关。
-    const res = await getKline(props.code, { period: props.period, limit: props.limit, adjust: props.adjust as 'qfq' | 'hfq' | 'nfq' })
+    const res = await getKline(
+      props.code,
+      { period: props.period, limit: props.limit, adjust: props.adjust as 'qfq' | 'hfq' | 'nfq' },
+      { signal: controller.signal },
+    )
+    if (!requestManager.isCurrent(requestKey, controller)) return
     if (seq !== renderSeq) return
 
     const data = res?.data?.data
@@ -612,6 +621,7 @@ async function renderChart() {
       })
     }
   } finally {
+    requestManager.clear(requestKey, controller)
     if (seq === renderSeq) {
       loading.value = false
     }
@@ -690,6 +700,7 @@ async function safeRenderChart() {
   try {
     await renderChart()
   } catch (error) {
+    if (isAbortError(error)) return
     setRenderError(error)
   }
 }
@@ -966,6 +977,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  requestManager.cancelAll()
   window.removeEventListener('resize', handleResize)
   resizeObserver?.disconnect()
   resizeObserver = null

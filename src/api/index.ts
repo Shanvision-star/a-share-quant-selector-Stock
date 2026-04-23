@@ -24,8 +24,8 @@ export const getKline = (code: string, params?: {
   period?: string
   limit?: number
   adjust?: 'qfq' | 'hfq' | 'nfq'
-}) =>
-  api.get(`/kline/${code}`, { params })
+}, options: RequestOptions = {}) =>
+  api.get(`/kline/${code}`, { params, signal: options.signal })
 
 // 股票价格面板
 export const getStockPrice = (code: string) =>

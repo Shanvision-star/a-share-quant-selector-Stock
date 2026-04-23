@@ -10,7 +10,7 @@ import pandas as pd
 
 from fastapi import APIRouter, Query
 
-from web.backend.services.stock_list_service import filter_codes, paginate_codes, sort_codes
+from web.backend.services.stock_list_service import build_stock_list_response
 
 router = APIRouter(prefix="/api", tags=["股票列表"])
 
@@ -399,79 +399,17 @@ async def get_stock_list(
 
     stock_names = _load_stock_names()
     stocks = sorted({code for code in csv_manager.list_all_stocks() if code.isdigit() and len(code) == 6})
-    reverse = sort_order == 'desc'
 
-    # 搜索过滤
-    stocks = filter_codes(stocks, stock_names, search)
-
-    if sort_by in _SORT_NEEDS_METRICS:
-        snapshot = _ensure_metric_snapshot(stocks, stock_names, csv_manager, wait=True)
-        if snapshot and snapshot['sorted_codes'].get(sort_by):
-            ordered_codes = snapshot['sorted_codes'][sort_by]
-            if reverse:
-                ordered_codes = list(reversed(ordered_codes))
-            if search:
-                allowed_codes = set(stocks)
-                ordered_codes = [code for code in ordered_codes if code in allowed_codes]
-            page_codes, total = paginate_codes(ordered_codes, page=page, per_page=per_page)
-        else:
-            fallback_items = []
-            for code in stocks:
-                item = _build_stock_item(
-                    code,
-                    stock_names,
-                    csv_manager,
-                    include_kdj=True,
-                    include_mini_kline=False,
-                )
-                if item:
-                    fallback_items.append(item)
-
-            fallback_items.sort(
-                key=lambda item: (item.get(sort_by), item.get('code')),
-                reverse=reverse,
-            )
-            fallback_codes = [item['code'] for item in fallback_items]
-            page_codes, total = paginate_codes(fallback_codes, page=page, per_page=per_page)
-
-        stock_list = []
-        for code in page_codes:
-            full_item = _build_stock_item(
-                code,
-                stock_names,
-                csv_manager,
-                include_kdj=True,
-                include_mini_kline=True,
-            )
-            if full_item:
-                stock_list.append(full_item)
-    else:
-        # 首页默认排序时就并行预热全市场轻量指标快照，减少首次点击 K/D/J 的等待。
-        _trigger_metric_snapshot_prewarm(stocks, stock_names, csv_manager)
-
-        if sort_by == 'name':
-            ordered_codes = sort_codes(stocks, stock_names, sort_by='name', reverse=reverse)
-        else:
-            ordered_codes = sort_codes(stocks, stock_names, sort_by='code', reverse=reverse)
-        paginated, total = paginate_codes(ordered_codes, page=page, per_page=per_page)
-
-        stock_list = []
-        for code in paginated:
-            item = _build_stock_item(
-                code,
-                stock_names,
-                csv_manager,
-                include_kdj=True,
-                include_mini_kline=True,
-            )
-            if item:
-                stock_list.append(item)
-
-    return {
-        "success": True,
-        "data": stock_list,
-        "total": total,
-        "page": page,
-        "per_page": per_page,
-        "total_pages": (total + per_page - 1) // per_page,
-    }
+    return build_stock_list_response(
+        stocks=stocks,
+        stock_names=stock_names,
+        csv_manager=csv_manager,
+        page=page,
+        per_page=per_page,
+        search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        ensure_metric_snapshot=_ensure_metric_snapshot,
+        build_stock_item=_build_stock_item,
+        trigger_metric_snapshot_prewarm=_trigger_metric_snapshot_prewarm,
+    )

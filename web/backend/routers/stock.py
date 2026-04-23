@@ -9,6 +9,7 @@ import threading
 import pandas as pd
 
 from fastapi import APIRouter, Query
+from starlette.concurrency import run_in_threadpool
 
 from web.backend.services.stock_list_service import METRIC_SORT_FIELDS, build_stock_list_response
 
@@ -400,7 +401,8 @@ async def get_stock_list(
     stock_names = _load_stock_names()
     stocks = sorted({code for code in csv_manager.list_all_stocks() if code.isdigit() and len(code) == 6})
 
-    return build_stock_list_response(
+    return await run_in_threadpool(
+        build_stock_list_response,
         stocks=stocks,
         stock_names=stock_names,
         csv_manager=csv_manager,

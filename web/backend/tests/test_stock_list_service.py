@@ -1,9 +1,51 @@
+import asyncio
 import unittest
+from unittest.mock import AsyncMock, Mock, patch
 
 from web.backend.services.stock_list_service import build_stock_list_response, paginate_codes
 
 
 class StockListServiceTest(unittest.TestCase):
+    def test_get_stock_list_runs_service_in_threadpool(self):
+        stock_codes = ["000001", "000002", "abc", "12345"]
+        expected_payload = {"data": [], "total": 0}
+
+        with patch("web.backend.services.kline_service._load_stock_names", return_value={"000001": "平安银行"}), \
+             patch("web.backend.services.kline_service.csv_manager") as mock_csv_manager, \
+             patch("web.backend.routers.stock.build_stock_list_response") as mock_build_response, \
+             patch("web.backend.routers.stock.run_in_threadpool", new_callable=AsyncMock, create=True) as mock_run_in_threadpool:
+            mock_csv_manager.list_all_stocks.return_value = stock_codes
+            mock_build_response.return_value = {"should": "not be returned directly"}
+            mock_run_in_threadpool.return_value = expected_payload
+
+            from web.backend.routers.stock import get_stock_list
+
+            payload = asyncio.run(
+                get_stock_list(
+                    page=1,
+                    per_page=50,
+                    search="",
+                    sort_by="code",
+                    sort_order="asc",
+                )
+            )
+
+            self.assertEqual(payload, expected_payload)
+            mock_run_in_threadpool.assert_awaited_once()
+            call_args = mock_run_in_threadpool.await_args
+            self.assertIs(call_args.args[0], mock_build_response)
+            self.assertEqual(call_args.kwargs["stocks"], ["000001", "000002"])
+            self.assertEqual(call_args.kwargs["stock_names"], {"000001": "平安银行"})
+            self.assertIs(call_args.kwargs["csv_manager"], mock_csv_manager)
+            self.assertEqual(call_args.kwargs["page"], 1)
+            self.assertEqual(call_args.kwargs["per_page"], 50)
+            self.assertEqual(call_args.kwargs["search"], "")
+            self.assertEqual(call_args.kwargs["sort_by"], "code")
+            self.assertEqual(call_args.kwargs["sort_order"], "asc")
+            self.assertIsNotNone(call_args.kwargs["ensure_metric_snapshot"])
+            self.assertIsNotNone(call_args.kwargs["build_stock_item"])
+            self.assertIsNotNone(call_args.kwargs["trigger_metric_snapshot_prewarm"])
+
     def test_paginate_codes_respects_page_and_size(self):
         codes = [f"{i:06d}" for i in range(1, 21)]
         page_codes, total = paginate_codes(codes, page=2, per_page=5)

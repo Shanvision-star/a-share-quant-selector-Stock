@@ -287,7 +287,12 @@ async function startRebuild() {
       '重建确认',
       { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' },
     )
-  } catch { return }
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    console.error('[StrategyResultsView] 重建确认失败', error)
+    ElMessage.error('重建确认失败，请稍后重试')
+    return
+  }
 
   rebuildRunning.value = true
   rebuildProgress.value = 0

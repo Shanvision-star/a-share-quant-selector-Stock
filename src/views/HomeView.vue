@@ -41,7 +41,7 @@ const HOME_SORT_FIELDS = ['code', 'name', 'latest_price', 'change_pct', 'market_
 type HomeSortField = (typeof HOME_SORT_FIELDS)[number]
 
 function isHomeSortField(prop: string): prop is HomeSortField {
-  return HOME_SORT_FIELDS.includes(prop as HomeSortField)
+  return (HOME_SORT_FIELDS as readonly string[]).includes(prop)
 }
 
 // ─── 首次运行检测 ───

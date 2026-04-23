@@ -10,6 +10,8 @@ import pandas as pd
 
 from fastapi import APIRouter, Query
 
+from web.backend.services.stock_list_service import filter_codes, paginate_codes, sort_codes
+
 router = APIRouter(prefix="/api", tags=["股票列表"])
 
 _SORT_NEEDS_METRICS = {'latest_price', 'change_pct', 'market_cap', 'latest_date', 'k_value', 'd_value', 'j_value'}
@@ -400,14 +402,7 @@ async def get_stock_list(
     reverse = sort_order == 'desc'
 
     # 搜索过滤
-    if search:
-        search_lower = search.lower()
-        stocks = [
-            c for c in stocks
-            if search_lower in c or search_lower in stock_names.get(c, '').lower()
-        ]
-
-    start = (page - 1) * per_page
+    stocks = filter_codes(stocks, stock_names, search)
 
     if sort_by in _SORT_NEEDS_METRICS:
         snapshot = _ensure_metric_snapshot(stocks, stock_names, csv_manager, wait=True)
@@ -418,9 +413,7 @@ async def get_stock_list(
             if search:
                 allowed_codes = set(stocks)
                 ordered_codes = [code for code in ordered_codes if code in allowed_codes]
-
-            total = len(ordered_codes)
-            page_codes = ordered_codes[start:start + per_page]
+            page_codes, total = paginate_codes(ordered_codes, page=page, per_page=per_page)
         else:
             fallback_items = []
             for code in stocks:
@@ -438,8 +431,8 @@ async def get_stock_list(
                 key=lambda item: (item.get(sort_by), item.get('code')),
                 reverse=reverse,
             )
-            total = len(fallback_items)
-            page_codes = [item['code'] for item in fallback_items[start:start + per_page]]
+            fallback_codes = [item['code'] for item in fallback_items]
+            page_codes, total = paginate_codes(fallback_codes, page=page, per_page=per_page)
 
         stock_list = []
         for code in page_codes:
@@ -457,12 +450,10 @@ async def get_stock_list(
         _trigger_metric_snapshot_prewarm(stocks, stock_names, csv_manager)
 
         if sort_by == 'name':
-            stocks.sort(key=lambda code: (stock_names.get(code, '未知'), code), reverse=reverse)
+            ordered_codes = sort_codes(stocks, stock_names, sort_by='name', reverse=reverse)
         else:
-            stocks.sort(reverse=reverse)
-
-        total = len(stocks)
-        paginated = stocks[start:start + per_page]
+            ordered_codes = sort_codes(stocks, stock_names, sort_by='code', reverse=reverse)
+        paginated, total = paginate_codes(ordered_codes, page=page, per_page=per_page)
 
         stock_list = []
         for code in paginated:

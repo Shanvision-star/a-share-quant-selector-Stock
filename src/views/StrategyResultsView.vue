@@ -9,11 +9,17 @@ import {
   getStrategyRunEvents,
 } from '@/api'
 import { useStrategyListStore } from '@/stores/strategyList'
+import { useUpdateJobStore } from '@/stores/updateJob'
+import { useQueryStateStore } from '@/stores/queryState'
 import TxtLibraryPanel from '@/components/TxtLibraryPanel.vue'
+import { createRequestManager, isAbortError } from '@/api/requestManager'
 
 const route = useRoute()
 const router = useRouter()
 const strategyListStore = useStrategyListStore()
+const updateJobStore = useUpdateJobStore()
+const queryStateStore = useQueryStateStore()
+const requestManager = createRequestManager()
 
 // ─── 缓存状态 ───
 const cacheStatus = ref<any>(null)
@@ -23,18 +29,36 @@ const cacheLoading = ref(false)
 const results = ref<any[]>([])
 const resultsTotal = ref(0)
 const resultsUniqueTotal = ref(0)
-const resultsPage = ref(1)
-const resultsPageSize = ref(50)
+const resultsPage = computed({
+  get: () => queryStateStore.results.page,
+  set: (value: number) => queryStateStore.setResultsPage(value),
+})
+const resultsPageSize = computed(() => queryStateStore.results.perPage)
 const resultsLoading = ref(false)
-const sortBy = ref('trade_date')
-const sortOrder = ref<'ascending' | 'descending'>('descending')
+const sortBy = computed(() => queryStateStore.results.sortBy)
+const sortOrder = computed(() => queryStateStore.results.sortOrder)
 
 // ─── 筛选条件 ───
-const activeStrategy = ref('all')
-const filterKeyword = ref('')
-const filterDateRange = ref<[string, string] | null>(null)
-const filterJRange = ref<[number, number] | null>(null)
-const filterSimilarityRange = ref<[number, number] | null>(null)
+const activeStrategy = computed({
+  get: () => queryStateStore.results.strategy,
+  set: (value: string) => queryStateStore.setResultsStrategy(value),
+})
+const filterKeyword = computed({
+  get: () => queryStateStore.results.keyword,
+  set: (value: string) => queryStateStore.setResultsKeyword(value),
+})
+const filterDateRange = computed({
+  get: () => queryStateStore.results.dateRange,
+  set: (value: [string, string] | null) => queryStateStore.setResultsDateRange(value),
+})
+const filterJRange = computed({
+  get: () => queryStateStore.results.jRange,
+  set: (value: [number, number] | null) => queryStateStore.setResultsJRange(value),
+})
+const filterSimilarityRange = computed({
+  get: () => queryStateStore.results.similarityRange,
+  set: (value: [number, number] | null) => queryStateStore.setResultsSimilarityRange(value),
+})
 
 // ─── 实时命中 ───
 const liveSignals = ref<any[]>([])
@@ -45,7 +69,10 @@ const rebuildMessage = ref('')
 // ─── 运行记录 ───
 const runs = ref<any[]>([])
 const runsTotal = ref(0)
-const runsPage = ref(1)
+const runsPage = computed({
+  get: () => queryStateStore.results.runsPage,
+  set: (value: number) => queryStateStore.setResultsRunsPage(value),
+})
 const runsLoading = ref(false)
 
 // ─── 作业详情抽屉 ───
@@ -71,10 +98,23 @@ const requestedTradeDate = computed(() => {
 })
 
 onMounted(() => {
+  // 正常加载已有缓存数据（作业进行中时读取的是上次结果，完成后会自动刷新）
   loadCacheStatus()
   loadResults()
   loadRuns()
 })
+
+// 作业完成后自动刷新
+watch(
+  () => updateJobStore.jobCompleted,
+  (done) => {
+    if (done) {
+      loadCacheStatus()
+      loadResults()
+      loadRuns()
+    }
+  },
+)
 
 watch(
   () => route.query.focus,
@@ -91,8 +131,8 @@ watch(
 watch(
   () => route.query.date,
   () => {
-    resultsPage.value = 1
-    runsPage.value = 1
+    queryStateStore.setResultsPage(1)
+    queryStateStore.setResultsRunsPage(1)
     loadCacheStatus()
     loadResults()
     loadRuns()
@@ -101,17 +141,20 @@ watch(
 
 onBeforeUnmount(() => {
   rebuildController?.abort()
+  requestManager.cancelAll()
 })
 
 // ─── 加载缓存状态 ───
 async function loadCacheStatus() {
+  const controller = requestManager.start('results:cache-status')
   cacheLoading.value = true
   try {
     const params: { strategy: string; date?: string } = { strategy: activeStrategy.value }
     if (requestedTradeDate.value) {
       params.date = requestedTradeDate.value
     }
-    const res = await getStrategyCacheStatus(params)
+    const res = await getStrategyCacheStatus(params, { signal: controller.signal })
+    if (!requestManager.isCurrent('results:cache-status', controller)) return
     cacheStatus.value = res.data.data || null
     const rebuild = cacheStatus.value?.rebuild
     if (rebuild?.is_running) {
@@ -124,14 +167,20 @@ async function loadCacheStatus() {
       rebuildMessage.value = ''
     }
   } catch (e) {
-    console.error('加载缓存状态失败', e)
+    if (!isAbortError(e)) {
+      console.error('加载缓存状态失败', e)
+    }
   } finally {
-    cacheLoading.value = false
+    if (requestManager.isCurrent('results:cache-status', controller)) {
+      cacheLoading.value = false
+    }
+    requestManager.clear('results:cache-status', controller)
   }
 }
 
 // ─── 加载正式结果 ───
 async function loadResults() {
+  const controller = requestManager.start('results:list')
   resultsLoading.value = true
   try {
     const params: any = {
@@ -158,20 +207,27 @@ async function loadResults() {
     params.sort_by = sortBy.value
     params.sort_order = sortOrder.value === 'ascending' ? 'asc' : 'desc'
 
-    const res = await getStrategyResultsHistory(params)
+    const res = await getStrategyResultsHistory(params, { signal: controller.signal })
+    if (!requestManager.isCurrent('results:list', controller)) return
     const data = res.data.data || {}
     results.value = data.items || []
     resultsTotal.value = data.total || 0
     resultsUniqueTotal.value = data.unique_code_total || 0
   } catch (e) {
-    console.error('加载策略结果失败', e)
+    if (!isAbortError(e)) {
+      console.error('加载策略结果失败', e)
+    }
   } finally {
-    resultsLoading.value = false
+    if (requestManager.isCurrent('results:list', controller)) {
+      resultsLoading.value = false
+    }
+    requestManager.clear('results:list', controller)
   }
 }
 
 // ─── 加载运行记录 ───
 async function loadRuns() {
+  const controller = requestManager.start('results:runs')
   runsLoading.value = true
   try {
     const params: any = {
@@ -182,29 +238,42 @@ async function loadRuns() {
     if (requestedTradeDate.value) {
       params.date = requestedTradeDate.value
     }
-    const res = await getStrategyRuns(params)
+    const res = await getStrategyRuns(params, { signal: controller.signal })
+    if (!requestManager.isCurrent('results:runs', controller)) return
     const data = res.data.data || {}
     runs.value = data.items || []
     runsTotal.value = data.total || 0
   } catch (e) {
-    console.error('加载运行记录失败', e)
+    if (!isAbortError(e)) {
+      console.error('加载运行记录失败', e)
+    }
   } finally {
-    runsLoading.value = false
+    if (requestManager.isCurrent('results:runs', controller)) {
+      runsLoading.value = false
+    }
+    requestManager.clear('results:runs', controller)
   }
 }
 
 // ─── 查看运行详情 ───
 async function openRunDetail(runId: string) {
+  const controller = requestManager.start('results:run-events')
   drawerRunId.value = runId
   drawerVisible.value = true
   drawerLoading.value = true
   try {
-    const res = await getStrategyRunEvents(runId, 500)
+    const res = await getStrategyRunEvents(runId, 500, { signal: controller.signal })
+    if (!requestManager.isCurrent('results:run-events', controller)) return
     drawerEvents.value = res.data.data || []
   } catch (e) {
-    console.error(e)
+    if (!isAbortError(e)) {
+      console.error(e)
+    }
   } finally {
-    drawerLoading.value = false
+    if (requestManager.isCurrent('results:run-events', controller)) {
+      drawerLoading.value = false
+    }
+    requestManager.clear('results:run-events', controller)
   }
 }
 
@@ -338,34 +407,33 @@ function handleEvent(eventName: string, data: any) {
 }
 
 function onStrategyChange(key: string) {
-  activeStrategy.value = key
-  resultsPage.value = 1
-  runsPage.value = 1
+  queryStateStore.setResultsStrategy(key)
   loadResults()
   loadCacheStatus()
   loadRuns()
 }
 
 function onResultsPageChange(p: number) {
-  resultsPage.value = p
+  queryStateStore.setResultsPage(p)
   loadResults()
 }
 
 function onRunsPageChange(p: number) {
-  runsPage.value = p
+  queryStateStore.setResultsRunsPage(p)
   loadRuns()
 }
 
 function onSearch() {
-  resultsPage.value = 1
+  queryStateStore.setResultsPage(1)
   loadResults()
 }
 
 function onSortChange({ prop, order }: { prop: string; order: string | null }) {
   // prop from el-table matches our backend column names
-  sortBy.value = prop || 'trade_date'
-  sortOrder.value = (order === 'ascending' ? 'ascending' : 'descending') as 'ascending' | 'descending'
-  resultsPage.value = 1
+  queryStateStore.setResultsSort(
+    prop || 'trade_date',
+    order === 'ascending' ? 'ascending' : 'descending',
+  )
   loadResults()
 }
 
@@ -404,6 +472,19 @@ function formatDuration(start: string, end?: string) {
 
 <template>
   <div class="strategy-results-view">
+    <!-- 作业进行中提示 -->
+    <el-alert
+      v-if="updateJobStore.isRunning"
+      type="info"
+      :closable="false"
+      show-icon
+      style="margin-bottom:16px"
+    >
+      <template #title>
+        后台正在执行数据更新 + 策略重建，下方显示的是<b>上次生成的策略结果</b>，完成后自动刷新。
+      </template>
+    </el-alert>
+
     <!-- 区块 A：缓存状态卡 -->
     <div class="status-card" v-loading="cacheLoading">
       <div class="status-card-head">

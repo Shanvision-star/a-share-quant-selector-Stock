@@ -5,6 +5,10 @@ const api = axios.create({
   timeout: 60000,
 })
 
+interface RequestOptions {
+  signal?: AbortSignal
+}
+
 // 股票列表
 export const getStockList = (params: {
   page?: number
@@ -12,8 +16,8 @@ export const getStockList = (params: {
   search?: string
   sort_by?: string
   sort_order?: 'asc' | 'desc'
-}) =>
-  api.get('/stock/list', { params })
+}, options: RequestOptions = {}) =>
+  api.get('/stock/list', { params, signal: options.signal })
 
 // K 线数据
 export const getKline = (code: string, params?: {
@@ -40,8 +44,11 @@ export const getStockInfo = (code: string) =>
   api.get(`/stock/info/${code}`)
 
 // 策略选股结果
-export const getStrategyResults = (params?: { strategy?: string; date?: string }) =>
-  api.get('/strategy/results', { params })
+export const getStrategyResults = (
+  params?: { strategy?: string; date?: string },
+  options: RequestOptions = {},
+) =>
+  api.get('/strategy/results', { params, signal: options.signal })
 
 // 策略历史结果查询
 export const getStrategyResultsHistory = (params?: {
@@ -51,33 +58,44 @@ export const getStrategyResultsHistory = (params?: {
   min_similarity?: number; max_similarity?: number;
   page?: number; per_page?: number;
   sort_by?: string; sort_order?: string;
-}) => api.get('/strategy/results/history', { params })
+}, options: RequestOptions = {}) => api.get('/strategy/results/history', { params, signal: options.signal })
 
 // 有结果的交易日期
 export const getAvailableDates = (limit?: number) =>
   api.get('/strategy/results/dates', { params: { limit } })
 
 // 策略缓存状态
-export const getStrategyCacheStatus = (params?: { strategy?: string; date?: string }) =>
-  api.get('/strategy/cache/status', { params })
+export const getStrategyCacheStatus = (
+  params?: { strategy?: string; date?: string },
+  options: RequestOptions = {},
+) =>
+  api.get('/strategy/cache/status', { params, signal: options.signal })
 
 // 运行记录列表
 export const getStrategyRuns = (params?: {
   run_type?: string; status?: string; strategy?: string; date?: string;
   page?: number; per_page?: number;
-}) => api.get('/strategy/runs', { params })
+}, options: RequestOptions = {}) => api.get('/strategy/runs', { params, signal: options.signal })
 
 // 单次运行详情
 export const getStrategyRunDetail = (runId: string) =>
   api.get(`/strategy/runs/${runId}`)
 
 // 单次运行事件
-export const getStrategyRunEvents = (runId: string, limit?: number) =>
-  api.get(`/strategy/runs/${runId}/events`, { params: { limit } })
+export const getStrategyRunEvents = (
+  runId: string,
+  limit?: number,
+  options: RequestOptions = {},
+) =>
+  api.get(`/strategy/runs/${runId}/events`, { params: { limit }, signal: options.signal })
 
 // 数据状态
 export const getDataStatus = () =>
   api.get('/data/status')
+
+// 数据初始化状态检测（首次克隆检测）
+export const getInitStatus = () =>
+  api.get('/data/init-status')
 
 // 配置
 export const getConfig = () =>
@@ -111,5 +129,9 @@ export const generateTxtFile = (params: { strategy: string; date?: string }) =>
 /** 返回下载链接（直接浏览器跳转） */
 export const getTxtDownloadUrl = (filename: string) =>
   `/api/txt/download/${encodeURIComponent(filename)}`
+
+// 从内存缓存获取最新市值（后台刷新完成后调用）
+export const getMarketCap = (codes?: string[]) =>
+  api.get('/market-cap', { params: codes?.length ? { codes: codes.join(',') } : undefined })
 
 export default api

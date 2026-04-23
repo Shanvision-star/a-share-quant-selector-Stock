@@ -39,8 +39,11 @@ export const useSettingsDraftStore = defineStore('settingsDraft', () => {
     targetConfig.params[paramName] = value
   }
 
-  function markSaved(newRevision: string, strategyName?: string) {
+  function markSaved(newRevision: string, strategyName?: string, newUpdatedAt?: string) {
     revision.value = newRevision
+    if (newUpdatedAt) {
+      updatedAt.value = newUpdatedAt
+    }
     if (!strategyName) {
       serverConfigs.value = cloneConfigs(draftConfigs.value)
       return
@@ -56,6 +59,22 @@ export const useSettingsDraftStore = defineStore('settingsDraft', () => {
     serverConfigs.value = nextServerConfigs
   }
 
+  function refreshFromServerWithConflict(payload: SettingsDraftPayload, conflictedStrategyName: string) {
+    revision.value = payload.revision
+    updatedAt.value = payload.updated_at
+    serverConfigs.value = cloneConfigs(payload.configs)
+
+    const localDraftByStrategy = new Map(
+      draftConfigs.value.map((config) => [config.strategy_name, cloneConfigs([config])[0]]),
+    )
+    draftConfigs.value = payload.configs.map((serverConfig) => {
+      if (serverConfig.strategy_name === conflictedStrategyName) {
+        return cloneConfigs([serverConfig])[0]
+      }
+      return localDraftByStrategy.get(serverConfig.strategy_name) ?? cloneConfigs([serverConfig])[0]
+    })
+  }
+
   return {
     revision,
     updatedAt,
@@ -65,5 +84,6 @@ export const useSettingsDraftStore = defineStore('settingsDraft', () => {
     loadFromServer,
     updateParam,
     markSaved,
+    refreshFromServerWithConflict,
   }
 })

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { isAxiosError } from 'axios'
 import { ElMessage } from 'element-plus'
 import StrategyParamKnob from '@/components/StrategyParamKnob.vue'
 import { getConfig, updateConfig } from '@/api'
@@ -79,13 +80,23 @@ async function saveConfig(cfg: StrategyConfig) {
     const res = await updateConfig(payload)
     settingsDraft.markSaved(res.data.data.revision, cfg.strategy_name)
     ElMessage.success(`${cfg.strategy_name} 参数已保存`)
-  } catch (e: any) {
-    if (e.response?.status === 409) {
-      await loadConfig()
+  } catch (error: unknown) {
+    if (isAxiosError(error) && error.response?.status === 409) {
+      try {
+        const refreshed = await getConfig()
+        settingsDraft.refreshFromServerWithConflict(refreshed.data, cfg.strategy_name)
+      } catch (refreshError) {
+        console.error(refreshError)
+      }
       ElMessage.error('配置已刷新，请重新调整后再保存')
       return
     }
-    ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message))
+    const detail = isAxiosError(error)
+      ? (error.response?.data as { detail?: string } | undefined)?.detail || error.message
+      : error instanceof Error
+        ? error.message
+        : '未知错误'
+    ElMessage.error('保存失败: ' + detail)
   } finally {
     saving.value[cfg.strategy_name] = false
   }

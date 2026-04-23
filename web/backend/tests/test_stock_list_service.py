@@ -1,7 +1,7 @@
 import asyncio
 import threading
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 from web.backend.routers import stock as stock_router
 from web.backend.services.stock_list_service import build_stock_list_response, paginate_codes
@@ -307,6 +307,43 @@ class StockListServiceTest(unittest.TestCase):
                     build_event=build_event,
                 )
             self.assertTrue(build_event.is_set())
+        finally:
+            with stock_router._METRIC_SNAPSHOT_LOCK:
+                stock_router._METRIC_SNAPSHOT_STATE.clear()
+                stock_router._METRIC_SNAPSHOT_STATE.update(original_state)
+
+    def test_ensure_metric_snapshot_does_not_apply_disk_snapshot_when_other_signature_active(self):
+        original_state = {}
+        with stock_router._METRIC_SNAPSHOT_LOCK:
+            original_state = dict(stock_router._METRIC_SNAPSHOT_STATE)
+            stock_router._METRIC_SNAPSHOT_STATE["generation"] = 10
+            stock_router._METRIC_SNAPSHOT_STATE["signature"] = ("999999",)
+            stock_router._METRIC_SNAPSHOT_STATE["building"] = True
+            stock_router._METRIC_SNAPSHOT_STATE["ready"] = False
+            stock_router._METRIC_SNAPSHOT_STATE["event"] = threading.Event()
+            stock_router._METRIC_SNAPSHOT_STATE["items_by_code"] = {}
+            stock_router._METRIC_SNAPSHOT_STATE["sorted_codes"] = {}
+
+        disk_snapshot = {
+            "items_by_code": {"000001": {"code": "000001"}},
+            "sorted_codes": {"change_pct": ["000001"]},
+        }
+
+        try:
+            with patch("web.backend.routers.stock._load_metric_snapshot_from_disk", return_value=disk_snapshot), \
+                 patch("web.backend.routers.stock._build_metric_snapshot") as mock_build:
+                payload = stock_router._ensure_metric_snapshot(
+                    stocks=["000001"],
+                    stock_names={},
+                    csv_manager=object(),
+                    wait=True,
+                )
+
+            self.assertIsNone(payload)
+            mock_build.assert_called_once()
+            with stock_router._METRIC_SNAPSHOT_LOCK:
+                self.assertFalse(stock_router._METRIC_SNAPSHOT_STATE["ready"])
+                self.assertNotEqual(stock_router._METRIC_SNAPSHOT_STATE["items_by_code"], disk_snapshot["items_by_code"])
         finally:
             with stock_router._METRIC_SNAPSHOT_LOCK:
                 stock_router._METRIC_SNAPSHOT_STATE.clear()

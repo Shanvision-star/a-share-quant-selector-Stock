@@ -251,13 +251,18 @@ def _ensure_metric_snapshot(stocks: list[str], stock_names: dict, csv_manager, w
     disk_snapshot = _load_metric_snapshot_from_disk(signature)
     if disk_snapshot:
         with _METRIC_SNAPSHOT_LOCK:
-            _METRIC_SNAPSHOT_STATE['signature'] = signature
-            _METRIC_SNAPSHOT_STATE['building'] = False
-            _METRIC_SNAPSHOT_STATE['ready'] = True
-            _METRIC_SNAPSHOT_STATE['event'].set()
-            _METRIC_SNAPSHOT_STATE['items_by_code'] = disk_snapshot['items_by_code']
-            _METRIC_SNAPSHOT_STATE['sorted_codes'] = disk_snapshot['sorted_codes']
-        return disk_snapshot
+            state_signature = _METRIC_SNAPSHOT_STATE['signature']
+            if not (
+                state_signature != signature
+                and (_METRIC_SNAPSHOT_STATE['building'] or _METRIC_SNAPSHOT_STATE['ready'])
+            ):
+                _METRIC_SNAPSHOT_STATE['signature'] = signature
+                _METRIC_SNAPSHOT_STATE['building'] = False
+                _METRIC_SNAPSHOT_STATE['ready'] = True
+                _METRIC_SNAPSHOT_STATE['event'].set()
+                _METRIC_SNAPSHOT_STATE['items_by_code'] = disk_snapshot['items_by_code']
+                _METRIC_SNAPSHOT_STATE['sorted_codes'] = disk_snapshot['sorted_codes']
+                return disk_snapshot
 
     with _METRIC_SNAPSHOT_LOCK:
         if _METRIC_SNAPSHOT_STATE['ready'] and _METRIC_SNAPSHOT_STATE['signature'] == signature:

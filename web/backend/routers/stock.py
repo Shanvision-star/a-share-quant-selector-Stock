@@ -10,11 +10,11 @@ import pandas as pd
 
 from fastapi import APIRouter, Query
 
-from web.backend.services.stock_list_service import build_stock_list_response
+from web.backend.services.stock_list_service import METRIC_SORT_FIELDS, build_stock_list_response
 
 router = APIRouter(prefix="/api", tags=["股票列表"])
 
-_SORT_NEEDS_METRICS = {'latest_price', 'change_pct', 'market_cap', 'latest_date', 'k_value', 'd_value', 'j_value'}
+_SORT_BY_PATTERN = f"^(code|name|{'|'.join(METRIC_SORT_FIELDS)})$"
 _STOCK_ITEM_CACHE: dict[tuple[str, bool, bool], tuple[int, dict]] = {}
 _METRIC_SNAPSHOT_FILE = Path(__file__).resolve().parents[3] / 'data' / 'stock_list_metrics_cache.json'
 _METRIC_SNAPSHOT_STATE = {
@@ -186,7 +186,7 @@ def _build_metric_snapshot(stocks: list[str], stock_names: dict, csv_manager, si
                     key=lambda entry: (entry[1].get(metric), entry[0]),
                 )
             ]
-            for metric in _SORT_NEEDS_METRICS
+            for metric in METRIC_SORT_FIELDS
         }
     except Exception:
         with _METRIC_SNAPSHOT_LOCK:
@@ -386,7 +386,7 @@ async def get_stock_list(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=10, le=500),
     search: str = Query("", max_length=20),
-    sort_by: str = Query('code', pattern='^(code|name|latest_price|change_pct|market_cap|latest_date|k_value|d_value|j_value)$'),
+    sort_by: str = Query('code', pattern=_SORT_BY_PATTERN),
     sort_order: str = Query('asc', pattern='^(asc|desc)$'),
 ):
     """

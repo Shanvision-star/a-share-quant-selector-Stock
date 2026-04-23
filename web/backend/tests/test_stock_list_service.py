@@ -88,6 +88,62 @@ class StockListServiceTest(unittest.TestCase):
             ],
         )
 
+    def test_build_stock_list_response_falls_back_when_snapshot_payload_malformed(self):
+        stocks = ["000001", "000002", "000003"]
+        stock_names = {"000001": "甲", "000002": "乙", "000003": "丙"}
+        metric_values = {
+            "000001": 3.0,
+            "000002": 1.0,
+            "000003": 2.0,
+        }
+
+        def build_stock_item(code, *_args, include_mini_kline, **_kwargs):
+            item = {"code": code, "change_pct": metric_values[code]}
+            if include_mini_kline:
+                item["mini_kline"] = []
+            return item
+
+        payload = build_stock_list_response(
+            stocks=stocks,
+            stock_names=stock_names,
+            csv_manager=object(),
+            page=1,
+            per_page=2,
+            search="",
+            sort_by="change_pct",
+            sort_order="asc",
+            ensure_metric_snapshot=lambda *_args, **_kwargs: {"items_by_code": {}},
+            build_stock_item=build_stock_item,
+            trigger_metric_snapshot_prewarm=lambda *_args: self.fail("prewarm should not run"),
+        )
+
+        self.assertEqual(payload["total"], 3)
+        self.assertEqual([item["code"] for item in payload["data"]], ["000002", "000003"])
+
+    def test_build_stock_list_response_normalizes_invalid_pagination(self):
+        stocks = ["000002", "000001", "000003"]
+        stock_names = {"000001": "A", "000002": "C", "000003": "B"}
+
+        payload = build_stock_list_response(
+            stocks=stocks,
+            stock_names=stock_names,
+            csv_manager=object(),
+            page=0,
+            per_page=0,
+            search="",
+            sort_by="code",
+            sort_order="asc",
+            ensure_metric_snapshot=lambda *_args, **_kwargs: self.fail("snapshot should not run"),
+            build_stock_item=lambda code, *_args, **_kwargs: {"code": code},
+            trigger_metric_snapshot_prewarm=lambda *_args: None,
+        )
+
+        self.assertEqual(payload["page"], 1)
+        self.assertEqual(payload["per_page"], 1)
+        self.assertEqual(payload["total"], 3)
+        self.assertEqual(payload["total_pages"], 3)
+        self.assertEqual([item["code"] for item in payload["data"]], ["000001"])
+
     def test_build_stock_list_response_non_metric_sort_triggers_prewarm(self):
         stocks = ["000002", "000001", "000003"]
         stock_names = {"000001": "A", "000002": "C", "000003": "B"}

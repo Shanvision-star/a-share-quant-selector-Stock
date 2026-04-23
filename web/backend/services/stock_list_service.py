@@ -2,7 +2,7 @@
 
 from typing import Iterable
 
-_SORT_NEEDS_METRICS = {
+METRIC_SORT_FIELDS = (
     "latest_price",
     "change_pct",
     "market_cap",
@@ -10,6 +10,10 @@ _SORT_NEEDS_METRICS = {
     "k_value",
     "d_value",
     "j_value",
+)
+
+_SORT_NEEDS_METRICS = {
+    *METRIC_SORT_FIELDS,
 }
 
 
@@ -47,6 +51,25 @@ def paginate_codes(codes: Iterable[str], page: int, per_page: int) -> tuple[list
     return code_list[start:start + per_page], len(code_list)
 
 
+def normalize_pagination(page: int, per_page: int) -> tuple[int, int]:
+    """标准化分页参数，保障服务层分页安全。"""
+    try:
+        safe_page = int(page)
+    except (TypeError, ValueError):
+        safe_page = 1
+
+    try:
+        safe_per_page = int(per_page)
+    except (TypeError, ValueError):
+        safe_per_page = 1
+
+    if safe_page < 1:
+        safe_page = 1
+    if safe_per_page < 1:
+        safe_per_page = 1
+    return safe_page, safe_per_page
+
+
 def build_stock_list_response(
     *,
     stocks: Iterable[str],
@@ -62,13 +85,15 @@ def build_stock_list_response(
     trigger_metric_snapshot_prewarm,
 ) -> dict:
     """编排股票列表查询并返回统一响应结构。"""
+    page, per_page = normalize_pagination(page, per_page)
     filtered_codes = filter_codes(stocks, stock_names, search)
     reverse = sort_order == "desc"
 
     if sort_by in _SORT_NEEDS_METRICS:
         snapshot = ensure_metric_snapshot(filtered_codes, stock_names, csv_manager, wait=True)
-        if snapshot and snapshot["sorted_codes"].get(sort_by):
-            ordered_codes = snapshot["sorted_codes"][sort_by]
+        snapshot_sorted_codes = snapshot.get("sorted_codes") if isinstance(snapshot, dict) else None
+        if isinstance(snapshot_sorted_codes, dict) and snapshot_sorted_codes.get(sort_by):
+            ordered_codes = snapshot_sorted_codes[sort_by]
             if reverse:
                 ordered_codes = list(reversed(ordered_codes))
             if search:

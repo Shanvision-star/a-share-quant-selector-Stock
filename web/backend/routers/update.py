@@ -3,7 +3,6 @@ from fastapi import APIRouter, Query
 from sse_starlette.sse import EventSourceResponse
 import json
 import logging
-from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -15,15 +14,37 @@ async def trigger_update(
     auto_rebuild: bool = Query(True),
     date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     pipeline: bool = Query(False),
+    allow_intraday_fast: bool = Query(False),
+    init_if_empty: bool = Query(True),
 ):
     """触发数据更新（SSE 流式返回进度）
-    auto_rebuild=True 时，更新完成后自动执行全策略缓存重建
-    pipeline=True 时，更新阶段即内联执行策略扫描并实时推送命中结果
+    auto_rebuild=True 时，更新完成后自动执行全策略缓存重建。
+    pipeline=True 时，更新阶段即内联执行策略扫描并实时推送命中结果。
+    allow_intraday_fast=True 时，允许盘中手动启用快路径。
+    init_if_empty=True 时，首次无数据会先自动执行全量初始化再继续日更。
     """
     from web.backend.services.data_service import run_data_update
 
     async def event_generator():
-        async for msg in run_data_update(auto_rebuild=auto_rebuild, target_date=date, pipeline=pipeline):
+        async for msg in run_data_update(
+            auto_rebuild=auto_rebuild,
+            target_date=date,
+            pipeline=pipeline,
+            allow_intraday_fast=allow_intraday_fast,
+            init_if_empty=init_if_empty,
+        ):
+            yield {"event": msg["event"], "data": json.dumps(msg["data"], ensure_ascii=False)}
+
+    return EventSourceResponse(event_generator())
+
+
+@router.post("/data/init")
+async def trigger_init(max_stocks: int = Query(None, ge=1)):
+    """触发首次全量初始化（SSE 流式返回进度）。"""
+    from web.backend.services.data_service import run_data_init
+
+    async def event_generator():
+        async for msg in run_data_init(max_stocks=max_stocks):
             yield {"event": msg["event"], "data": json.dumps(msg["data"], ensure_ascii=False)}
 
     return EventSourceResponse(event_generator())

@@ -24,6 +24,12 @@ schedule:
 update:
   lookback_days: 10
   skip_failed: true
+  # 盘中快路径默认开关（建议默认 false，仅在前端手动勾选时开启）
+  intraday_fast_default: false
+  # 慢路径按缺口动态抓取时的窗口参数
+  slow_path_buffer_days: 3
+  slow_path_min_fetch_days: 10
+  slow_path_max_fetch_days: 60
   # Baostock 备选链路熔断参数（网络异常时用于限流降压）
   baostock_circuit:
     failure_threshold: 3

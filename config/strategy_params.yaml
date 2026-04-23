@@ -3,16 +3,31 @@ B1CaseAnalyzer:
   M2: 28
   M3: 57
   M4: 114
+  anchor_date: '2025-11-17'
+  anchor_kdj_field: J
   anchor_kdj_max: 20
-  breakout_min_pct: 4.0
+  breakout_date: '2025-11-21'
+  breakout_min_pct: 4
   breakout_min_streak: 3
-  duokong_pct: 3.0
-  lookback_days: 80
+  buy_breakout_lookback_days: 5
+  buy_compare_field: close
+  buy_date: '2026-02-09'
+  buy_trigger_min_pct: 9.5
+  duokong_pct: 3
+  guard_compare_field: low
+  guard_reference_field: open
+  lookback_days: 100
   no_break_days: 3
-  revisit_band_pct: 3.0
-  revisit_kdj_max: 20.0
+  reference_low_date: '2025-10-17'
+  revisit_band_pct: 3
+  revisit_date: '2026-02-06'
+  revisit_kdj_field: J
+  revisit_kdj_max: 20
+  revisit_line_field: bull_bear_line
   setup_window_days: 2
-  short_pct: 2.0
+  short_pct: 2
+  washout_compare_field: close
+  washout_end_date: '2025-12-17'
 B1CaseStrategy:
   M1: 14
   M2: 28
@@ -82,4 +97,4 @@ BowlReboundStrategy:
   M4: 114
   N: 2
   duokong_pct: 0.87
-  short_pct: 1
+  short_pct: 2.9

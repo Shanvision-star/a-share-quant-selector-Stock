@@ -26,6 +26,10 @@ _market_cap_cache_lock = threading.Lock()
 _BAOSTOCK_FAILURE_THRESHOLD = 3
 _BAOSTOCK_COOLDOWN_SECONDS = 120
 _BAOSTOCK_COOLDOWN_LOG_INTERVAL_SECONDS = 20
+_INTRADAY_FAST_DEFAULT = False
+_SLOW_PATH_BUFFER_DAYS = 3
+_SLOW_PATH_MIN_FETCH_DAYS = 10
+_SLOW_PATH_MAX_FETCH_DAYS = 60
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -131,6 +135,10 @@ class AKShareFetcher:
         self._baostock_failure_threshold = _BAOSTOCK_FAILURE_THRESHOLD
         self._baostock_cooldown_seconds = _BAOSTOCK_COOLDOWN_SECONDS
         self._baostock_cooldown_log_interval_seconds = _BAOSTOCK_COOLDOWN_LOG_INTERVAL_SECONDS
+        self._intraday_fast_default = _INTRADAY_FAST_DEFAULT
+        self._slow_path_buffer_days = _SLOW_PATH_BUFFER_DAYS
+        self._slow_path_min_fetch_days = _SLOW_PATH_MIN_FETCH_DAYS
+        self._slow_path_max_fetch_days = _SLOW_PATH_MAX_FETCH_DAYS
         self._load_runtime_tuning_config()
         self._load_market_cap_weekly_cache()
     
@@ -194,11 +202,28 @@ class AKShareFetcher:
         except Exception:
             return default
 
+    @staticmethod
+    def _as_bool(value, default=False):
+        """将配置值转为布尔值，非法值回退 default。"""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ('1', 'true', 'yes', 'on'):
+                return True
+            if lowered in ('0', 'false', 'no', 'off'):
+                return False
+        return default
+
     def _load_runtime_tuning_config(self):
         """加载运行时调优配置（每次更新前热加载一次）。"""
         failure_threshold = _BAOSTOCK_FAILURE_THRESHOLD
         cooldown_seconds = _BAOSTOCK_COOLDOWN_SECONDS
         cooldown_log_interval_seconds = _BAOSTOCK_COOLDOWN_LOG_INTERVAL_SECONDS
+        intraday_fast_default = _INTRADAY_FAST_DEFAULT
+        slow_path_buffer_days = _SLOW_PATH_BUFFER_DAYS
+        slow_path_min_fetch_days = _SLOW_PATH_MIN_FETCH_DAYS
+        slow_path_max_fetch_days = _SLOW_PATH_MAX_FETCH_DAYS
 
         try:
             if self.runtime_config_file.exists():
@@ -218,13 +243,36 @@ class AKShareFetcher:
                     circuit_cfg.get('cooldown_log_interval_seconds'),
                     cooldown_log_interval_seconds,
                 )
+                intraday_fast_default = self._as_bool(
+                    update_cfg.get('intraday_fast_default'),
+                    intraday_fast_default,
+                )
+                slow_path_buffer_days = self._as_positive_int(
+                    update_cfg.get('slow_path_buffer_days'),
+                    slow_path_buffer_days,
+                )
+                slow_path_min_fetch_days = self._as_positive_int(
+                    update_cfg.get('slow_path_min_fetch_days'),
+                    slow_path_min_fetch_days,
+                )
+                slow_path_max_fetch_days = self._as_positive_int(
+                    update_cfg.get('slow_path_max_fetch_days'),
+                    slow_path_max_fetch_days,
+                )
         except Exception as e:
             print(f"  读取运行时调优配置失败，使用默认值: {e}")
+
+        if slow_path_max_fetch_days < slow_path_min_fetch_days:
+            slow_path_max_fetch_days = slow_path_min_fetch_days
 
         with self._baostock_circuit_lock:
             self._baostock_failure_threshold = failure_threshold
             self._baostock_cooldown_seconds = cooldown_seconds
             self._baostock_cooldown_log_interval_seconds = cooldown_log_interval_seconds
+            self._intraday_fast_default = intraday_fast_default
+            self._slow_path_buffer_days = slow_path_buffer_days
+            self._slow_path_min_fetch_days = slow_path_min_fetch_days
+            self._slow_path_max_fetch_days = slow_path_max_fetch_days
 
     def _get_baostock_cooldown_status(self):
         """返回 (是否冷却中, 剩余秒数, 最近错误)。"""
@@ -1186,19 +1234,42 @@ class AKShareFetcher:
             print(f"  新浪备选失败({stock_code}): {e}")
             return None
     
-    def init_full_data(self, max_stocks=None, skip_failed=True):
+    def init_full_data(self, max_stocks=None, skip_failed=True, progress_callback=None):
         """
         首次全量抓取
         :param max_stocks: 限制抓取数量（用于测试）
         :param skip_failed: 是否跳过之前失败的股票
+        :param progress_callback: 可选回调，接收初始化进度 dict
         """
         import akshare as ak
+
+        def emit_init_progress(progress, message, current_code='', **extra):
+            if not progress_callback:
+                return
+            payload = {
+                'progress': max(0, min(100, int(progress))),
+                'message': message,
+            }
+            if current_code:
+                payload['current_code'] = current_code
+            payload.update(extra)
+            try:
+                progress_callback(payload)
+            except Exception:
+                pass
         
         stock_dict = self.get_all_stock_codes()
         
         if not stock_dict:
             print("无法获取股票列表")
-            return
+            emit_init_progress(100, "无法获取股票列表，初始化失败", status='error')
+            return {
+                'status': 'error',
+                'message': '无法获取股票列表',
+                'total': 0,
+                'success': 0,
+                'failed': 0,
+            }
         
         stock_codes = list(stock_dict.keys())
         
@@ -1259,8 +1330,17 @@ class AKShareFetcher:
         
         total = len(stock_codes)
         success = 0
-        failed = 0
         failed_list = []
+        failed_set = set()
+
+        emit_init_progress(
+            1,
+            f"开始全量初始化：共 {total} 只股票",
+            total=total,
+            completed=0,
+            success=0,
+            failed=0,
+        )
         
         print(f"\n开始抓取 {total} 只股票的6年历史数据...")
         print("=" * 60)
@@ -1277,10 +1357,12 @@ class AKShareFetcher:
                     print(f"⚠ 数据太少({len(df)}条)")
                     valid_data = False
                     failed_list.append(code)
+                    failed_set.add(code)
                 elif df['close'].mean() <= 0:  # 价格异常
                     print(f"⚠ 价格异常")
                     valid_data = False
                     failed_list.append(code)
+                    failed_set.add(code)
                 else:
                     # 使用批量获取的市值数据
                     if code in market_cap_map:
@@ -1290,8 +1372,22 @@ class AKShareFetcher:
                     success += 1
             else:
                 print("✗ 失败")
-                failed += 1
                 failed_list.append(code)
+                failed_set.add(code)
+
+            completed = i
+            emit_init_progress(
+                int(completed / max(total, 1) * 100),
+                (
+                    f"全量初始化中：{completed}/{total}，"
+                    f"成功 {success}，失败 {len(failed_set)}"
+                ),
+                current_code=code,
+                total=total,
+                completed=completed,
+                success=success,
+                failed=len(failed_set),
+            )
             
             # 限速，避免请求过快
             if i % 10 == 0:
@@ -1307,12 +1403,37 @@ class AKShareFetcher:
                 print(f"\n  保存失败列表出错: {e}")
         
         print("=" * 60)
-        print(f"完成! 成功: {success}, 失败: {failed + len(failed_list)}")
+        print(f"完成! 成功: {success}, 失败: {len(failed_set)}")
         if failed_list and not max_stocks:
             print(f"提示: 再次运行 init 命令可跳过失败股票，专注于成功获取的数据")
 
+        emit_init_progress(
+            100,
+            f"全量初始化完成：总计 {total}，成功 {success}，失败 {len(failed_set)}",
+            total=total,
+            completed=total,
+            success=success,
+            failed=len(failed_set),
+            status='done',
+        )
+
+        return {
+            'status': 'done',
+            'message': f'全量初始化完成：总计 {total}，成功 {success}，失败 {len(failed_set)}',
+            'total': total,
+            'success': success,
+            'failed': len(failed_set),
+        }
+
     # ===================== 优化版：并发更新 + 实时进度显示 =====================
-    def daily_update(self, max_stocks=None, date=None, progress_callback=None, on_stock_ready=None):
+    def daily_update(
+        self,
+        max_stocks=None,
+        date=None,
+        progress_callback=None,
+        on_stock_ready=None,
+        allow_intraday_fast=None,
+    ):
         """每日增量更新 - 多线程并发版 + 实时进度显示
         优化要点：
           1. 先批量获取全市场市值（1次API调用），替代原来每股单独调用（1840次）
@@ -1324,11 +1445,22 @@ class AKShareFetcher:
         :param on_stock_ready: 可选回调 (code, df)，每只股票更新成功后立即调用（pipeline 模式用于内联策略扫描）
         """
         self._load_runtime_tuning_config()
+        if allow_intraday_fast is None:
+            allow_intraday_fast = self._intraday_fast_default
+        else:
+            allow_intraday_fast = bool(allow_intraday_fast)
         print(
             "  Baostock熔断配置："
             f"失败阈值={self._baostock_failure_threshold}，"
             f"冷却={self._baostock_cooldown_seconds}s，"
             f"日志节流={self._baostock_cooldown_log_interval_seconds}s"
+        )
+        print(
+            "  更新策略："
+            f"盘中快路径默认={'开启' if self._intraday_fast_default else '关闭'}，"
+            f"本次盘中快路径={'开启' if allow_intraday_fast else '关闭'}，"
+            f"慢路径抓取天数区间={self._slow_path_min_fetch_days}-{self._slow_path_max_fetch_days}"
+            f"(buffer={self._slow_path_buffer_days})"
         )
 
         existing_stocks = self.csv_manager.list_all_stocks()
@@ -1342,15 +1474,17 @@ class AKShareFetcher:
         is_after_close = now.time() >= dt_time(15, 0)
 
         if date is None:
-            target_date = today if is_after_close else today - timedelta(days=1)
+            target_date = today if (is_after_close or allow_intraday_fast) else today - timedelta(days=1)
             while target_date.weekday() >= 5:
                 target_date -= timedelta(days=1)
-            if not is_after_close and not max_stocks:
+            if not is_after_close and allow_intraday_fast and not max_stocks:
+                print(f"⚠️ 盘中手动快路径已开启，本次尝试更新当日数据 {target_date.strftime('%Y-%m-%d')}")
+            elif not is_after_close and not max_stocks:
                 print(f"⚠️ 未收盘，仍然检查是否缺失最近交易日数据 {target_date.strftime('%Y-%m-%d')}")
         else:
             target_date = datetime.strptime(date, "%Y-%m-%d").date()
 
-        can_use_spot_fast_path = is_after_close and target_date == today
+        can_use_spot_fast_path = (is_after_close or allow_intraday_fast) and target_date == today
 
         target_date_str = target_date.strftime('%Y-%m-%d')
         scan_total = len(existing_stocks)
@@ -1363,6 +1497,18 @@ class AKShareFetcher:
         verify_reached = 0
         cache_written = False
         cache_hit = False
+        fast_path_total = 0
+        fast_path_success = 0
+        fast_path_failed = 0
+        slow_path_total = 0
+        slow_path_reason_counts = {
+            'time_gate': 0,
+            'missing_local_data': 0,
+            'gap_gt1': 0,
+            'missing_spot': 0,
+            'suspended': 0,
+            'other': 0,
+        }
 
         def emit_progress(progress, message, phase='update', current_code='', **extra):
             if not progress_callback:
@@ -1385,6 +1531,12 @@ class AKShareFetcher:
                 'verify_reached': verify_reached,
                 'cache_written': cache_written,
                 'cache_hit': cache_hit,
+                'allow_intraday_fast': allow_intraday_fast,
+                'fast_path_total': fast_path_total,
+                'fast_path_success': fast_path_success,
+                'fast_path_failed': fast_path_failed,
+                'slow_path_total': slow_path_total,
+                'slow_path_reasons': dict(slow_path_reason_counts),
             }
             if current_code:
                 payload['current_code'] = current_code
@@ -1412,6 +1564,12 @@ class AKShareFetcher:
                 'verify_reached': verify_reached,
                 'cache_written': cache_written,
                 'cache_hit': cache_hit,
+                'allow_intraday_fast': allow_intraday_fast,
+                'fast_path_total': fast_path_total,
+                'fast_path_success': fast_path_success,
+                'fast_path_failed': fast_path_failed,
+                'slow_path_total': slow_path_total,
+                'slow_path_reasons': dict(slow_path_reason_counts),
             }
 
         if not existing_stocks:
@@ -1668,14 +1826,30 @@ class AKShareFetcher:
         #   4. spot_data_map[code]['close'] > 0（停牌过滤）
         fast_path_stocks: list = []
         slow_path_stocks: list = []
+        days_behind_map: dict = {}
+        gap_cache: dict = {}
+
+        def _trading_day_gap(last_date):
+            if last_date is None:
+                return 999
+            if last_date >= target_date:
+                return 0
+            if last_date in gap_cache:
+                return gap_cache[last_date]
+
+            day_cursor = last_date + timedelta(days=1)
+            gap = 0
+            while day_cursor <= target_date:
+                if day_cursor.weekday() < 5:
+                    gap += 1
+                day_cursor += timedelta(days=1)
+            gap_cache[last_date] = gap
+            return gap
+
         for _code in stocks_to_update:
             _ld = latest_date_map.get(_code)
-            if _ld is not None:
-                _delta = (target_date - _ld).days
-                _weeks, _rem = divmod(_delta, 7)
-                _days_behind = _weeks * 5 + min(_rem, 5)
-            else:
-                _days_behind = 999
+            _days_behind = _trading_day_gap(_ld)
+            days_behind_map[_code] = _days_behind
             _spot = spot_data_map.get(_code)
             if (
                 _days_behind == 1
@@ -1687,9 +1861,31 @@ class AKShareFetcher:
             else:
                 slow_path_stocks.append(_code)
 
+                if _days_behind >= 999:
+                    slow_path_reason_counts['missing_local_data'] += 1
+                elif _days_behind > 1:
+                    slow_path_reason_counts['gap_gt1'] += 1
+                elif not can_use_spot_fast_path:
+                    slow_path_reason_counts['time_gate'] += 1
+                elif _spot is None:
+                    slow_path_reason_counts['missing_spot'] += 1
+                elif float(_spot.get('close', 0)) <= 0:
+                    slow_path_reason_counts['suspended'] += 1
+                else:
+                    slow_path_reason_counts['other'] += 1
+
+        fast_path_total = len(fast_path_stocks)
+        slow_path_total = len(slow_path_stocks)
+        emit_progress(
+            36,
+            (
+                f"分流完成：快路径 {fast_path_total} 只，"
+                f"慢路径 {slow_path_total} 只"
+            ),
+            phase='scan_complete',
+        )
+
         # ── 快路径：单日缺失，直接用 spot_data_map 写入（零额外HTTP）────────
-        fast_success = 0
-        fast_skipped = 0
         fast_total = len(fast_path_stocks)
         if fast_path_stocks:
             emit_progress(
@@ -1697,8 +1893,7 @@ class AKShareFetcher:
                 f"快路径写入 {len(fast_path_stocks)} 只单日缺失股票...",
                 phase='fast_update',
             )
-            import threading as _threading_fa
-            _lock_fa = _threading_fa.Lock()
+            _lock_fa = threading.Lock()
             fast_emit_step = 1 if fast_total <= 20 else 10
             for fast_index, _code in enumerate(fast_path_stocks, start=1):
                 _ok = self.csv_manager.prepend_row(_code, spot_data_map[_code])
@@ -1706,10 +1901,10 @@ class AKShareFetcher:
                     completed += 1
                     if _ok:
                         updated += 1
-                        fast_success += 1
+                        fast_path_success += 1
                     else:
                         failed += 1
-                        fast_skipped += 1
+                        fast_path_failed += 1
                     if fast_index == 1 or fast_index % fast_emit_step == 0 or fast_index == fast_total:
                         emit_progress(
                             36 + int(fast_index / max(fast_total, 1) * 3),
@@ -1722,29 +1917,54 @@ class AKShareFetcher:
                         )
             emit_progress(
                 39,
-                f"快路径完成：成功 {fast_success}，跳过/失败 {fast_skipped}，慢路径待处理 {len(slow_path_stocks)} 只",
+                (
+                    f"快路径完成：成功 {fast_path_success}，"
+                    f"跳过/失败 {fast_path_failed}，慢路径待处理 {len(slow_path_stocks)} 只"
+                ),
                 phase='fast_update',
             )
 
         # ── 并发更新 K 线数据（慢路径：多日缺失）──────────────────────────
-        days_to_fetch = 10
         total = len(slow_path_stocks)
         total_to_update_all = len(stocks_to_update)
         slow_completed = 0
         TIMEOUT_SECONDS = 1800  # 30分钟，替代原600s
         lock = threading.Lock()
         start_time = time.time()
+        slow_path_fetch_days_map = {}
+        for _code in slow_path_stocks:
+            _gap = days_behind_map.get(_code, self._slow_path_min_fetch_days)
+            _fetch_days = max(self._slow_path_min_fetch_days, _gap + self._slow_path_buffer_days)
+            _fetch_days = min(_fetch_days, self._slow_path_max_fetch_days)
+            slow_path_fetch_days_map[_code] = _fetch_days
+        _avg_fetch_days = (
+            round(sum(slow_path_fetch_days_map.values()) / max(len(slow_path_fetch_days_map), 1), 1)
+            if slow_path_fetch_days_map else 0
+        )
+        _max_fetch_days = max(slow_path_fetch_days_map.values()) if slow_path_fetch_days_map else 0
 
         if total > 0:
             print(f"\n开始并发更新 {total} 只股票（慢路径）...")
-            emit_progress(40, f"开始并发更新 {total} 只股票...", phase='update')
+            emit_progress(
+                40,
+                (
+                    f"开始并发更新 {total} 只股票（慢路径，平均抓取 {_avg_fetch_days} 天，"
+                    f"最大 {_max_fetch_days} 天）..."
+                ),
+                phase='update',
+            )
         else:
             emit_progress(40, "慢路径无需更新，直接进入抽样验证...", phase='update')
         all_done = total == 0
         try:
             with ThreadPoolExecutor(max_workers=16) as executor:
                 futures = {
-                    executor.submit(self._update_single_stock, code, days_to_fetch, market_cap_map): code
+                    executor.submit(
+                        self._update_single_stock,
+                        code,
+                        slow_path_fetch_days_map.get(code, self._slow_path_min_fetch_days),
+                        market_cap_map,
+                    ): code
                     for code in slow_path_stocks
                 }
                 emit_step = 1 if total <= 20 else 10

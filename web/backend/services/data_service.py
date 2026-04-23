@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 from pathlib import Path
 from datetime import datetime
+from typing import Any, Dict
 
 project_root = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(project_root))
@@ -16,6 +17,27 @@ from web.backend.services import strategy_result_repository as repo
 
 csv_manager = CSVManager(str(project_root / "data"))
 fetcher = AKShareFetcher(str(project_root / "data"))
+
+
+def _enqueue_init_progress(
+    event_queue: queue.Queue,
+    payload: Dict[str, Any],
+    run_id: str,
+    trade_date: str,
+    progress_start: int,
+    progress_span: int,
+):
+    """统一初始化进度映射，避免重复代码。"""
+    raw_progress = max(0, min(100, int(payload.get('progress', 0))))
+    mapped_progress = progress_start + int(raw_progress * progress_span / 100)
+    data = dict(payload)
+    data['progress'] = max(0, min(100, mapped_progress))
+    data['status'] = 'running'
+    data['run_id'] = run_id
+    data['stage'] = 'update'
+    data['phase'] = 'init_full'
+    data['trade_date'] = trade_date
+    event_queue.put({'event': 'init_progress', 'data': data})
 
 
 def get_data_status() -> dict:
@@ -75,7 +97,13 @@ def get_data_status() -> dict:
     }
 
 
-async def run_data_update(auto_rebuild: bool = True, target_date: str = None, pipeline: bool = False):
+async def run_data_update(
+    auto_rebuild: bool = True,
+    target_date: str = None,
+    pipeline: bool = False,
+    allow_intraday_fast: bool = False,
+    init_if_empty: bool = True,
+):
     """
     异步执行数据更新，通过 yield 返回进度消息（SSE）
     auto_rebuild=True 时，更新完成后自动执行策略缓存重建
@@ -107,6 +135,137 @@ async def run_data_update(auto_rebuild: bool = True, target_date: str = None, pi
             "trade_date": effective_date,
         },
     }
+
+    # ─── 预检查：先判断本地数据完整性 ───
+    all_stocks = csv_manager.list_all_stocks()
+    precheck_state = 'ready' if all_stocks else 'empty'
+    yield {
+        "event": "precheck",
+        "data": {
+            "status": "running",
+            "progress": 4,
+            "message": (
+                f"更新前预检查完成：本地CSV {len(all_stocks)} 只"
+                if all_stocks else
+                "更新前预检查：本地无CSV，将进入首次全量初始化"
+            ),
+            "run_id": run_id,
+            "stage": "update",
+            "phase": "precheck",
+            "trade_date": effective_date,
+            "precheck_state": precheck_state,
+            "total_stocks": len(all_stocks),
+            "allow_intraday_fast": bool(allow_intraday_fast),
+            "init_if_empty": bool(init_if_empty),
+        },
+    }
+
+    if not all_stocks and not init_if_empty:
+        message = "本地无数据，请先执行全量初始化（/api/data/init）"
+        try:
+            repo.finish_run(run_id, 'error', message)
+            repo.insert_event(run_id, 'error', message=message)
+        except Exception:
+            pass
+        yield {
+            "event": "error",
+            "data": {
+                "status": "error", "progress": 100,
+                "message": message,
+                "run_id": run_id,
+                "stage": "update",
+                "phase": "precheck",
+                "trade_date": effective_date,
+                "precheck_state": "empty",
+            },
+        }
+        return
+
+    if not all_stocks and init_if_empty:
+        init_queue: queue.Queue = queue.Queue()
+        init_message = "首次使用，开始全量初始化（6年历史）..."
+        yield {
+            "event": "init_start",
+            "data": {
+                "status": "running",
+                "progress": 5,
+                "message": init_message,
+                "run_id": run_id,
+                "stage": "update",
+                "phase": "init_full",
+                "trade_date": effective_date,
+            },
+        }
+
+        def enqueue_init_progress(payload: Dict[str, Any]):
+            _enqueue_init_progress(
+                event_queue=init_queue,
+                payload=payload,
+                run_id=run_id,
+                trade_date=effective_date,
+                progress_start=5,
+                progress_span=20,
+            )
+
+        def do_init():
+            return fetcher.init_full_data(progress_callback=enqueue_init_progress)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as init_pool:
+            init_future = asyncio.get_event_loop().run_in_executor(init_pool, do_init)
+            while not init_future.done() or not init_queue.empty():
+                drained = False
+                try:
+                    yield init_queue.get_nowait()
+                    drained = True
+                except queue.Empty:
+                    pass
+                if not drained:
+                    await asyncio.sleep(0.05)
+            init_summary = await init_future
+
+        while not init_queue.empty():
+            yield init_queue.get_nowait()
+
+        init_summary = init_summary or {}
+        if init_summary.get('status') == 'error':
+            message = init_summary.get('message') or '全量初始化失败'
+            try:
+                repo.finish_run(run_id, 'error', message)
+                repo.insert_event(run_id, 'error', message=message)
+            except Exception:
+                pass
+            yield {
+                "event": "error",
+                "data": {
+                    "status": "error",
+                    "progress": 100,
+                    "message": message,
+                    "run_id": run_id,
+                    "stage": "update",
+                    "phase": "init_full",
+                    "trade_date": effective_date,
+                },
+            }
+            return
+
+        yield {
+            "event": "init_complete",
+            "data": {
+                "status": "running",
+                "progress": 25,
+                "message": (
+                    f"全量初始化完成：成功 {init_summary.get('success', 0)}，"
+                    f"失败 {init_summary.get('failed', 0)}，开始增量更新"
+                ),
+                "run_id": run_id,
+                "stage": "update",
+                "phase": "init_full",
+                "trade_date": effective_date,
+                "init_total": init_summary.get('total', 0),
+                "init_success": init_summary.get('success', 0),
+                "init_failed": init_summary.get('failed', 0),
+            },
+        }
 
     # ─── 阶段 1：数据更新 ───
     yield {
@@ -193,6 +352,7 @@ async def run_data_update(auto_rebuild: bool = True, target_date: str = None, pi
             date=effective_date,
             progress_callback=enqueue_update_progress,
             on_stock_ready=on_stock_ready if pipeline else None,
+            allow_intraday_fast=allow_intraday_fast,
         )
 
     loop = asyncio.get_event_loop()
@@ -251,6 +411,16 @@ async def run_data_update(auto_rebuild: bool = True, target_date: str = None, pi
             'verify_reached',
             'cache_written',
             'cache_hit',
+            'allow_intraday_fast',
+            'precheck_state',
+            'init_total',
+            'init_success',
+            'init_failed',
+            'fast_path_total',
+            'fast_path_success',
+            'fast_path_failed',
+            'slow_path_total',
+            'slow_path_reasons',
         )
         if key in update_summary
     }
@@ -402,3 +572,137 @@ async def run_data_update(auto_rebuild: bool = True, target_date: str = None, pi
                 "trade_date": effective_date,
             },
         }
+
+
+async def run_data_init(max_stocks: int = None):
+    """异步执行首次全量初始化，通过 SSE 返回进度。"""
+    from web.backend.services.strategy_service import get_latest_trade_date
+
+    run_id = repo.generate_run_id()
+    run_type = 'init_only'
+    effective_date = get_latest_trade_date()
+
+    try:
+        repo.create_run(run_id, run_type, effective_date, 'all')
+    except Exception:
+        pass
+
+    yield {
+        "event": "init_start",
+        "data": {
+            "status": "running",
+            "progress": 2,
+            "message": "开始首次全量初始化（6年历史）...",
+            "run_id": run_id,
+            "stage": "update",
+            "phase": "init_full",
+            "trade_date": effective_date,
+        },
+    }
+
+    init_queue: queue.Queue = queue.Queue()
+
+    def enqueue_init_progress(payload: Dict[str, Any]):
+        _enqueue_init_progress(
+            event_queue=init_queue,
+            payload=payload,
+            run_id=run_id,
+            trade_date=effective_date,
+            progress_start=2,
+            progress_span=93,
+        )
+
+    def do_init():
+        return fetcher.init_full_data(max_stocks=max_stocks, progress_callback=enqueue_init_progress)
+
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        try:
+            init_future = loop.run_in_executor(pool, do_init)
+            while not init_future.done() or not init_queue.empty():
+                drained = False
+                try:
+                    yield init_queue.get_nowait()
+                    drained = True
+                except queue.Empty:
+                    pass
+                if not drained:
+                    await asyncio.sleep(0.05)
+            init_summary = await init_future
+        except Exception as exc:
+            message = f"初始化失败: {exc}"
+            try:
+                repo.finish_run(run_id, 'error', message)
+                repo.insert_event(run_id, 'error', message=message)
+            except Exception:
+                pass
+            yield {
+                "event": "error",
+                "data": {
+                    "status": "error",
+                    "progress": 100,
+                    "message": message,
+                    "run_id": run_id,
+                    "stage": "update",
+                    "phase": "init_full",
+                    "trade_date": effective_date,
+                },
+            }
+            return
+
+    while not init_queue.empty():
+        yield init_queue.get_nowait()
+
+    init_summary = init_summary or {}
+    if init_summary.get('status') == 'error':
+        message = init_summary.get('message') or '初始化失败'
+        try:
+            repo.finish_run(run_id, 'error', message)
+            repo.insert_event(run_id, 'error', message=message)
+        except Exception:
+            pass
+        yield {
+            "event": "error",
+            "data": {
+                "status": "error",
+                "progress": 100,
+                "message": message,
+                "run_id": run_id,
+                "stage": "update",
+                "phase": "init_full",
+                "trade_date": effective_date,
+            },
+        }
+        return
+
+    try:
+        repo.finish_run(
+            run_id,
+            'done',
+            (
+                f"全量初始化完成：总计 {init_summary.get('total', 0)}，"
+                f"成功 {init_summary.get('success', 0)}，失败 {init_summary.get('failed', 0)}"
+            ),
+        )
+        repo.insert_event(run_id, 'job_complete', message='全量初始化完成')
+    except Exception:
+        pass
+
+    yield {
+        "event": "job_complete",
+        "data": {
+            "status": "done",
+            "progress": 100,
+            "message": (
+                f"全量初始化完成：总计 {init_summary.get('total', 0)}，"
+                f"成功 {init_summary.get('success', 0)}，失败 {init_summary.get('failed', 0)}"
+            ),
+            "run_id": run_id,
+            "stage": "update",
+            "phase": "init_full",
+            "trade_date": effective_date,
+            "init_total": init_summary.get('total', 0),
+            "init_success": init_summary.get('success', 0),
+            "init_failed": init_summary.get('failed', 0),
+        },
+    }

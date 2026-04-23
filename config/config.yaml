@@ -16,6 +16,10 @@ schedule:
 update:
   lookback_days: 10
   skip_failed: true
+  intraday_fast_default: false
+  slow_path_buffer_days: 3
+  slow_path_min_fetch_days: 10
+  slow_path_max_fetch_days: 60
   # Baostock 备选链路熔断参数（网络异常时用于限流降压）
   baostock_circuit:
     failure_threshold: 3

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import StrategyParamKnob from '@/components/StrategyParamKnob.vue'
 import { getConfig, updateConfig } from '@/api'
+import { useSettingsDraftStore } from '@/stores/settingsDraft'
 
 interface ParamMeta {
   label: string
@@ -30,19 +31,24 @@ interface StrategyConfig {
   case_examples?: CaseExample[]
 }
 
-const configs = ref<StrategyConfig[]>([])
+const settingsDraft = useSettingsDraftStore()
+const configs = computed(() => settingsDraft.draftConfigs as StrategyConfig[])
 const loading = ref(true)
 const saving = ref<Record<string, boolean>>({})
 
 onMounted(async () => {
-  await loadConfig()
+  if (!settingsDraft.draftConfigs.length) {
+    await loadConfig()
+    return
+  }
+  loading.value = false
 })
 
 async function loadConfig() {
   loading.value = true
   try {
     const res = await getConfig()
-    configs.value = res.data.data || []
+    settingsDraft.loadFromServer(res.data)
   } catch (e) {
     console.error(e)
   } finally {
@@ -53,7 +59,7 @@ async function loadConfig() {
 function resetDefaults(cfg: StrategyConfig) {
   for (const [key, meta] of Object.entries(cfg.param_meta)) {
     if (meta.default !== undefined) {
-      cfg.params[key] = meta.default
+      settingsDraft.updateParam(cfg.strategy_name, key, meta.default)
     }
   }
 }
@@ -61,12 +67,24 @@ function resetDefaults(cfg: StrategyConfig) {
 async function saveConfig(cfg: StrategyConfig) {
   saving.value[cfg.strategy_name] = true
   try {
-    await updateConfig({
+    const payload: {
+      strategy_name: string
+      params: Record<string, number>
+      expected_revision: string
+    } = {
       strategy_name: cfg.strategy_name,
       params: cfg.params,
-    })
+      expected_revision: settingsDraft.revision,
+    }
+    const res = await updateConfig(payload)
+    settingsDraft.markSaved(res.data.data.revision, cfg.strategy_name)
     ElMessage.success(`${cfg.strategy_name} 参数已保存`)
   } catch (e: any) {
+    if (e.response?.status === 409) {
+      await loadConfig()
+      ElMessage.error('配置已刷新，请重新调整后再保存')
+      return
+    }
     ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message))
   } finally {
     saving.value[cfg.strategy_name] = false
@@ -96,11 +114,12 @@ function getCaseSourceLabel(source?: string) {
             v-for="(meta, key) in cfg.param_meta"
             :key="key"
             :label="meta.label"
-            v-model="cfg.params[key as string]"
+            :model-value="cfg.params[key as string]"
             :min="meta.min"
             :max="meta.max"
             :step="meta.step"
             :desc="meta.desc"
+            @update:model-value="settingsDraft.updateParam(cfg.strategy_name, key as string, $event)"
           />
         </div>
         <el-empty

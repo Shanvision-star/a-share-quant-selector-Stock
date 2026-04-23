@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useSettingsDraftStore } from '@/stores/settingsDraft'
 
 const routes = [
   {
@@ -34,7 +35,20 @@ const routes = [
   },
 ]
 
-export default createRouter({
+const router = createRouter({
   history: createWebHistory(),
   routes,
 })
+
+router.beforeEach((to, from, next) => {
+  if (from.name === 'Settings' && to.name !== 'Settings') {
+    const draft = useSettingsDraftStore()
+    if (draft.isDirty && !window.confirm('参数尚未保存，确认离开吗？')) {
+      next(false)
+      return
+    }
+  }
+  next()
+})
+
+export default router

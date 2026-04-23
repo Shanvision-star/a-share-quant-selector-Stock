@@ -5,6 +5,7 @@ interface StrategyConfigDraft {
   strategy_name: string
   params: Record<string, unknown>
   param_meta: Record<string, unknown>
+  case_examples?: unknown[]
 }
 
 interface SettingsDraftPayload {
@@ -14,11 +15,7 @@ interface SettingsDraftPayload {
 }
 
 function cloneConfigs(configs: StrategyConfigDraft[]) {
-  return configs.map((config) => ({
-    strategy_name: config.strategy_name,
-    params: { ...config.params },
-    param_meta: { ...config.param_meta },
-  }))
+  return JSON.parse(JSON.stringify(configs)) as StrategyConfigDraft[]
 }
 
 export const useSettingsDraftStore = defineStore('settingsDraft', () => {
@@ -42,12 +39,31 @@ export const useSettingsDraftStore = defineStore('settingsDraft', () => {
     targetConfig.params[paramName] = value
   }
 
+  function markSaved(newRevision: string, strategyName?: string) {
+    revision.value = newRevision
+    if (!strategyName) {
+      serverConfigs.value = cloneConfigs(draftConfigs.value)
+      return
+    }
+
+    const savedConfig = draftConfigs.value.find((config) => config.strategy_name === strategyName)
+    if (!savedConfig) return
+
+    const nextServerConfigs = cloneConfigs(serverConfigs.value)
+    const savedIndex = nextServerConfigs.findIndex((config) => config.strategy_name === strategyName)
+    if (savedIndex === -1) return
+    nextServerConfigs[savedIndex] = cloneConfigs([savedConfig])[0]
+    serverConfigs.value = nextServerConfigs
+  }
+
   return {
     revision,
     updatedAt,
+    serverConfigs,
     draftConfigs,
     isDirty,
     loadFromServer,
     updateParam,
+    markSaved,
   }
 })

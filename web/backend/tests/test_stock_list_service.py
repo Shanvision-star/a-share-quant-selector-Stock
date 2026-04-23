@@ -77,7 +77,7 @@ class StockListServiceTest(unittest.TestCase):
             stock_names=stock_names,
             csv_manager=object(),
             page=1,
-            per_page=2,
+            per_page=10,
             search="",
             sort_by="change_pct",
             sort_order="desc",
@@ -88,8 +88,8 @@ class StockListServiceTest(unittest.TestCase):
 
         self.assertEqual(calls["ensure"], 1)
         self.assertEqual(payload["total"], 3)
-        self.assertEqual([item["code"] for item in payload["data"]], ["000003", "000001"])
-        self.assertEqual(calls["build"], [("000003", True), ("000001", True)])
+        self.assertEqual([item["code"] for item in payload["data"]], ["000003", "000001", "000002"])
+        self.assertEqual(calls["build"], [("000003", True), ("000001", True), ("000002", True)])
 
     def test_build_stock_list_response_falls_back_when_snapshot_missing(self):
         stocks = ["000001", "000002", "000003"]
@@ -110,7 +110,7 @@ class StockListServiceTest(unittest.TestCase):
             stock_names=stock_names,
             csv_manager=object(),
             page=1,
-            per_page=2,
+            per_page=10,
             search="",
             sort_by="change_pct",
             sort_order="asc",
@@ -120,7 +120,7 @@ class StockListServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(payload["total"], 3)
-        self.assertEqual([item["code"] for item in payload["data"]], ["000002", "000003"])
+        self.assertEqual([item["code"] for item in payload["data"]], ["000002", "000003", "000001"])
         self.assertEqual(
             calls["build"],
             [
@@ -129,6 +129,7 @@ class StockListServiceTest(unittest.TestCase):
                 ("000003", False),
                 ("000002", True),
                 ("000003", True),
+                ("000001", True),
             ],
         )
 
@@ -152,7 +153,7 @@ class StockListServiceTest(unittest.TestCase):
             stock_names=stock_names,
             csv_manager=object(),
             page=1,
-            per_page=2,
+            per_page=10,
             search="",
             sort_by="change_pct",
             sort_order="asc",
@@ -162,7 +163,7 @@ class StockListServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(payload["total"], 3)
-        self.assertEqual([item["code"] for item in payload["data"]], ["000002", "000003"])
+        self.assertEqual([item["code"] for item in payload["data"]], ["000002", "000003", "000001"])
 
     def test_build_stock_list_response_normalizes_invalid_pagination(self):
         stocks = ["000002", "000001", "000003"]
@@ -183,10 +184,10 @@ class StockListServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(payload["page"], 1)
-        self.assertEqual(payload["per_page"], 1)
+        self.assertEqual(payload["per_page"], 10)
         self.assertEqual(payload["total"], 3)
-        self.assertEqual(payload["total_pages"], 3)
-        self.assertEqual([item["code"] for item in payload["data"]], ["000001"])
+        self.assertEqual(payload["total_pages"], 1)
+        self.assertEqual([item["code"] for item in payload["data"]], ["000001", "000002", "000003"])
 
     def test_build_stock_list_response_non_metric_sort_triggers_prewarm(self):
         stocks = ["000002", "000001", "000003"]
@@ -206,7 +207,7 @@ class StockListServiceTest(unittest.TestCase):
             stock_names=stock_names,
             csv_manager=object(),
             page=1,
-            per_page=2,
+            per_page=10,
             search="",
             sort_by="name",
             sort_order="asc",
@@ -217,8 +218,8 @@ class StockListServiceTest(unittest.TestCase):
 
         self.assertEqual(calls["prewarm"], 1)
         self.assertEqual(payload["total"], 3)
-        self.assertEqual([item["code"] for item in payload["data"]], ["000001", "000003"])
-        self.assertEqual(calls["build"], [("000001", True), ("000003", True)])
+        self.assertEqual([item["code"] for item in payload["data"]], ["000001", "000003", "000002"])
+        self.assertEqual(calls["build"], [("000001", True), ("000003", True), ("000002", True)])
 
     def test_build_stock_list_response_metric_snapshot_uses_full_stocks_for_search(self):
         stocks = ["000001", "000002", "000003"]
@@ -310,3 +311,5 @@ class StockListServiceTest(unittest.TestCase):
             with stock_router._METRIC_SNAPSHOT_LOCK:
                 stock_router._METRIC_SNAPSHOT_STATE.clear()
                 stock_router._METRIC_SNAPSHOT_STATE.update(original_state)
+
+

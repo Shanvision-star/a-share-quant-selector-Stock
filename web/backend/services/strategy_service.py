@@ -25,6 +25,8 @@ WEB_STRATEGY_SCHEMA_VERSION = 1
 _STRATEGY_CACHE = {}
 _STRATEGY_CACHE_LOCK = threading.Lock()
 _STRATEGY_CACHE_TTL_SECONDS = 300
+_RESOLVED_ITEMS_CACHE_LOCK = threading.Lock()
+_RESOLVED_ITEMS_CACHE_VERSION = 0
 _CONFIG_UPDATE_LOCK = threading.Lock()
 _STRATEGY_REBUILD_STATE_LOCK = threading.Lock()
 # Web 端重建状态保存在进程内，用于驱动 SSE 进度展示并阻止重复重建。
@@ -574,26 +576,39 @@ _RESOLVED_ITEMS_CACHE = {'items': None, 'names': None, 'ts': 0}
 _RESOLVED_ITEMS_TTL = 300  # 5 分钟
 
 
+def _clear_resolved_items_cache() -> None:
+    with _RESOLVED_ITEMS_CACHE_LOCK:
+        global _RESOLVED_ITEMS_CACHE_VERSION
+        _RESOLVED_ITEMS_CACHE_VERSION += 1
+        _RESOLVED_ITEMS_CACHE.update({'items': None, 'names': None, 'ts': 0})
+
+
 def get_resolved_strategy_items() -> tuple:
     """获取已初始化的 (stock_names, selected_items)，带 5 分钟内部缓存。
     供 pipeline 模式在数据更新阶段调用。"""
-    now_ts = time.time()
-    if (
-        _RESOLVED_ITEMS_CACHE['items'] is not None
-        and (now_ts - _RESOLVED_ITEMS_CACHE['ts']) < _RESOLVED_ITEMS_TTL
-    ):
-        return _RESOLVED_ITEMS_CACHE['names'], _RESOLVED_ITEMS_CACHE['items']
+    while True:
+        now_ts = time.time()
+        with _RESOLVED_ITEMS_CACHE_LOCK:
+            cache_version = _RESOLVED_ITEMS_CACHE_VERSION
+            if (
+                _RESOLVED_ITEMS_CACHE['items'] is not None
+                and (now_ts - _RESOLVED_ITEMS_CACHE['ts']) < _RESOLVED_ITEMS_TTL
+            ):
+                return _RESOLVED_ITEMS_CACHE['names'], _RESOLVED_ITEMS_CACHE['items']
 
-    registry = get_registry('config/strategy_params.yaml')
-    registry.auto_register_from_directory('strategy')
-    stock_names = _load_stock_names()
-    resolved_strategies = _resolve_web_strategies(registry)
-    selected_items = _resolve_selected_web_strategies(resolved_strategies, 'all')
+        registry = get_registry('config/strategy_params.yaml')
+        registry.auto_register_from_directory('strategy')
+        stock_names = _load_stock_names()
+        resolved_strategies = _resolve_web_strategies(registry)
+        selected_items = _resolve_selected_web_strategies(resolved_strategies, 'all')
 
-    _RESOLVED_ITEMS_CACHE['items'] = selected_items
-    _RESOLVED_ITEMS_CACHE['names'] = stock_names
-    _RESOLVED_ITEMS_CACHE['ts'] = now_ts
-    return stock_names, selected_items
+        with _RESOLVED_ITEMS_CACHE_LOCK:
+            if cache_version != _RESOLVED_ITEMS_CACHE_VERSION:
+                continue
+            _RESOLVED_ITEMS_CACHE['items'] = selected_items
+            _RESOLVED_ITEMS_CACHE['names'] = stock_names
+            _RESOLVED_ITEMS_CACHE['ts'] = now_ts
+            return stock_names, selected_items
 
 
 def _resolve_web_strategies(registry) -> dict:
@@ -1331,12 +1346,14 @@ def update_strategy_config(strategy_name: str, new_params: dict, expected_revisi
         try:
             registry.reload_params()
             _invalidate_persisted_strategy_results()
+            _clear_resolved_items_cache()
             _clear_strategy_cache()
             return True, revision
         except Exception as exc:
             try:
                 save_config(original_config)
                 registry.reload_params()
+                _clear_resolved_items_cache()
                 _clear_strategy_cache()
             except Exception as rollback_exc:
                 raise ConfigRefreshError("配置刷新失败，且回滚失败") from rollback_exc

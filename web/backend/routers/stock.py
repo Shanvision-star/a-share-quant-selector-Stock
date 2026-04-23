@@ -1,6 +1,7 @@
 """股票列表接口"""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from web.backend.services.stock_list_service import METRIC_SORT_FIELDS, build_stock_list_response
 
 router = APIRouter(prefix="/api", tags=["股票列表"])
+logger = logging.getLogger(__name__)
 
 _SORT_BY_PATTERN = f"^(code|name|{'|'.join(METRIC_SORT_FIELDS)})$"
 _STOCK_ITEM_CACHE: dict[tuple[str, bool, bool], tuple[int, dict]] = {}
@@ -68,7 +70,8 @@ def _read_stock_preview(csv_path: Path, nrows: int = 60) -> pd.DataFrame:
         if 'volume' not in df.columns:
             df['volume'] = 0
         return df
-    except Exception:
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        logger.warning("Failed reading stock preview from %s: %s", csv_path, exc, exc_info=True)
         return pd.DataFrame()
 
 
@@ -111,7 +114,8 @@ def _load_metric_snapshot_from_disk(signature: tuple[str, ...]):
     try:
         with open(_METRIC_SNAPSHOT_FILE, 'r', encoding='utf-8') as file:
             payload = json.load(file)
-    except Exception:
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        logger.warning("Failed loading metric snapshot from %s: %s", _METRIC_SNAPSHOT_FILE, exc, exc_info=True)
         return None
 
     if payload.get('signature') != list(signature):
@@ -140,8 +144,8 @@ def _save_metric_snapshot_to_disk(signature: tuple[str, ...], items_by_code: dic
         with open(temp_file, 'w', encoding='utf-8') as file:
             json.dump(payload, file, ensure_ascii=False)
         temp_file.replace(_METRIC_SNAPSHOT_FILE)
-    except Exception:
-        pass
+    except (OSError, TypeError, ValueError) as exc:
+        logger.warning("Failed saving metric snapshot to %s: %s", _METRIC_SNAPSHOT_FILE, exc, exc_info=True)
 
 
 def invalidate_stock_list_cache():
@@ -149,8 +153,8 @@ def invalidate_stock_list_cache():
     try:
         if _METRIC_SNAPSHOT_FILE.exists():
             _METRIC_SNAPSHOT_FILE.unlink()
-    except Exception:
-        pass
+    except OSError as exc:
+        logger.warning("Failed invalidating metric snapshot file %s: %s", _METRIC_SNAPSHOT_FILE, exc, exc_info=True)
     with _METRIC_SNAPSHOT_LOCK:
         _METRIC_SNAPSHOT_STATE['generation'] += 1
         _METRIC_SNAPSHOT_STATE['signature'] = ()
@@ -189,7 +193,8 @@ def _build_metric_snapshot(stocks: list[str], stock_names: dict, csv_manager, si
             ]
             for metric in METRIC_SORT_FIELDS
         }
-    except Exception:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        logger.error("Failed building metric snapshot: %s", exc, exc_info=True)
         with _METRIC_SNAPSHOT_LOCK:
             if _METRIC_SNAPSHOT_STATE['generation'] == generation and _METRIC_SNAPSHOT_STATE['signature'] == signature:
                 _METRIC_SNAPSHOT_STATE['building'] = False
@@ -343,8 +348,8 @@ def _build_stock_item(
         if not recent_df.empty:
             try:
                 k_value, d_value, j_value = _calculate_latest_kdj(recent_df)
-            except Exception:
-                pass
+            except (RuntimeError, TypeError, ValueError, ZeroDivisionError) as exc:
+                logger.warning("Failed calculating KDJ for %s: %s", code, exc, exc_info=True)
 
     item = {
         'code': code,

@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from
 import * as echarts from 'echarts'
 import { getKline, getIntradayKline } from '@/api'
 import { createRequestManager, isAbortError } from '@/api/requestManager'
+import { buildMainKlineRequestKey } from '@/components/klineRequest'
 
 const props = withDefaults(defineProps<{
   code: string
@@ -298,7 +299,7 @@ async function renderChart() {
   if (!chartRef.value) return
 
   const seq = ++renderSeq
-  const requestKey = `kline:${props.code}:${props.period}:${props.adjust}`
+  const requestKey = buildMainKlineRequestKey(props.code, props.period, props.adjust)
   const controller = requestManager.start(requestKey)
   loading.value = true
   chartState.errorMessage = ''
@@ -620,6 +621,10 @@ async function renderChart() {
         }
       })
     }
+  } catch (error) {
+    // Ignore outdated request failures so stale errors never overwrite the latest chart state.
+    if (!requestManager.isCurrent(requestKey, controller) || seq !== renderSeq) return
+    throw error
   } finally {
     requestManager.clear(requestKey, controller)
     if (seq === renderSeq) {

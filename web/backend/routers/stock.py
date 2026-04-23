@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _SORT_BY_PATTERN = f"^(code|name|{'|'.join(METRIC_SORT_FIELDS)})$"
 _STOCK_ITEM_CACHE: dict[tuple[str, bool, bool], tuple[int, dict]] = {}
+_STOCK_ITEM_CACHE_LOCK = threading.Lock()
 _METRIC_SNAPSHOT_FILE = Path(__file__).resolve().parents[3] / 'data' / 'stock_list_metrics_cache.json'
 _METRIC_SNAPSHOT_STATE = {
     'generation': 0,
@@ -149,7 +150,8 @@ def _save_metric_snapshot_to_disk(signature: tuple[str, ...], items_by_code: dic
 
 
 def invalidate_stock_list_cache():
-    _STOCK_ITEM_CACHE.clear()
+    with _STOCK_ITEM_CACHE_LOCK:
+        _STOCK_ITEM_CACHE.clear()
     try:
         if _METRIC_SNAPSHOT_FILE.exists():
             _METRIC_SNAPSHOT_FILE.unlink()
@@ -314,7 +316,8 @@ def _build_stock_item(
 
     mtime_ns = csv_path.stat().st_mtime_ns
     cache_key = (code, include_kdj, include_mini_kline)
-    cached = _STOCK_ITEM_CACHE.get(cache_key)
+    with _STOCK_ITEM_CACHE_LOCK:
+        cached = _STOCK_ITEM_CACHE.get(cache_key)
     if cached and cached[0] == mtime_ns:
         item = dict(cached[1])
         item['name'] = stock_names.get(code, item.get('name', '未知'))
@@ -383,7 +386,8 @@ def _build_stock_item(
             ])
         item['mini_kline'] = mini_kline
 
-    _STOCK_ITEM_CACHE[cache_key] = (mtime_ns, item)
+    with _STOCK_ITEM_CACHE_LOCK:
+        _STOCK_ITEM_CACHE[cache_key] = (mtime_ns, item)
     return dict(item)
 
 

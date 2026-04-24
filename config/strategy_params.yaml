@@ -16,7 +16,7 @@ B1CaseAnalyzer:
   duokong_pct: 3
   guard_compare_field: low
   guard_reference_field: open
-  lookback_days: 100
+  lookback_days: 90
   no_break_days: 3
   reference_low_date: '2025-10-17'
   revisit_band_pct: 3

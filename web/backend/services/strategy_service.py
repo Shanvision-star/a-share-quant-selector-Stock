@@ -290,6 +290,26 @@ def _extract_signal_items(strategy_name: str, stock_result: dict) -> list:
 
         return ' | '.join(parts) if parts else ''
 
+    def _extract_similarity_score(signal: dict):
+        candidates = [
+            signal.get('similarity_score'),
+            signal.get('similarity'),
+        ]
+        raw_result = signal.get('raw_result')
+        if isinstance(raw_result, dict):
+            candidates.extend([
+                raw_result.get('similarity_score'),
+                raw_result.get('similarity'),
+            ])
+        for value in candidates:
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
     rows = []
     for signal in stock_result.get('signals', []) or [{}]:
         j_val = signal.get('j_value') or signal.get('J') or signal.get('j')
@@ -303,7 +323,7 @@ def _extract_signal_items(strategy_name: str, stock_result: dict) -> list:
             'close': signal.get('close'),
             'reason': _build_reason(signal),
             'j_value': j_val,
-            'similarity_score': signal.get('similarity_score'),
+            'similarity_score': _extract_similarity_score(signal),
             'signal': _json_safe(signal),
         })
     return rows

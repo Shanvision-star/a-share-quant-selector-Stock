@@ -12,9 +12,9 @@ class StockListServiceTest(unittest.TestCase):
         stock_codes = ["000001", "000002", "abc", "12345"]
         expected_payload = {"data": [], "total": 0}
 
-        with patch("web.backend.services.kline_service._load_stock_names", return_value={"000001": "平安银行"}), \
+        with patch("web.backend.services.kline_service._load_stock_names", return_value={"000001": "平安银行"}) as mock_load_stock_names, \
              patch("web.backend.services.kline_service.csv_manager") as mock_csv_manager, \
-             patch("web.backend.routers.stock.build_stock_list_response") as mock_build_response, \
+             patch("web.backend.routers.stock.build_stock_list_response_from_sources") as mock_build_response, \
              patch("web.backend.routers.stock.run_in_threadpool", new_callable=AsyncMock, create=True) as mock_run_in_threadpool:
             mock_csv_manager.list_all_stocks.return_value = stock_codes
             mock_build_response.return_value = {"should": "not be returned directly"}
@@ -34,10 +34,14 @@ class StockListServiceTest(unittest.TestCase):
 
             self.assertEqual(payload, expected_payload)
             mock_run_in_threadpool.assert_awaited_once()
+            mock_load_stock_names.assert_not_called()
+            mock_csv_manager.list_all_stocks.assert_not_called()
             call_args = mock_run_in_threadpool.await_args
             self.assertIs(call_args.args[0], mock_build_response)
-            self.assertEqual(call_args.kwargs["stocks"], ["000001", "000002"])
-            self.assertEqual(call_args.kwargs["stock_names"], {"000001": "平安银行"})
+            self.assertIn("load_stock_names", call_args.kwargs)
+            self.assertNotIn("stocks", call_args.kwargs)
+            self.assertNotIn("stock_names", call_args.kwargs)
+            self.assertIs(call_args.kwargs["load_stock_names"], mock_load_stock_names)
             self.assertIs(call_args.kwargs["csv_manager"], mock_csv_manager)
             self.assertEqual(call_args.kwargs["page"], 1)
             self.assertEqual(call_args.kwargs["per_page"], 50)

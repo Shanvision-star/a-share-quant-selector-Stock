@@ -70,6 +70,13 @@ class TriggerMetricSnapshotPrewarm(Protocol):
         ...
 
 
+class LoadStockNames(Protocol):
+    """股票名称加载回调。"""
+
+    def __call__(self) -> dict[str, str]:
+        ...
+
+
 @dataclass(frozen=True)
 class _StockListBuildContext:
     all_codes: list[str]
@@ -257,3 +264,38 @@ def build_stock_list_response(
         "per_page": per_page,
         "total_pages": (total + per_page - 1) // per_page,
     }
+
+
+def build_stock_list_response_from_sources(
+    *,
+    csv_manager,
+    load_stock_names: LoadStockNames,
+    page: int,
+    per_page: int,
+    search: str,
+    sort_by: str,
+    sort_order: str,
+    ensure_metric_snapshot: EnsureMetricSnapshot,
+    build_stock_item: BuildStockItem,
+    trigger_metric_snapshot_prewarm: TriggerMetricSnapshotPrewarm,
+) -> StockListResponsePayload:
+    """从数据源加载股票清单后编排统一响应。"""
+    stock_names = load_stock_names()
+    stocks = sorted({
+        code
+        for code in csv_manager.list_all_stocks()
+        if code.isdigit() and len(code) == 6
+    })
+    return build_stock_list_response(
+        stocks=stocks,
+        stock_names=stock_names,
+        csv_manager=csv_manager,
+        page=page,
+        per_page=per_page,
+        search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        ensure_metric_snapshot=ensure_metric_snapshot,
+        build_stock_item=build_stock_item,
+        trigger_metric_snapshot_prewarm=trigger_metric_snapshot_prewarm,
+    )

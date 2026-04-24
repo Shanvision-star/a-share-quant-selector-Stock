@@ -12,7 +12,10 @@ import pandas as pd
 from fastapi import APIRouter, Query
 from starlette.concurrency import run_in_threadpool
 
-from web.backend.services.stock_list_service import METRIC_SORT_FIELDS, build_stock_list_response
+from web.backend.services.stock_list_service import (
+    METRIC_SORT_FIELDS,
+    build_stock_list_response_from_sources,
+)
 
 router = APIRouter(prefix="/api", tags=["股票列表"])
 logger = logging.getLogger(__name__)
@@ -425,14 +428,10 @@ async def get_stock_list(
     """
     from web.backend.services.kline_service import csv_manager, _load_stock_names
 
-    stock_names = _load_stock_names()
-    stocks = sorted({code for code in csv_manager.list_all_stocks() if code.isdigit() and len(code) == 6})
-
     return await run_in_threadpool(
-        build_stock_list_response,
-        stocks=stocks,
-        stock_names=stock_names,
+        build_stock_list_response_from_sources,
         csv_manager=csv_manager,
+        load_stock_names=_load_stock_names,
         page=page,
         per_page=per_page,
         search=search,

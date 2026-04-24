@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { isAxiosError } from 'axios'
 import { ElMessage } from 'element-plus'
 import StrategyParamKnob from '@/components/StrategyParamKnob.vue'
 import { getConfig, updateConfig } from '@/api'
+import { bindBeforeUnloadGuard } from '@/composables/beforeUnloadGuard'
 import { useSettingsDraftStore } from '@/stores/settingsDraft'
 
 interface ParamMeta {
@@ -36,13 +37,20 @@ const settingsDraft = useSettingsDraftStore()
 const configs = computed(() => settingsDraft.draftConfigs as StrategyConfig[])
 const loading = ref(true)
 const saving = ref<Record<string, boolean>>({})
+let removeBeforeUnloadGuard: (() => void) | null = null
 
 onMounted(async () => {
+  removeBeforeUnloadGuard = bindBeforeUnloadGuard(() => settingsDraft.isDirty)
   if (!settingsDraft.draftConfigs.length) {
     await loadConfig()
     return
   }
   loading.value = false
+})
+
+onBeforeUnmount(() => {
+  removeBeforeUnloadGuard?.()
+  removeBeforeUnloadGuard = null
 })
 
 async function loadConfig() {

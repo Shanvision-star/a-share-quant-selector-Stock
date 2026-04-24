@@ -101,7 +101,13 @@ export const getInitStatus = () =>
 export const getConfig = () =>
   api.get('/config')
 
-export const updateConfig = (data: { strategy_name: string; params: Record<string, any> }) =>
+export const updateConfig = (
+  data: {
+    strategy_name: string
+    params: Record<string, any>
+    expected_revision: string
+  },
+) =>
   api.post('/config', data)
 
 // 健康检查

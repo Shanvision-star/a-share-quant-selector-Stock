@@ -320,20 +320,21 @@ def run_backtest():
             # 持仓期候选行（升序）
             hold_candidates = future_df.head(hold_days)
 
-            actual_exit_row = hold_candidates.iloc[-1]
+            actual_exit_idx = len(hold_candidates) - 1
             stopped = False
 
-            for _, hrow in hold_candidates.iterrows():
+            for i, (_, hrow) in enumerate(hold_candidates.iterrows()):
                 low_pct = (float(hrow['low']) - entry_price) / entry_price * 100
                 if low_pct <= -stop_loss_pct:
-                    actual_exit_row = hrow
+                    actual_exit_idx = i
                     stopped = True
                     break
 
+            actual_exit_row = hold_candidates.iloc[actual_exit_idx]
             exit_price = float(actual_exit_row['close'])
             exit_date = actual_exit_row['date']
             return_pct = (exit_price - entry_price) / entry_price * 100
-            hold_actual = int((exit_date - entry_date).days)
+            hold_actual = actual_exit_idx + 1  # 实际持仓交易日数
 
             signal_info = signals[0]
             trades.append({

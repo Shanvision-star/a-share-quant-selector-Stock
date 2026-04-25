@@ -70,12 +70,26 @@ async function uploadFile(file) {
 function addToGallery(url, name) {
     const item = document.createElement('div');
     item.className = 'gallery-item';
-    item.innerHTML = `
-        <img src="${url}" alt="${name}" loading="lazy">
-        <div class="gallery-item-footer">
-            <span>${name}</span>
-            <a href="${url}" target="_blank">查看原图</a>
-        </div>
-    `;
+
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = name;
+    img.loading = 'lazy';
+
+    const footer = document.createElement('div');
+    footer.className = 'gallery-item-footer';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = name;
+
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.textContent = '查看原图';
+
+    footer.appendChild(nameSpan);
+    footer.appendChild(link);
+    item.appendChild(img);
+    item.appendChild(footer);
     gallery.prepend(item);
 }

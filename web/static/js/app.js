@@ -465,8 +465,8 @@ let backtestChartInstance = null;
 // 初始化日期默认值
 (function initBacktestDates() {
     const today = new Date();
-    const oneYearAgo = new Date(today);
-    oneYearAgo.setFullYear(today.getFullYear() - 1);
+    const oneYearAgo = new Date(today.getTime());
+    oneYearAgo.setMonth(today.getMonth() - 12);
     const fmt = d => d.toISOString().slice(0, 10);
     const endEl = document.getElementById('bt-end-date');
     const startEl = document.getElementById('bt-start-date');

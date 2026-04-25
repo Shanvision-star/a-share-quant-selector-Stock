@@ -308,9 +308,20 @@ def _build_kline_result(df, code: str, period: str, limit: int, adjust: str) -> 
 
     # 前端图表要求时间正序，因此 bars 和 indicators 都要统一翻转。
     # 构建结果（翻转为升序）
+
+    # ── 量比预计算（10日均量及量比）──────────────────────────────────────────
+    # df_slice 是降序（最新在前），需先升序再计算滚动均值，结果再对应回去。
+    # ascending index (oldest first): asc_i = n - 1 - desc_i
+    _vol_asc = df_slice['volume'].iloc[::-1].reset_index(drop=True)
+    _vol_ma10_asc = _vol_asc.rolling(10).mean()   # 含当日的10日均量（与策略口径一致）
+    _vol_ratio_10d_asc = _vol_asc / _vol_ma10_asc  # 当日量 / 10日均量
+
     bars = []
     for i in range(n - 1, -1, -1):
         row = df_slice.iloc[i]
+        asc_i = n - 1 - i  # 升序索引（0=oldest）
+        _vr = _vol_ratio_10d_asc.iloc[asc_i]
+        _av = _vol_ma10_asc.iloc[asc_i]
         bars.append({
             'date': row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])[:10],
             'open': round(_safe_float(row['open']), 2),
@@ -321,6 +332,9 @@ def _build_kline_result(df, code: str, period: str, limit: int, adjust: str) -> 
             'amount': round(_safe_float(row.get('amount', 0)) / 1e4, 2),
             'turnover': round(_safe_float(row.get('turnover', 0)), 2),
             'market_cap': round(_safe_float(row.get('market_cap', 0)) / 1e8, 2),
+            # 量比字段：当日量 / 10日均量（不足10日时为 None）
+            'vol_ratio_10d': None if math.isnan(_vr) else round(float(_vr), 2),
+            'avg_volume_10d': None if math.isnan(_av) else int(_av),
         })
 
     # 指标也翻转为升序

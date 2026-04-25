@@ -815,23 +815,26 @@ class B2CaseAnalyzer:
             return None
         b2_idx = b2_result["idx"]
 
-        # 时序硬约束：B2 前一交易日必须是 B1
-        expected_gap = int(self.params.get("b2_must_follow_b1_days", 1))
-        if (b2_idx - b1_idx) != expected_gap:
+        # 时序约束：B2 与 B1 的间隔不超过 max_gap 个交易日
+        # （由「精确等于1」改为「最大间隔」，兼容灾后重建/平行重炮等间隔稍长的形态）
+        max_gap = int(self.params.get("b2_must_follow_b1_days", 5))
+        b1_b2_gap = b2_idx - b1_idx
+        if b1_b2_gap > max_gap or b1_b2_gap < 1:
             logger.debug(
-                "[B2] %s B2与B1间隔=%d(期望=%d)，跳过",
+                "[B2] %s B2与B1间隔=%d(上限=%d)，跳过",
                 code,
-                (b2_idx - b1_idx),
-                expected_gap,
+                b1_b2_gap,
+                max_gap,
             )
             return None
 
         # ─────────────────────────────────────────────────────────────────────
-        # 步骤 6：站稳多空线（确认突破有效，主力护盘）
+        # 步骤 6：站稳多空线（改为后验质量标签，不再阻塞当日命中）
+        # 当日扫描时 B2 日是最新数据，后续 K 线尚未产生，强制站稳检查会把所有
+        # 当日信号过滤掉。改为计算"实际已观测到的连续站稳天数"，写入结果字段。
         # ─────────────────────────────────────────────────────────────────────
-        if not self._check_hold_above_bullbear(working_df, b2_idx):
-            logger.debug("[B2] %s B2突破后未持续站稳多空线", code)
-            return None
+        hold_confirmed, hold_observed = self._calc_hold_quality(working_df, b2_idx)
+        is_fresh_signal = (b2_idx == len(working_df) - 1)
 
         # ─────────────────────────────────────────────────────────────────────
         # 后置过滤1：B2 日 J < 60（防止在超买区追高）
@@ -904,6 +907,17 @@ class B2CaseAnalyzer:
             "anchor_candle_pct":   pattern_context.get("anchor_candle", {}).get("anchor_pct") if pattern_context.get("anchor_candle") else None,
             # 止损参考：B2 突破日最低价（若破位则确认突破失败，应止损离场）
             "stop_loss_price":     round(_safe_float(b2_row["low"]), 4),
+            # ── 信号质量与时序元数据 ──────────────────────────────────────
+            # hold_above_confirmed: B2突破后是否已完成 b2_hold_days 根收盘站稳多空线
+            #   True  = 已确认（历史信号，后续走势已知）
+            #   False = 尚未确认（当日/近期信号，需继续观察）
+            "hold_above_confirmed": hold_confirmed,
+            # hold_days_observed: 实际已观测到的连续站稳天数（0 表示 B2 日本身不在多空线上方）
+            "hold_days_observed":   hold_observed,
+            # is_fresh_signal: B2日是否为数据集中的最新交易日（当日信号）
+            "is_fresh_signal":      is_fresh_signal,
+            # b1_b2_gap: B2 与 B1 的实际交易日间隔
+            "b1_b2_gap":            b1_b2_gap,
         }
 
     # ──────────────── 步骤1：B1 前提检查 ────────────────────────────────────────
@@ -1210,37 +1224,36 @@ class B2CaseAnalyzer:
 
     # ──────────────── 步骤6：站稳多空线 ──────────────────────────────────────
 
-    def _check_hold_above_bullbear(self, working_df: pd.DataFrame, b2_idx: int) -> bool:
+    def _calc_hold_quality(self, working_df: pd.DataFrame, b2_idx: int) -> tuple:
         """
-        步骤6：验证 B2 突破后连续站稳多空线（主力护盘确认）。
+        计算 B2 突破后连续站稳多空线的质量指标（后验标签，不再作为硬门槛）。
 
-        为什么需要验证站稳多空线？
-        ──────────────────────────
-        单日放量突破有时是"假突破"或"一日游行情"，主力在拉高后立即出货。
-        真实的 B2 信号中，主力在突破后会持续护盘，维持股价在多空线（主力成本线）
-        上方，以保护自身的浮动利润，并为后续更大级别的拉升蓄势。
+        原 _check_hold_above_bullbear() 的逻辑改为：
+          1. 计算实际已观测到的连续站稳天数（hold_days_observed）
+          2. 若观测天数 >= b2_hold_days，则 hold_above_confirmed = True
+          3. 当日信号（is_fresh_signal）时，hold_confirmed = False 是正常预期，
+             前端应展示为"待确认"而非"信号无效"。
 
-        多空线（bull_bear_line）的含义：
-          多空线是长期加权均线，可理解为"主力平均持仓成本线"。
-          收盘价持续在多空线上方，说明大多数持仓者处于浮盈状态，
-          主力没有动力出货，整体处于强势格局。
-
-        实现细节：
-          检查 [b2_idx, b2_idx + hold_days) 内每一根 K 线的收盘价 > 多空线。
-          若 B2 日为最新数据（后续数据不足 hold_days 根），
-          已有数据全部满足即视为通过，兼容实时扫描场景。
-
-        Args:
-            b2_idx    : B2 突破日在 working_df 中的全局索引
+        Returns:
+            (hold_confirmed: bool, hold_days_observed: int)
+              hold_confirmed     — 是否已完成完整站稳确认
+              hold_days_observed — 实际连续站稳天数（从 B2 日起计）
         """
-        hold_days = self.params["b2_hold_days"]   # 默认连续 3 天
-        # 取 B2 日起的 hold_days 根 K 线（末尾不足则取到最后一行）
+        hold_days = self.params.get("b2_hold_days", 3)   # 默认连续 3 天
         end_idx   = min(b2_idx + hold_days, len(working_df))
         window    = working_df.iloc[b2_idx:end_idx]
         if window.empty:
-            return False
-        # 全部收盘价须高于对应日期的多空线值（所有行均满足 AND）
-        return bool((window["close"] > window["bull_bear_line"]).all())
+            return (False, 0)
+        # 计算从 B2 日起的连续站稳天数
+        above_series = window["close"] > window["bull_bear_line"]
+        observed = 0
+        for above in above_series:
+            if above:
+                observed += 1
+            else:
+                break
+        hold_confirmed = (observed >= hold_days)
+        return (hold_confirmed, observed)
 
 
 # ─────────────────────── B2PatternLibrary ───────────────────────────────────

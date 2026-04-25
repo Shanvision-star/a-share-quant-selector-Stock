@@ -108,9 +108,10 @@ _PARAM_META = {
     'B2Strategy': {
         'b1_kdj_threshold': {'label': 'B1极弱J阈值', 'min': 5, 'max': 30, 'step': 1, 'desc': 'B2前置B1的J值上限'},
         'b1_big_up_pct': {'label': '大阳涨幅%', 'min': 3, 'max': 10, 'step': 0.5, 'desc': '攻击波单根大阳最小涨幅'},
-        'b2_breakout_pct': {'label': '突破涨幅%', 'min': 2, 'max': 10, 'step': 0.5, 'desc': 'B2突破日最小涨幅'},
-        'b2_volume_ratio': {'label': '突破量比', 'min': 1, 'max': 5, 'step': 0.1, 'desc': 'B2突破日成交量相对近10日均量倍率'},
-        'b2_must_follow_b1_days': {'label': 'B2距B1天数', 'min': 1, 'max': 5, 'step': 1, 'desc': 'B2突破必须距B1固定交易日差'},
+        'b2_min_pct': {'label': '突破涨幅%', 'min': 2, 'max': 10, 'step': 0.5, 'desc': 'B2突破日最小涨幅（对应算法参数 b2_min_pct）'},
+        'vol_multiplier': {'label': '突破量比', 'min': 1, 'max': 5, 'step': 0.1, 'desc': 'B2突破日成交量/近10日均量倍率（对应算法参数 vol_multiplier）'},
+        'b2_must_follow_b1_days': {'label': 'B2距B1最大天数', 'min': 1, 'max': 10, 'step': 1, 'desc': 'B2突破距B1触发最多N个交易日（上限约束）'},
+        'b2_hold_days': {'label': '站稳确认天数', 'min': 1, 'max': 7, 'step': 1, 'desc': 'B2突破后需连续站稳多空线的天数（后验质量门槛）'},
     },
 }
 

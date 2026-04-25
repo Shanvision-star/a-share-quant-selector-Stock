@@ -27,9 +27,10 @@ function switchPage(page) {
         'dashboard': '系统概览',
         'stocks': '股票列表',
         'selection': '选股结果',
+        'backtest': '回测分析',
         'strategies': '策略配置'
     };
-    document.getElementById('page-title').textContent = titles[page];
+    document.getElementById('page-title').textContent = titles[page] || page;
     
     // 显示对应页面
     document.querySelectorAll('.page').forEach(p => {
@@ -456,6 +457,181 @@ document.getElementById('stock-modal').addEventListener('click', (e) => {
         closeModal();
     }
 });
+
+// ==================== 回测分析模块 ====================
+
+let backtestChartInstance = null;
+
+// 初始化日期默认值
+(function initBacktestDates() {
+    const today = new Date();
+    const oneYearAgo = new Date(today.getTime());
+    oneYearAgo.setMonth(today.getMonth() - 12);
+    const fmt = d => d.toISOString().slice(0, 10);
+    const endEl = document.getElementById('bt-end-date');
+    const startEl = document.getElementById('bt-start-date');
+    if (endEl) endEl.value = fmt(today);
+    if (startEl) startEl.value = fmt(oneYearAgo);
+})();
+
+async function runBacktest() {
+    const stockCode = document.getElementById('bt-stock-code').value.trim();
+    const startDate = document.getElementById('bt-start-date').value;
+    const endDate = document.getElementById('bt-end-date').value;
+    const holdDays = parseInt(document.getElementById('bt-hold-days').value) || 5;
+    const stopLoss = parseFloat(document.getElementById('bt-stop-loss').value) || 10;
+
+    if (!stockCode) {
+        alert('请输入股票代码');
+        return;
+    }
+
+    const btn = document.getElementById('run-backtest-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="icon">⏳</span> 回测中...';
+
+    // 隐藏旧结果
+    document.getElementById('backtest-placeholder').style.display = 'none';
+    document.getElementById('backtest-metrics').style.display = 'none';
+    document.getElementById('backtest-chart-card').style.display = 'none';
+    document.getElementById('backtest-trades-card').style.display = 'none';
+
+    try {
+        const response = await fetch('/api/backtest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                stock_code: stockCode,
+                start_date: startDate,
+                end_date: endDate,
+                hold_days: holdDays,
+                stop_loss_pct: stopLoss
+            })
+        });
+        const result = await response.json();
+
+        if (result.success) {
+            renderBacktestResults(result.data);
+        } else {
+            document.getElementById('backtest-placeholder').style.display = '';
+            document.getElementById('backtest-placeholder').innerHTML =
+                `<p class="placeholder text-danger">回测失败：${result.error}</p>`;
+        }
+    } catch (error) {
+        document.getElementById('backtest-placeholder').style.display = '';
+        document.getElementById('backtest-placeholder').innerHTML =
+            `<p class="placeholder text-danger">请求失败：${error.message}</p>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="icon">▶️</span> 开始回测';
+    }
+}
+
+function renderBacktestResults(data) {
+    const { stock_code, stock_name, trades, metrics } = data;
+
+    // 指标摘要
+    const metricsEl = document.getElementById('backtest-metrics');
+    metricsEl.style.display = 'grid';
+    document.getElementById('bt-total-trades').textContent = metrics.total_trades;
+    document.getElementById('bt-win-rate').textContent = metrics.total_trades > 0
+        ? `${metrics.win_rate}%` : '-';
+    document.getElementById('bt-avg-return').textContent = metrics.total_trades > 0
+        ? `${metrics.avg_return > 0 ? '+' : ''}${metrics.avg_return}%` : '-';
+    document.getElementById('bt-total-return').textContent = metrics.total_trades > 0
+        ? `${metrics.total_return > 0 ? '+' : ''}${metrics.total_return}%` : '-';
+    document.getElementById('bt-max-win').textContent = metrics.total_trades > 0
+        ? `+${metrics.max_win}%` : '-';
+    document.getElementById('bt-max-loss').textContent = metrics.total_trades > 0
+        ? `${metrics.max_loss}%` : '-';
+
+    // 着色累计收益
+    const totalRetEl = document.getElementById('bt-total-return');
+    totalRetEl.className = 'metric-value ' + (metrics.total_return >= 0 ? 'text-success' : 'text-danger');
+    const avgRetEl = document.getElementById('bt-avg-return');
+    avgRetEl.className = 'metric-value ' + (metrics.avg_return >= 0 ? 'text-success' : 'text-danger');
+
+    if (trades.length === 0) {
+        document.getElementById('backtest-placeholder').style.display = '';
+        document.getElementById('backtest-placeholder').innerHTML =
+            `<p class="placeholder">股票 ${stock_code}（${stock_name}）在该时间段内未发现策略信号，无交易记录。</p>`;
+        return;
+    }
+
+    // 累计收益走势图
+    const chartCard = document.getElementById('backtest-chart-card');
+    chartCard.style.display = '';
+    document.getElementById('bt-chart-title').textContent =
+        `${stock_code} ${stock_name} — 累计收益走势（碗口反弹策略）`;
+
+    let cumulative = 0;
+    const chartLabels = trades.map(t => t.entry_date);
+    const chartData = trades.map(t => {
+        cumulative += t.return_pct;
+        return parseFloat(cumulative.toFixed(2));
+    });
+    const pointColors = trades.map(t => t.return_pct >= 0 ? '#10b981' : '#ef4444');
+
+    const ctx = document.getElementById('backtest-chart').getContext('2d');
+    if (backtestChartInstance) backtestChartInstance.destroy();
+
+    backtestChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: chartLabels,
+            datasets: [{
+                label: '累计收益(%)',
+                data: chartData,
+                borderColor: '#2563eb',
+                backgroundColor: 'rgba(37,99,235,0.08)',
+                fill: true,
+                tension: 0.2,
+                pointBackgroundColor: pointColors,
+                pointRadius: 4
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: {
+                    title: { display: true, text: '累计收益 (%)' },
+                    ticks: {
+                        callback: v => v + '%'
+                    }
+                }
+            }
+        }
+    });
+
+    // 交易明细表
+    document.getElementById('backtest-trades-card').style.display = '';
+    const tbody = document.getElementById('backtest-trades-tbody');
+    tbody.innerHTML = trades.map(t => {
+        const retClass = t.return_pct >= 0 ? 'text-success' : 'text-danger';
+        const retText = `${t.return_pct >= 0 ? '+' : ''}${t.return_pct}%`;
+        const stoppedText = t.stopped ? '<span class="tag tag-danger">止损</span>' : '';
+        const categoryMap = {
+            'bowl_center': '回落碗中',
+            'near_duokong': '靠近多空线',
+            'near_short_trend': '靠近短期趋势线'
+        };
+        const catLabel = categoryMap[t.category] || t.category || '-';
+        return `
+            <tr>
+                <td>${t.signal_date}</td>
+                <td>${t.entry_date}</td>
+                <td>¥${t.entry_price}</td>
+                <td>${t.exit_date}</td>
+                <td>¥${t.exit_price}</td>
+                <td>${t.hold_days}天</td>
+                <td><strong class="${retClass}">${retText}</strong></td>
+                <td>${stoppedText}</td>
+                <td><span class="tag">${catLabel}</span></td>
+            </tr>
+        `;
+    }).join('');
+}
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', () => {

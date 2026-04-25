@@ -232,6 +232,161 @@ def update_config():
         return jsonify({'success': False, 'error': str(e)})
 
 
+@app.route('/api/backtest', methods=['POST'])
+def run_backtest():
+    """
+    执行回测
+    Request JSON:
+      stock_code   - 股票代码
+      start_date   - 开始日期 YYYY-MM-DD
+      end_date     - 结束日期 YYYY-MM-DD
+      hold_days    - 持仓天数（默认5）
+      stop_loss_pct- 止损百分比（默认10）
+    """
+    try:
+        data = request.json or {}
+        stock_code = data.get('stock_code', '').strip()
+        start_date = data.get('start_date', '')
+        end_date = data.get('end_date', '')
+        hold_days = max(1, int(data.get('hold_days', 5)))
+        stop_loss_pct = float(data.get('stop_loss_pct', 10.0))
+
+        if not stock_code:
+            return jsonify({'success': False, 'error': '请输入股票代码'})
+
+        # 读取股票数据
+        df = csv_manager.read_stock(stock_code)
+        if df.empty:
+            return jsonify({'success': False, 'error': f'股票 {stock_code} 数据不存在，请先初始化数据'})
+
+        # 加载股票名称
+        names_file = Path("data/stock_names.json")
+        stock_names = {}
+        if names_file.exists():
+            with open(names_file, 'r', encoding='utf-8') as f:
+                stock_names = json.load(f)
+        stock_name = stock_names.get(stock_code, '未知')
+
+        # 计算技术指标（一次性在全量数据上计算，避免重复计算）
+        from strategy.bowl_rebound import BowlReboundStrategy
+        strategy = BowlReboundStrategy()
+        df_indicators = strategy.calculate_indicators(df)
+        # 确保 date 列是 datetime 类型
+        df_indicators['date'] = pd.to_datetime(df_indicators['date'])
+
+        # 解析日期范围
+        start_dt = pd.to_datetime(start_date) if start_date else df_indicators['date'].min()
+        end_dt = pd.to_datetime(end_date) if end_date else df_indicators['date'].max()
+
+        period_df = df_indicators[
+            (df_indicators['date'] >= start_dt) & (df_indicators['date'] <= end_dt)
+        ]
+        if period_df.empty:
+            return jsonify({'success': False, 'error': '指定日期范围内没有数据'})
+
+        # 按日期升序排列，逐日回测
+        period_dates = sorted(period_df['date'].tolist())
+
+        trades = []
+        occupied_until = None  # 当前持仓到期日期
+
+        for signal_date in period_dates:
+            # 持仓期间跳过
+            if occupied_until is not None and signal_date <= occupied_until:
+                continue
+
+            # 取截至 signal_date 的历史数据（降序，与策略期望格式一致）
+            hist_df = df_indicators[df_indicators['date'] <= signal_date]
+            if len(hist_df) < 60:
+                continue
+
+            # 运行策略选股逻辑
+            signals = strategy.select_stocks(hist_df, stock_name)
+            if not signals:
+                continue
+
+            # 找下一个交易日作为入场日
+            future_df = df_indicators[
+                df_indicators['date'] > signal_date
+            ].sort_values('date', ascending=True)
+
+            if future_df.empty:
+                continue
+
+            entry_row = future_df.iloc[0]
+            entry_price = float(entry_row['open'])
+            entry_date = entry_row['date']
+
+            # 持仓期候选行（升序）
+            hold_candidates = future_df.head(hold_days)
+
+            actual_exit_idx = len(hold_candidates) - 1
+            stopped = False
+
+            for i, (_, hrow) in enumerate(hold_candidates.iterrows()):
+                low_pct = (float(hrow['low']) - entry_price) / entry_price * 100
+                if low_pct <= -stop_loss_pct:
+                    actual_exit_idx = i
+                    stopped = True
+                    break
+
+            actual_exit_row = hold_candidates.iloc[actual_exit_idx]
+            exit_price = float(actual_exit_row['close'])
+            exit_date = actual_exit_row['date']
+            return_pct = (exit_price - entry_price) / entry_price * 100
+            hold_actual = actual_exit_idx + 1  # 实际持仓交易日数
+
+            signal_info = signals[0]
+            trades.append({
+                'signal_date': signal_date.strftime('%Y-%m-%d'),
+                'entry_date': entry_date.strftime('%Y-%m-%d'),
+                'entry_price': round(entry_price, 2),
+                'exit_date': exit_date.strftime('%Y-%m-%d'),
+                'exit_price': round(exit_price, 2),
+                'return_pct': round(return_pct, 2),
+                'hold_days': hold_actual,
+                'stopped': stopped,
+                'category': signal_info.get('category', ''),
+                'reasons': signal_info.get('reasons', []),
+            })
+
+            occupied_until = exit_date
+
+        # 计算汇总指标
+        if trades:
+            returns = [t['return_pct'] for t in trades]
+            win_trades = [r for r in returns if r > 0]
+            win_rate = len(win_trades) / len(trades) * 100
+            avg_return = sum(returns) / len(returns)
+            # 累计收益（简单叠加，非复利）
+            total_return = sum(returns)
+            max_win = max(returns)
+            max_loss = min(returns)
+        else:
+            win_rate = avg_return = total_return = max_win = max_loss = 0.0
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'stock_code': stock_code,
+                'stock_name': stock_name,
+                'start_date': start_dt.strftime('%Y-%m-%d'),
+                'end_date': end_dt.strftime('%Y-%m-%d'),
+                'trades': trades,
+                'metrics': {
+                    'total_trades': len(trades),
+                    'win_rate': round(win_rate, 1),
+                    'avg_return': round(avg_return, 2),
+                    'total_return': round(total_return, 2),
+                    'max_win': round(max_win, 2),
+                    'max_loss': round(max_loss, 2),
+                }
+            }
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
 def run_web_server(host='0.0.0.0', port=5000, debug=False):
     """启动Web服务器"""
     print(f"🌐 启动Web服务器: http://{host}:{port}")

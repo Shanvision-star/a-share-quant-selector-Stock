@@ -478,6 +478,76 @@ body {
     color: var(--danger-color);
 }
 
+/* ===================== 回测分析页 ===================== */
+.backtest-form .form-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: flex-end;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 120px;
+}
+
+.form-group label {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.form-control {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 14px;
+    width: 100%;
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.form-group-btn {
+    min-width: auto;
+}
+
+.backtest-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.metric-card {
+    background: var(--card-bg);
+    border-radius: 10px;
+    padding: 16px 20px;
+    text-align: center;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.metric-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--primary-color);
+    margin-bottom: 4px;
+}
+
+.metric-label {
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.tag-danger {
+    background: #fee2e2;
+    color: var(--danger-color);
+}
+
 /* 响应式 */
 @media (max-width: 768px) {
     .sidebar {

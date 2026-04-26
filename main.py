@@ -62,15 +62,6 @@ def main():
     print("📢  当日量化选股开始执行！")
     print("=" * 60 + "\n")
 
-    # 启动通知
-    try:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        quant_notify = QuantSystem("config/config.yaml")
-        quant_notify.notifier.send_text(f"📢 量化选股系统已启动\n⏰ 启动时间：{now}\n🎯 开始执行今日选股任务...")
-        print("✅ 钉钉启动通知已发送\n")
-    except Exception as e:
-        print(f"⚠️ 钉钉启动通知发送失败：{str(e)}\n")
-
     # 命令行解析
     parser = argparse.ArgumentParser(
         description='A股量化选股系统',
@@ -116,7 +107,18 @@ def main():
         sys.exit(1)
 
     os.chdir(project_root)
+    # 单次实例化：CLI 整个生命周期共用一个 QuantSystem，避免重复加载策略注册表与配置
     quant = QuantSystem(args.config)
+
+    # 启动通知（合并到主流程，使用上面已实例化的 quant.notifier）
+    try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        quant.notifier.send_text(
+            f"📢 量化选股系统已启动\n⏰ 启动时间：{now_str}\n🎯 开始执行今日选股任务..."
+        )
+        print("✅ 钉钉启动通知已发送\n")
+    except Exception as e:
+        print(f"⚠️ 钉钉启动通知发送失败：{str(e)}\n")
 
     # 检查未收盘状态和数据同步逻辑
     now = datetime.now()
@@ -192,7 +194,9 @@ def main():
             analyzer = BacktraceAnalyzer(data_directory)
             results = analyzer.backtrace(args.stock_code, args.date)
             if results:
-                print(f"匹配的策略: {results}")
+                print(f"匹配的策略数: {len(results)}")
+                for item in results:
+                    print(f"  - {item['strategy']}: {len(item.get('signals', []))} 个信号")
             else:
                 print("未匹配到任何策略。")
         except Exception as e:

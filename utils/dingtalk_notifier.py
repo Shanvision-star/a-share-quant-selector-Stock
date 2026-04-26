@@ -319,7 +319,7 @@ class DingTalkNotifier:
                             try:
                                 chunk = chunk_bytes[:-k].decode('utf-8') if k < len(chunk_bytes) else chunk_bytes.decode('utf-8', errors='ignore')
                                 break
-                            except:
+                            except UnicodeDecodeError:
                                 continue
                         else:
                             chunk = chunk_bytes.decode('utf-8', errors='ignore')
@@ -587,7 +587,7 @@ class DingTalkNotifier:
                             try:
                                 chunk = chunk_bytes[:-k].decode('utf-8') if k < len(chunk_bytes) else chunk_bytes.decode('utf-8', errors='ignore')
                                 break
-                            except:
+                            except UnicodeDecodeError:
                                 continue
                         else:
                             chunk = chunk_bytes.decode('utf-8', errors='ignore')

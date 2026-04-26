@@ -181,8 +181,8 @@ class AKShareFetcher:
             try:
                 with open(self.stock_names_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
-                pass
+            except Exception as exc:
+                print(f"  [WARN] 读取本地 stock_names 失败: {exc}")
         return {}
     
     def _save_stock_names(self, stock_dict):
@@ -353,7 +353,7 @@ class AKShareFetcher:
                                 if cap > 0:
                                     # 转为元（腾讯接口是亿）
                                     market_cap_map[code] = int(cap * 1e8)
-                        except:
+                        except (ValueError, IndexError, TypeError):
                             continue
                 
                 if i % 500 == 0 and i > 0:
@@ -596,7 +596,7 @@ class AKShareFetcher:
                                         current_price = float(parts[3]) if len(parts) > 3 else 0
                                         if current_price <= 0:
                                             is_valid = False
-                                    except:
+                                    except (ValueError, IndexError, TypeError):
                                         is_valid = False
                                     
                                     # 5. 成交量异常过滤 - 长期无成交量的股票
@@ -604,7 +604,7 @@ class AKShareFetcher:
                                         volume = float(parts[6]) if len(parts) > 6 else 0
                                         if volume <= 0:
                                             is_valid = False
-                                    except:
+                                    except (ValueError, IndexError, TypeError):
                                         pass
                                     
                                     if is_valid:
@@ -1026,7 +1026,88 @@ class AKShareFetcher:
                 "股票代码",
             ]
             return self._normalize_history_df(df, stock_code, market_cap=prefetched_market_cap)
-        except Exception:
+        except Exception as e:
+            print(f"  EastMoney异常 {stock_code}: {type(e).__name__}: {str(e)[:120]}")
+            return None
+
+    def _fetch_stock_history_baostock(self, stock_code, years=6, prefetched_market_cap=None):
+        """主链路: Baostock 拉取完整历史，含 amount 与 turnover，支持 8+ 年。
+        使用前复权（adjustflag='2'），与 EastMoney 主链路保持一致。
+        遵循已有熔断器：冷却期内直接返回 None，避免堆叠失败。
+        """
+        cooling_down, wait_seconds, last_error = self._get_baostock_cooldown_status()
+        if cooling_down:
+            if self._should_log_baostock_cooldown():
+                suffix = f" 最近错误: {last_error}" if last_error else ""
+                print(f"  Baostock冷却中，暂时跳过 {wait_seconds}s。{suffix}")
+            return None
+
+        try:
+            import baostock as bs
+            market_prefix = 'sh' if stock_code.startswith('6') else 'sz'
+            bs_code = f"{market_prefix}.{stock_code}"
+            start_date = (datetime.now() - timedelta(days=int(365 * years))).strftime('%Y-%m-%d')
+            end_date = datetime.now().strftime('%Y-%m-%d')
+
+            lg = bs.login()
+            if lg.error_code != '0':
+                opened, cooldown_s, err = self._record_baostock_failure(
+                    f"login {lg.error_code}: {getattr(lg, 'error_msg', '')}"
+                )
+                if opened:
+                    print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
+                return None
+            try:
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    'date,open,high,low,close,volume,amount,turn',
+                    start_date=start_date, end_date=end_date,
+                    frequency='d', adjustflag='2',
+                )
+                if rs.error_code != '0':
+                    opened, cooldown_s, err = self._record_baostock_failure(
+                        f"query {rs.error_code}: {getattr(rs, 'error_msg', '')}"
+                    )
+                    if opened:
+                        print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
+                    return None
+                records = []
+                while rs.error_code == '0' and rs.next():
+                    row = rs.get_row_data()
+                    try:
+                        records.append({
+                            'date': row[0],
+                            'open': float(row[1]) if row[1] else 0.0,
+                            'high': float(row[2]) if row[2] else 0.0,
+                            'low': float(row[3]) if row[3] else 0.0,
+                            'close': float(row[4]) if row[4] else 0.0,
+                            'volume': int(float(row[5])) if row[5] else 0,
+                            'amount': float(row[6]) if row[6] else 0.0,
+                            'turnover': float(row[7]) if row[7] else 0.0,
+                        })
+                    except (ValueError, IndexError):
+                        continue
+            finally:
+                try:
+                    bs.logout()
+                except Exception:
+                    pass
+
+            if not records:
+                return None
+            df = pd.DataFrame(records)
+            df['date'] = pd.to_datetime(df['date'])
+            # market_cap 通过实时缓存补齐，缺失则置 0（与 _normalize_history_df 一致）
+            cached_mc = prefetched_market_cap if prefetched_market_cap is not None else self._get_realtime_market_cap(stock_code)
+            df['market_cap'] = cached_mc if cached_mc else 0
+            df = df.sort_values('date', ascending=False).reset_index(drop=True)
+            self._record_baostock_success()
+            return df
+        except Exception as e:
+            opened, cooldown_s, err = self._record_baostock_failure(e)
+            if opened:
+                print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
+            print(f"  Baostock历史获取异常 {stock_code}: {type(e).__name__}: {str(e)[:120]}")
             return None
     
     def fetch_kline_for_display(self, stock_code: str, fqt: int = 1, years: int = 10):
@@ -1061,19 +1142,31 @@ class AKShareFetcher:
         """
         抓取单只股票历史数据
         前复权，按日期倒序排列
+
+        优先级（已根据网络环境实测调整）：
+          1. Baostock：稳定可用，支持 8+ 年完整历史，含 amount/turnover
+          2. EastMoney：当 Baostock 不可用时兜底（在某些网络环境下可能不可达）
+          3. 腾讯 HTTP：服务端历史限制 ~2.5 年，最后兜底
+          4. 模拟数据：彻底降级
         """
         end_date = datetime.now()
         start_date = end_date - timedelta(days=365 * years)
         start_str = start_date.strftime("%Y%m%d")
         end_str = end_date.strftime("%Y%m%d")
 
-        # 方法1: 直接走 EastMoney 历史接口，能返回成交额和换手率。
+        # 方法1（主链路）: Baostock 完整历史
+        df = self._fetch_stock_history_baostock(stock_code, years=years)
+        if df is not None and not df.empty:
+            print(f"[OK] Baostock获取 {len(df)}条")
+            return df
+
+        # 方法2: EastMoney 兜底（含成交额/换手率）
         df = self._fetch_stock_history_eastmoney(stock_code, start_str, end_str)
         if df is not None and not df.empty:
             print(f"[OK] EastMoney获取 {len(df)}条")
             return df
 
-        # 方法2: 腾讯接口兜底（无换手率时保底可用）。
+        # 方法3: 腾讯接口兜底（无换手率，~2.5 年）
         try:
             df = self._fetch_stock_history_http(stock_code, years)
             if df is not None and not df.empty:
@@ -1081,7 +1174,7 @@ class AKShareFetcher:
                 return df
         except Exception as e:
             print(f"  HTTP异常: {e}，使用模拟数据...")
-        
+
         # 降级: 使用模拟数据
         return self._generate_mock_data(stock_code, years)
     
@@ -1283,8 +1376,8 @@ class AKShareFetcher:
                 print(f"  将跳过 {len(failed_stocks)} 只之前获取失败的股票")
                 # 从列表中移除失败的股票
                 stock_codes = [c for c in stock_codes if c not in failed_stocks]
-            except:
-                pass
+            except Exception as exc:
+                print(f"  [WARN] 读取 failed_stocks.json 失败: {exc}")
         
         if max_stocks:
             stock_codes = stock_codes[:max_stocks]

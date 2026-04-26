@@ -55,3 +55,11 @@ web/package-lock.json
 
 # Local git worktrees
 .worktrees/
+
+# Transient runtime artifacts
+output.log
+backtest_response_tmp.json
+.backtest_payload.json
+.backtest_response.json
+~*.md
+path_backup.txt

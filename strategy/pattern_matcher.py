@@ -227,7 +227,7 @@ class PatternMatcher:
                         distance, _ = fastdtw(cand_curve, case_curve, dist=euclidean)
                         max_dist = max(len(cand_curve), len(case_curve))
                         curve_sim = max(0, 1 - distance / max_dist) if max_dist > 0 else 0
-                    except:
+                    except Exception:
                         curve_sim = self._simple_dtw(cand_curve, case_curve)
                 else:
                     curve_sim = self._simple_dtw(cand_curve, case_curve)

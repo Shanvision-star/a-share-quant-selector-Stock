@@ -3,7 +3,7 @@ utils module
 
 Sub-modules:
 - akshare_fetcher: Fetches stock data using Akshare.
-- backtrack_filter: Analyzes backtracking results.
+- backtrace_analyzer: Backtrace strategy hits at a specific date.
 - csv_manager: Manages CSV file operations.
 - dingtalk_notifier: Sends notifications via DingTalk.
 - kline_chart: Generates K-line charts.

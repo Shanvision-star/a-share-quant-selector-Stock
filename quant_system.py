@@ -3,6 +3,7 @@
 A股量化选股系统 - 核心业务模块
 """
 import os
+import logging
 import time
 from pathlib import Path
 from datetime import datetime, time as dt_time, timedelta
@@ -13,6 +14,8 @@ from utils.akshare_fetcher import AKShareFetcher
 from utils.csv_manager import CSVManager
 from utils.dingtalk_notifier import DingTalkNotifier
 from strategy.strategy_registry import get_registry
+
+logger = logging.getLogger(__name__)
 from utils.kline_chart import generate_kline_chart
 from utils.tdx_exporter import export_strategy_tdx, export_total_tdx, export_b1_match_tdx
 from strategy.b2_strategy import B2CaseAnalyzer, B2PatternLibrary
@@ -239,8 +242,8 @@ class QuantSystem:
                 import json
                 with open(names_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
-                pass
+            except Exception as exc:
+                logger.warning("读取 stock_names 缓存失败: %s", exc)
 
         try:
             stock_names = self.fetcher.get_all_stock_codes()
@@ -249,16 +252,16 @@ class QuantSystem:
                 with open(names_file, 'w', encoding='utf-8') as f:
                     json.dump(stock_names, f, ensure_ascii=False)
                 return stock_names
-        except:
-            pass
+        except Exception as exc:
+            logger.warning("从网络拉取 stock_names 失败: %s", exc)
 
         if names_file.exists():
             try:
                 import json
                 with open(names_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
-                pass
+            except Exception as exc:
+                logger.warning("回退读取 stock_names 缓存失败: %s", exc)
 
         return {code: f"股票{code}" for code in stock_data.keys()}
 

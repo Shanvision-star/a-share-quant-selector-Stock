@@ -1,5 +1,6 @@
 """FastAPI 应用入口"""
 import sys
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -10,13 +11,34 @@ project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
 # 配置日志：默认 INFO，可通过 WEB_LOG_LEVEL 覆盖。
+class JsonLogFormatter(logging.Formatter):
+    """Minimal JSON formatter for production log collectors."""
+
+    def format(self, record):
+        payload = {
+            "time": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
 log_level_name = os.getenv("WEB_LOG_LEVEL", "INFO").upper()
 log_level = getattr(logging, log_level_name, logging.INFO)
-logging.basicConfig(
-    level=log_level,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
+log_format = os.getenv("WEB_LOG_FORMAT", "text").strip().lower()
+if log_format == "json":
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonLogFormatter(datefmt="%Y-%m-%dT%H:%M:%S%z"))
+    logging.basicConfig(level=log_level, handlers=[handler])
+else:
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 # 第三方库噪音压制
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)

@@ -2,6 +2,7 @@
 完美图形库管理 - 预计算案例特征，支持动态扩展
 """
 import json
+import logging
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -16,6 +17,7 @@ from strategy.pattern_matcher import PatternMatcher
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+logger = logging.getLogger(__name__)
 
 
 class B1PatternLibrary:
@@ -54,21 +56,21 @@ class B1PatternLibrary:
     
     def _build_library(self):
         """从本地CSV构建案例库"""
-        print("[BUILD] 构建B1完美图形库...")
+        logger.info("[BUILD] 构建B1完美图形库...")
         
         for case in B1_PERFECT_CASES:
             try:
                 df = self.csv_manager.read_stock(case["code"])
                 
                 if df.empty:
-                    print(f"  [WARN] 跳过 {case['name']}({case['code']}): 无数据")
+                    logger.warning("跳过 %s(%s): 无数据", case['name'], case['code'])
                     continue
                 
                 # 提取突破日期窗口的数据
                 window_df = self._extract_window(df, case["breakout_date"], case["lookback_days"])
                 
                 if window_df.empty or len(window_df) < 10:
-                    print(f"  [WARN] 跳过 {case['name']}: 日期 {case['breakout_date']} 附近数据不足")
+                    logger.warning("跳过 %s: 日期 %s 附近数据不足", case['name'], case['breakout_date'])
                     continue
                 
                 # 提取特征
@@ -78,18 +80,18 @@ class B1PatternLibrary:
                     "meta": case,
                     "features": features,
                 }
-                print(f"  [OK] {case['name']} - 特征提取完成")
+                logger.info("%s - 特征提取完成", case['name'])
                 
             except Exception as e:
-                print(f"  [ERROR] {case['name']} 处理失败: {e}")
+                logger.exception("%s 处理失败", case['name'])
                 continue
         
         # 保存缓存
         if self.cases:
             self._save_to_cache()
-            print(f"[DONE] 案例库构建完成: {len(self.cases)} 个案例")
+            logger.info("[DONE] 案例库构建完成: %d 个案例", len(self.cases))
         else:
-            print("[WARN] 没有成功加载任何案例")
+            logger.warning("没有成功加载任何案例")
     
     def _extract_window(self, df: pd.DataFrame, breakout_date: str, lookback_days: int):
         """提取突破日期前lookback天的数据（不包含突破当天）"""
@@ -150,7 +152,7 @@ class B1PatternLibrary:
                     "tags": case_data["meta"].get("tags", []),
                 })
             except Exception as e:
-                print(f"  [WARN] 匹配 {case_id} 失败: {e}")
+                logger.warning("匹配 %s 失败: %s", case_id, e)
                 continue
         
         # 按相似度排序
@@ -204,7 +206,7 @@ class B1PatternLibrary:
                     "summary": summary,
                 })
             except Exception as e:
-                print(f"  [WARN] 阶段型B1分析 {stock_code} -> {stage_case['name']} 失败: {e}")
+                logger.warning("阶段型B1分析 %s -> %s 失败: %s", stock_code, stage_case['name'], e)
 
         stage_matches.sort(
             key=lambda item: (
@@ -260,7 +262,7 @@ class B1PatternLibrary:
                         **stock.get("info", {}),
                     })
             except Exception as e:
-                print(f"  [WARN] 匹配 {stock['code']} 失败: {e}")
+                logger.warning("匹配 %s 失败: %s", stock['code'], e)
                 continue
         
         # 按相似度排序
@@ -287,17 +289,17 @@ class B1PatternLibrary:
             
             # 更新缓存
             self._save_to_cache()
-            print(f"[OK] 新增案例: {case_config['name']}")
+            logger.info("新增案例: %s", case_config['name'])
             
         except Exception as e:
-            print(f"[ERROR] 添加案例失败: {e}")
+            logger.exception("添加案例失败")
     
     def remove_case(self, case_id: str):
         """移除案例"""
         if case_id in self.cases:
             del self.cases[case_id]
             self._save_to_cache()
-            print(f"[OK] 移除案例: {case_id}")
+            logger.info("移除案例: %s", case_id)
     
     def list_cases(self):
         """列出所有案例"""
@@ -335,7 +337,7 @@ class B1PatternLibrary:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
                 
         except Exception as e:
-            print(f"[WARN] 缓存保存失败: {e}")
+            logger.warning("缓存保存失败: %s", e)
     
     def _load_from_cache(self) -> bool:
         """从缓存加载案例库"""
@@ -363,11 +365,11 @@ class B1PatternLibrary:
                     "features": self._deserialize_features(data["features"]),
                 }
             
-            print(f"[CACHE] 从缓存加载案例库: {len(self.cases)} 个案例")
+            logger.info("[CACHE] 从缓存加载案例库: %d 个案例", len(self.cases))
             return True
             
         except Exception as e:
-            print(f"[WARN] 缓存加载失败: {e}，将重新构建")
+            logger.warning("缓存加载失败，将重新构建: %s", e)
             return False
     
     def _serialize_features(self, features: dict) -> dict:
@@ -407,4 +409,4 @@ class B1PatternLibrary:
         if self.CACHE_FILE.exists():
             self.CACHE_FILE.unlink()
         self.cases = {}
-        print("[CACHE] 缓存已清除")
+        logger.info("[CACHE] 缓存已清除")

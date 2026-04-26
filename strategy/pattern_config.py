@@ -8,11 +8,13 @@ B1完美图形配置管理
 2. 如果YAML中未配置，使用本文件中的默认值
 """
 
+import logging
 import yaml
 from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+logger = logging.getLogger(__name__)
 
 
 def _load_yaml_root_config():
@@ -27,7 +29,7 @@ def _load_yaml_root_config():
             config = yaml.safe_load(f)
         return config or {}
     except Exception as e:
-        print(f"⚠️ 加载策略配置失败: {e}，使用默认值")
+        logger.warning("加载策略配置失败，使用默认值: %s", e)
         return {}
 
 

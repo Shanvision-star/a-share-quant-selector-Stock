@@ -3,6 +3,7 @@ A股数据抓取模块 - 使用 akshare / 直接HTTP请求
 """
 import akshare as ak
 import pandas as pd
+import logging
 from datetime import datetime, timedelta
 import time
 import sys
@@ -17,6 +18,8 @@ from urllib3.util.retry import Retry
 # ===================== 新增：并发库 =====================
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+
+logger = logging.getLogger(__name__)
 
 # 市值缓存：每月刷新一次，避免每次数据更新都逐股调用 AKShare 实时接口
 _MARKET_CAP_CACHE_EXPIRY_DAYS = 30
@@ -158,8 +161,8 @@ class AKShareFetcher:
                     if age <= _MARKET_CAP_CACHE_EXPIRY_DAYS:
                         self._market_cap_cache = data.get('caps', {})
                         self._market_cap_cache_date = saved_date
-        except Exception:
-            pass  # 文件损坏时忽略，下次重新写入
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            logger.warning("读取市值周缓存失败，将在下次刷新时重建: %s", exc)
 
     def _save_market_cap_weekly_cache(self):
         """将内存中的市值缓存写回文件（线程安全）。"""
@@ -170,8 +173,8 @@ class AKShareFetcher:
                         {'date': self._market_cap_cache_date, 'caps': self._market_cap_cache},
                         f, ensure_ascii=False
                     )
-        except Exception:
-            pass
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("保存市值周缓存失败: %s", exc)
 
     # ── 本地股票名称 ──────────────────────────────────────────────────
 
@@ -182,7 +185,7 @@ class AKShareFetcher:
                 with open(self.stock_names_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception as exc:
-                print(f"  [WARN] 读取本地 stock_names 失败: {exc}")
+                logger.warning("读取本地 stock_names 失败: %s", exc)
         return {}
     
     def _save_stock_names(self, stock_dict):
@@ -191,7 +194,7 @@ class AKShareFetcher:
             with open(self.stock_names_file, 'w', encoding='utf-8') as f:
                 json.dump(stock_dict, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"  保存股票名称失败: {e}")
+            logger.warning("保存股票名称失败: %s", e)
 
     @staticmethod
     def _as_positive_int(value, default):
@@ -260,7 +263,7 @@ class AKShareFetcher:
                     slow_path_max_fetch_days,
                 )
         except Exception as e:
-            print(f"  读取运行时调优配置失败，使用默认值: {e}")
+            logger.warning("读取运行时调优配置失败，使用默认值: %s", e)
 
         if slow_path_max_fetch_days < slow_path_min_fetch_days:
             slow_path_max_fetch_days = slow_path_min_fetch_days
@@ -361,7 +364,7 @@ class AKShareFetcher:
                     time.sleep(0.1)
                     
         except Exception as e:
-            print(f"  腾讯接口获取市值失败: {e}")
+            logger.warning("腾讯接口获取市值失败: %s", e)
         
         return market_cap_map
 
@@ -626,7 +629,7 @@ class AKShareFetcher:
             print(f"  使用默认列表: {len(DEFAULT_STOCK_LIST)} 只股票")
             return DEFAULT_STOCK_LIST.copy()
         except Exception as e:
-            print(f"  HTTP获取失败: {e}")
+            logger.warning("HTTP 获取股票列表失败: %s", e)
             return DEFAULT_STOCK_LIST.copy()
     
     def get_all_stock_codes(self, max_retries=3):
@@ -656,7 +659,7 @@ class AKShareFetcher:
                         self._save_stock_names(filtered)
                         return filtered
             except Exception as e:
-                print(f"  HTTP失败: {e}")
+                logger.warning("HTTP 直连获取股票列表失败（第 %s/%s 次）: %s", attempt + 1, max_retries, e)
                 time.sleep(1)
         
         # 方法2: akshare
@@ -683,7 +686,7 @@ class AKShareFetcher:
                 return stock_dict
                 
             except Exception as e:
-                print(f"  akshare失败: {e}")
+                logger.warning("akshare 获取股票列表失败（第 %s/%s 次）: %s", attempt + 1, max_retries, e)
                 time.sleep(2 ** attempt)
         
         # 降级: 本地缓存或默认列表
@@ -776,7 +779,7 @@ class AKShareFetcher:
             
             return None
         except Exception as e:
-            print(f"  HTTP获取历史数据失败: {e}")
+            logger.warning("HTTP 获取历史数据失败 %s: %s", stock_code, e)
             return None
     
     def _get_realtime_market_cap(self, stock_code):
@@ -1027,7 +1030,7 @@ class AKShareFetcher:
             ]
             return self._normalize_history_df(df, stock_code, market_cap=prefetched_market_cap)
         except Exception as e:
-            print(f"  EastMoney异常 {stock_code}: {type(e).__name__}: {str(e)[:120]}")
+            logger.warning("EastMoney 异常 %s: %s: %s", stock_code, type(e).__name__, str(e)[:120])
             return None
 
     def _fetch_stock_history_baostock(self, stock_code, years=6, prefetched_market_cap=None):
@@ -1039,7 +1042,7 @@ class AKShareFetcher:
         if cooling_down:
             if self._should_log_baostock_cooldown():
                 suffix = f" 最近错误: {last_error}" if last_error else ""
-                print(f"  Baostock冷却中，暂时跳过 {wait_seconds}s。{suffix}")
+                logger.warning("Baostock 冷却中，暂时跳过 %ss。%s", wait_seconds, suffix)
             return None
 
         try:
@@ -1055,7 +1058,7 @@ class AKShareFetcher:
                     f"login {lg.error_code}: {getattr(lg, 'error_msg', '')}"
                 )
                 if opened:
-                    print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
+                    logger.warning("Baostock 异常频繁，进入 %ss 冷却。最近错误: %s", cooldown_s, err)
                 return None
             try:
                 rs = bs.query_history_k_data_plus(
@@ -1069,7 +1072,7 @@ class AKShareFetcher:
                         f"query {rs.error_code}: {getattr(rs, 'error_msg', '')}"
                     )
                     if opened:
-                        print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
+                        logger.warning("Baostock 异常频繁，进入 %ss 冷却。最近错误: %s", cooldown_s, err)
                     return None
                 records = []
                 while rs.error_code == '0' and rs.next():
@@ -1106,8 +1109,8 @@ class AKShareFetcher:
         except Exception as e:
             opened, cooldown_s, err = self._record_baostock_failure(e)
             if opened:
-                print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
-            print(f"  Baostock历史获取异常 {stock_code}: {type(e).__name__}: {str(e)[:120]}")
+                logger.warning("Baostock 异常频繁，进入 %ss 冷却。最近错误: %s", cooldown_s, err)
+            logger.warning("Baostock 历史获取异常 %s: %s: %s", stock_code, type(e).__name__, str(e)[:120])
             return None
     
     def fetch_kline_for_display(self, stock_code: str, fqt: int = 1, years: int = 10):
@@ -1215,7 +1218,7 @@ class AKShareFetcher:
         if cooling_down:
             if self._should_log_baostock_cooldown():
                 suffix = f" 最近错误: {last_error}" if last_error else ""
-                print(f"  Baostock冷却中，暂时跳过 {wait_seconds}s。{suffix}")
+                logger.warning("Baostock 冷却中，暂时跳过 %ss。%s", wait_seconds, suffix)
             return None
 
         try:
@@ -1231,7 +1234,7 @@ class AKShareFetcher:
                     f"login {lg.error_code}: {getattr(lg, 'error_msg', '')}"
                 )
                 if opened:
-                    print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
+                    logger.warning("Baostock 异常频繁，进入 %ss 冷却。最近错误: %s", cooldown_s, err)
                 return None
             try:
                 rs = bs.query_history_k_data_plus(
@@ -1245,7 +1248,7 @@ class AKShareFetcher:
                         f"query {rs.error_code}: {getattr(rs, 'error_msg', '')}"
                     )
                     if opened:
-                        print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
+                        logger.warning("Baostock 异常频繁，进入 %ss 冷却。最近错误: %s", cooldown_s, err)
                     return None
                 records = []
                 while rs.error_code == '0' and rs.next():
@@ -1279,7 +1282,7 @@ class AKShareFetcher:
         except Exception as e:
             opened, cooldown_s, err = self._record_baostock_failure(e)
             if opened:
-                print(f"  Baostock异常频繁，进入 {cooldown_s}s 冷却。最近错误: {err}")
+                logger.warning("Baostock 异常频繁，进入 %ss 冷却。最近错误: %s", cooldown_s, err)
             return None
 
     def _fetch_update_sina(self, stock_code, days=10, prefetched_market_cap=None):
@@ -1324,7 +1327,7 @@ class AKShareFetcher:
             df = df.sort_values('date', ascending=False)
             return df.head(max(days + 5, 20)).copy()
         except Exception as e:
-            print(f"  新浪备选失败({stock_code}): {e}")
+            logger.warning("新浪备选失败(%s): %s", stock_code, e)
             return None
     
     def init_full_data(self, max_stocks=None, skip_failed=True, progress_callback=None):
@@ -1377,7 +1380,7 @@ class AKShareFetcher:
                 # 从列表中移除失败的股票
                 stock_codes = [c for c in stock_codes if c not in failed_stocks]
             except Exception as exc:
-                print(f"  [WARN] 读取 failed_stocks.json 失败: {exc}")
+                logger.warning("读取 failed_stocks.json 失败: %s", exc)
         
         if max_stocks:
             stock_codes = stock_codes[:max_stocks]
@@ -1407,8 +1410,8 @@ class AKShareFetcher:
                 self._market_cap_cache_date = _today
             self._save_market_cap_weekly_cache()
         except Exception as e:
-            print(f"  akshare接口失败: {e}")
-            print("  尝试腾讯备选接口...")
+            logger.warning("akshare 市值接口失败: %s", e)
+            logger.info("尝试腾讯备选市值接口")
             # 方法2: 使用腾讯接口备选
             market_cap_map = self._fetch_market_cap_tencent(stock_codes)
             if market_cap_map:
@@ -1419,7 +1422,7 @@ class AKShareFetcher:
                     self._market_cap_cache_date = _today
                 self._save_market_cap_weekly_cache()
             else:
-                print(f"  ✗ 腾讯接口也失败，市值数据将缺失")
+                logger.warning("腾讯接口也失败，市值数据将缺失")
         
         total = len(stock_codes)
         success = 0
@@ -1781,9 +1784,9 @@ class AKShareFetcher:
                     self._market_cap_cache_date = _today_bg
                 self._save_market_cap_weekly_cache()
                 _bg_cap_count[0] = len(_fresh_cap)
-                print(f"\n  [后台市值] ✓ akshare刷新完成: {len(_fresh_cap)} 只")
+                logger.info("[后台市值] akshare 刷新完成: %d 只", len(_fresh_cap))
             except Exception as _e_ak:
-                print(f"\n  [后台市值] akshare失败: {_e_ak}，尝试直连东方财富...")
+                logger.warning("[后台市值] akshare 失败，尝试直连东方财富: %s", _e_ak)
                 try:
                     _page = 1
                     _page_size = 100
@@ -1834,12 +1837,12 @@ class AKShareFetcher:
                             self._market_cap_cache_date = _today_bg
                         self._save_market_cap_weekly_cache()
                         _bg_cap_count[0] = len(_fresh_direct)
-                        print(f"\n  [后台市值] ✓ 直连东方财富成功: {len(_fresh_direct)} 只")
+                        logger.info("[后台市值] 直连东方财富成功: %d 只", len(_fresh_direct))
                     else:
                         raise Exception("返回数据为空")
                 except Exception as _e2:
                     _bg_cap_error[0] = str(_e2)
-                    print(f"\n  [后台市值] ✗ 所有市值接口失败: {_e2}")
+                    logger.warning("[后台市值] 所有市值接口失败: %s", _e2)
             finally:
                 _bg_done.set()
 
@@ -1872,7 +1875,7 @@ class AKShareFetcher:
             )
         else:
             # 首次克隆无缓存：等待后台最多 10s，让市值数据准备好
-            print("  [市值] 缓存为空，等待后台线程初始化市值（最多10秒）...")
+            logger.info("[市值] 缓存为空，等待后台线程初始化市值（最多10秒）")
             emit_progress(
                 32,
                 "首次运行，等待市值数据初始化（最多10秒）...",
@@ -2117,7 +2120,7 @@ class AKShareFetcher:
                         phase='update',
                     )
         except Exception as e:
-            print(f"\n[更新] 并发执行异常: {e}")
+            logger.exception("[更新] 并发执行异常")
             emit_progress(92, f"并发更新异常：{e}", phase='update')
 
         print()  # 换行
@@ -2183,7 +2186,7 @@ class AKShareFetcher:
             _bg_done.wait(timeout=30)
 
         if _bg_cap_count[0] > 0:
-            print(f"[市值] 后台刷新完成，共 {_bg_cap_count[0]} 只最新市值已写入缓存")
+            logger.info("[市值] 后台刷新完成，共 %d 只最新市值已写入缓存", _bg_cap_count[0])
             emit_progress(
                 98,
                 f"市值数据已刷新：{_bg_cap_count[0]} 只（可在前端查看最新市值）",
@@ -2191,7 +2194,7 @@ class AKShareFetcher:
                 market_cap_count=_bg_cap_count[0],
             )
         elif _bg_cap_error[0]:
-            print(f"[市值] 后台刷新失败: {_bg_cap_error[0]}")
+            logger.warning("[市值] 后台刷新失败: %s", _bg_cap_error[0])
 
         if all_done:
             final_message = (

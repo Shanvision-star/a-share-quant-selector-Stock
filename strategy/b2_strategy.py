@@ -1531,11 +1531,11 @@ class B2Strategy(BaseStrategy):
 
         # ── 导出详细版 TXT ──────────────────────────────────────────
         txt_file_path = self._export_txt(results)
-        print(f"[B2] TXT 文件已生成：{txt_file_path}", flush=True)
+        logger.info("[B2] TXT 文件已生成: %s", txt_file_path)
 
         # ── 导出通达信版 TXT ─────────────────────────────────────────
         tdx_txt_file_path = self._export_tdx_txt(results)
-        print(f"[B2] 通达信导入 TXT 已生成：{tdx_txt_file_path}", flush=True)
+        logger.info("[B2] 通达信导入 TXT 已生成: %s", tdx_txt_file_path)
 
         # ── 发送钉钉通知（可选）─────────────────────────────────────
         if notifier:
@@ -1661,6 +1661,5 @@ class B2Strategy(BaseStrategy):
             with open(fname, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
             logger.info("[B2] 通达信 TXT 已导出: %s", fname)
-            print(f"[B2] 通达信 TXT 已导出: {fname}", flush=True)
         except Exception as e:
             logger.warning("[B2] 通达信 TXT 导出失败: %s", e)

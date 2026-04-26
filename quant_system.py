@@ -854,6 +854,7 @@ class QuantSystem:
             from strategy.pattern_library import B1PatternLibrary
             library = B1PatternLibrary(self.csv_manager)
             if not library.cases:
+                logger.warning("B1 完美图形案例库为空")
                 print("⚠️ 警告: 案例库为空")
                 return {
                     'results': results,
@@ -866,6 +867,7 @@ class QuantSystem:
                 }
             print(f"✓ 案例库加载完成: {len(library.cases)} 个案例")
         except Exception as e:
+            logger.exception("初始化 B1 完美图形案例库失败")
             print(f"✗ 初始化案例库失败: {e}")
             fallback_reason = f"初始化案例库失败: {e}"
             return {
@@ -967,6 +969,7 @@ class QuantSystem:
                     if auto_fallback and self._is_b1_fallback_error(e):
                         fallback_reason = f"B1匹配异常，自动切换原模式: {e}"
                         break
+                    logger.warning("B1 匹配 %s 失败: %s", code, e)
                     print(f"  ⚠️ 匹配 {code} 失败: {e}")
 
                 now_ts = time.time()

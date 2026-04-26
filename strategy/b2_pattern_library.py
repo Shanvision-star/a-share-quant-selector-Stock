@@ -105,7 +105,7 @@ class B2PatternMatchLibrary:
             if cache.get("signatures") != self._expected_signatures():
                 return False
             self.cases = cache.get("cases", {})
-            print(f"[B2Match] 从缓存加载案例库: {len(self.cases)} 个案例")
+            logger.info("[B2Match] 从缓存加载案例库: %d 个案例", len(self.cases))
             return bool(self.cases)
         except Exception as e:
             logger.warning("[B2Match] 缓存加载失败: %s", e)
@@ -123,7 +123,7 @@ class B2PatternMatchLibrary:
             self.CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(self.CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(cache, f, ensure_ascii=False, default=str)
-            print(f"[B2Match] 案例特征已缓存到 {self.CACHE_FILE}")
+            logger.info("[B2Match] 案例特征已缓存到 %s", self.CACHE_FILE)
         except Exception as e:
             logger.warning("[B2Match] 缓存保存失败: %s", e)
 
@@ -131,18 +131,21 @@ class B2PatternMatchLibrary:
 
     def _build_library(self):
         """从本地 CSV 构建 B2 图形案例特征库。"""
-        print("[B2Match] 构建 B2 图形特征库...")
+        logger.info("[B2Match] 构建 B2 图形特征库...")
         for case in B2_PATTERN_CASES:
             try:
                 df = self.csv_manager.read_stock(case["code"])
                 if df is None or df.empty:
-                    print(f"  [WARN] 跳过 {case['name']}({case['code']}): 无 CSV 数据，"
-                          f"请确认 data/ 目录中有该股票历史数据")
+                    logger.warning(
+                        "跳过 %s(%s): 无 CSV 数据，请确认 data/ 目录中有该股票历史数据",
+                        case['name'],
+                        case['code'],
+                    )
                     continue
 
                 window_df = self._extract_b2_window(df, case["b2_date"], case["lookback_days"])
                 if window_df.empty or len(window_df) < 10:
-                    print(f"  [WARN] 跳过 {case['name']}: {case['b2_date']} 前数据不足 10 行")
+                    logger.warning("跳过 %s: %s 前数据不足 10 行", case['name'], case['b2_date'])
                     continue
 
                 features = self.extractor.extract(window_df)
@@ -151,16 +154,16 @@ class B2PatternMatchLibrary:
                     "features": features,
                 }
                 pattern_label = _PATTERN_LABELS.get(case["pattern_type"], case["pattern_type"])
-                print(f"  [OK] {case['name']} ({case['code']}) [{pattern_label}] 特征提取完成")
+                logger.info("%s (%s) [%s] 特征提取完成", case['name'], case['code'], pattern_label)
 
             except Exception as e:
-                print(f"  [ERROR] {case['name']} 处理失败: {e}")
+                logger.exception("%s 处理失败", case['name'])
 
         if self.cases:
             self._save_to_cache()
-            print(f"[B2Match] 案例库构建完成: {len(self.cases)} 个案例\n")
+            logger.info("[B2Match] 案例库构建完成: %d 个案例", len(self.cases))
         else:
-            print("[B2Match] 警告: 案例库为空（请检查历史案例数据是否存在）\n")
+            logger.warning("[B2Match] 案例库为空（请检查历史案例数据是否存在）")
 
     # ──────────────── 特征窗口提取 ────────────────────────────────────────────
 
@@ -284,7 +287,7 @@ class B2PatternMatchLibrary:
         threshold = min_similarity if min_similarity is not None else B2_MIN_SIMILARITY_SCORE
         matched_results = []
 
-        print(f"\n[B2Match] 开始相似度评分，共 {len(b2_results)} 只 B2 候选...", flush=True)
+        logger.info("[B2Match] 开始相似度评分，共 %d 只 B2 候选", len(b2_results))
 
         for b2_item in b2_results:
             code    = b2_item.get("code", "")
@@ -330,10 +333,7 @@ class B2PatternMatchLibrary:
         # 按相似度从高到低排序
         matched_results.sort(key=lambda x: x["similarity_score"], reverse=True)
 
-        print(
-            f"[B2Match] 相似度评分完成，{len(matched_results)} 只达到阈值 {threshold}%\n",
-            flush=True,
-        )
+        logger.info("[B2Match] 相似度评分完成，%d 只达到阈值 %s%%", len(matched_results), threshold)
         return matched_results
 
     # ──────────────── 完整扫描流程（规则扫描 + 图形匹配） ─────────────────────
@@ -367,7 +367,7 @@ class B2PatternMatchLibrary:
         # 延迟导入，避免循环引用
         from strategy.b2_strategy import B2PatternLibrary as B2RuleLibrary
 
-        print("[B2Match] 阶段1 - B2 规则扫描...", flush=True)
+        logger.info("[B2Match] 阶段1 - B2 规则扫描...")
         rule_lib = B2RuleLibrary()
         b2_hits = rule_lib.scan_all(self.csv_manager.list_all_stocks()
                                     if stock_list is None else stock_list,
@@ -376,16 +376,16 @@ class B2PatternMatchLibrary:
         stock_data_dict = getattr(rule_lib, "_stock_data_dict", {})
 
         if not b2_hits:
-            print("[B2Match] 规则扫描无命中，流程结束", flush=True)
+            logger.info("[B2Match] 规则扫描无命中，流程结束")
             return {"b2_hits": [], "matched": [], "stock_data_dict": {}}
 
-        print(f"[B2Match] 规则扫描命中 {len(b2_hits)} 只", flush=True)
+        logger.info("[B2Match] 规则扫描命中 %d 只", len(b2_hits))
 
         if not self.cases:
-            print("[B2Match] 案例库为空，跳过相似度评分，直接返回规则扫描结果", flush=True)
+            logger.warning("[B2Match] 案例库为空，跳过相似度评分，直接返回规则扫描结果")
             return {"b2_hits": b2_hits, "matched": b2_hits, "stock_data_dict": stock_data_dict}
 
-        print("[B2Match] 阶段2 - 相似度评分...", flush=True)
+        logger.info("[B2Match] 阶段2 - 相似度评分...")
         matched = self.scan_with_match(b2_hits, stock_data_dict, min_similarity)
 
         return {

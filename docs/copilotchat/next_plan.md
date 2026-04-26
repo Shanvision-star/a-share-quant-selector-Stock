@@ -98,8 +98,10 @@ Phase 3 (3-5d, 多 PR) ──▶ Phase 4
 - [ ] `web/backend/routers/manual_selection.py` POST/DELETE 用 Pydantic body 模型
 
 #### 2.4 日志统一
-- [ ] `quant_system.py`、`utils/akshare_fetcher.py`、`strategy/*.py` 业务路径的 `print` 替换为 `logging.getLogger(__name__)`，保留进度类输出
-- [ ] `web/backend/main.py` 增加可选 JSON 日志格式（环境变量 `WEB_LOG_FORMAT=json`）
+- [x] `quant_system.py`、`utils/akshare_fetcher.py`、`strategy/*.py` 业务路径的 `print` 替换为 `logging.getLogger(__name__)`，保留进度类输出
+- [x] `web/backend/main.py` 增加可选 JSON 日志格式（环境变量 `WEB_LOG_FORMAT=json`）
+
+实施备注：保留 CLI 阶段标题、进度条、结果摘要和 SSE 进度相关输出；仅收敛缓存、异常、后台刷新、策略库构建等后台诊断日志。
 
 #### 2.5 修复 Bug 7（reload_params 不去重）
 - [ ] `strategy/strategy_registry.py::reload_params`

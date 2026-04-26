@@ -3,7 +3,10 @@
 使用DTW进行形态相似度计算
 """
 import numpy as np
+import logging
 from scipy.spatial.distance import euclidean
+
+logger = logging.getLogger(__name__)
 
 
 try:
@@ -11,7 +14,7 @@ try:
     HAS_FASTDTW = True
 except ImportError:
     HAS_FASTDTW = False
-    print("⚠️ fastdtw 未安装，将使用简化版DTW")
+    logger.warning("fastdtw 未安装，将使用简化版 DTW")
 
 
 class PatternMatcher:

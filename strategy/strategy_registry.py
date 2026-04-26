@@ -45,12 +45,21 @@ class StrategyRegistry:
             return strategy
 
     def reload_params(self):
-        """重新加载参数并刷新运行时策略实例。"""
+        """重新加载参数并刷新运行时策略实例。
+
+        多个名称可能映射到同一个策略类（例如 B1CaseAnalyzer / B1CaseStrategy 别名），
+        刷新时按 id(class) 去重，避免重复构造同一策略对象造成双倍内存与缓存写入。
+        """
         with self._lock:
             self.params = self._load_params()
-            strategy_names = list(self.strategy_classes.keys())
-            for strategy_name in strategy_names:
-                strategy_class = self.strategy_classes[strategy_name]
+            seen_classes: dict = {}
+            for strategy_name, strategy_class in list(self.strategy_classes.items()):
+                class_id = id(strategy_class)
+                if class_id in seen_classes:
+                    # 已重建的别名直接复用同一个实例，保持注册表中所有名字仍可用
+                    self.strategies[strategy_name] = self.strategies[seen_classes[class_id]]
+                    continue
+                seen_classes[class_id] = strategy_name
                 self.register(strategy_class, name=strategy_name)
 
     def _log(self, message):

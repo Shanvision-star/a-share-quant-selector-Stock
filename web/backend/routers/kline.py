@@ -1,12 +1,14 @@
 """K线数据接口"""
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Path, Query, HTTPException
 
 router = APIRouter(prefix="/api", tags=["K线数据"])
+
+_STOCK_CODE_RE = r"^\d{6}$"
 
 
 @router.get("/kline/{code}")
 async def get_kline(
-    code: str,
+    code: str = Path(..., pattern=_STOCK_CODE_RE),
     period: str = Query("daily", pattern="^(daily|weekly)$"),
     limit: int = Query(2600, ge=120, le=3200),
     adjust: str = Query("qfq", pattern="^(qfq|hfq|nfq)$"),
@@ -26,7 +28,7 @@ async def get_kline(
 
 
 @router.get("/stock/price/{code}")
-async def get_stock_price(code: str):
+async def get_stock_price(code: str = Path(..., pattern=_STOCK_CODE_RE)):
     """获取股票价格面板信息（右侧面板用）"""
     from web.backend.services.kline_service import get_stock_price_info
     result = get_stock_price_info(code)
@@ -36,7 +38,10 @@ async def get_stock_price(code: str):
 
 
 @router.get("/stock/mini-kline/{code}")
-async def get_mini_kline(code: str, days: int = Query(30, ge=5, le=90)):
+async def get_mini_kline(
+    code: str = Path(..., pattern=_STOCK_CODE_RE),
+    days: int = Query(30, ge=5, le=90),
+):
     """迷你 K 线数据（首页缩略图）"""
     from web.backend.services.kline_service import get_mini_kline
     result = get_mini_kline(code, days)
@@ -45,7 +50,7 @@ async def get_mini_kline(code: str, days: int = Query(30, ge=5, le=90)):
 
 @router.get("/kline/{code}/intraday")
 async def get_intraday_kline_route(
-    code: str,
+    code: str = Path(..., pattern=_STOCK_CODE_RE),
     date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
     period: str = Query("1", pattern="^(1|15)$"),
 ):
@@ -60,7 +65,7 @@ async def get_intraday_kline_route(
 
 
 @router.get("/stock/info/{code}")
-async def get_stock_info(code: str):
+async def get_stock_info(code: str = Path(..., pattern=_STOCK_CODE_RE)):
     """获取股票扩展信息：行业/地区/经营范围 + 概念标签（懒加载，有后端缓存）"""
     from web.backend.services.kline_service import get_stock_concept_tags, _fetch_stock_extra_info
     extra = _fetch_stock_extra_info(code)

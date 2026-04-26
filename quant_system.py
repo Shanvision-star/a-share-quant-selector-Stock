@@ -36,8 +36,8 @@ class QuantSystem:
         """
         # 加载配置文件
         self.config = self._load_config(config_file)
-        # 数据存储目录
-        self.data_dir = self.config.get('data_dir', 'data')
+        # 数据存储目录（带安全校验，防止配置注入逃逸到任意路径）
+        self.data_dir = self._resolve_data_dir(self.config.get('data_dir', 'data'))
         # CSV文件管理器
         self.csv_manager = CSVManager(self.data_dir)
         # 数据抓取器
@@ -54,6 +54,31 @@ class QuantSystem:
             with open(config_path, 'r', encoding='utf-8') as f:
                 return yaml.safe_load(f) or {}
         return {}
+
+    @staticmethod
+    def _resolve_data_dir(raw_value):
+        """校验并解析 data_dir 配置项。
+
+        要求：
+          - 必须是字符串/Path；
+          - 解析后必须落在项目根目录内（防止 ../../ 或绝对路径逃逸）。
+        失败时抛 ValueError，避免后续以异常路径写入磁盘。
+        """
+        if not isinstance(raw_value, (str, os.PathLike)):
+            raise ValueError(f"data_dir 必须是字符串或路径，实际类型: {type(raw_value).__name__}")
+
+        project_root = Path(__file__).resolve().parent
+        candidate = Path(raw_value)
+        resolved = (candidate if candidate.is_absolute() else project_root / candidate).resolve()
+
+        try:
+            resolved.relative_to(project_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"data_dir 必须位于项目根目录内: project_root={project_root}, data_dir={resolved}"
+            ) from exc
+
+        return str(resolved)
 
     def _init_notifier(self):
         """初始化钉钉通知机器人"""

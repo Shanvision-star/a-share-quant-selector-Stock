@@ -83,11 +83,14 @@ def main():
   python main.py backtest                      # 执行3天回溯扫描
   python main.py backtest --backtest-days 3 --k-threshold 20 --trend-drop-pct 5
   python main.py schedule                      # 启动内置定时
+  python main.py research                      # 显示研究论文知识库统计
+  python main.py research --paper-file paper.txt --paper-title '策略标题'  # 分析论文
+  python main.py research --paper-file paper.txt --research-output strategy/new.py  # 分析并生成策略代码
         """
     )
 
     parser.add_argument('--version', action='store_true', help='显示版本信息')
-    parser.add_argument('command', choices=['init', 'run', 'web', 'schedule', 'backtest', 'backtrace'], nargs='?', help='命令')
+    parser.add_argument('command', choices=['init', 'run', 'web', 'schedule', 'backtest', 'backtrace', 'research'], nargs='?', help='命令')
     parser.add_argument('--max-stocks', type=int, default=None, help='限制股票数量')
     parser.add_argument('--config', default='config/config.yaml', help='配置文件')
     parser.add_argument('--host', default='0.0.0.0', help='web监听地址')
@@ -102,6 +105,10 @@ def main():
     parser.add_argument('--backtest-days', type=int, default=3, help='回溯天数（连续K小于阈值的天数）')
     parser.add_argument('--k-threshold', type=float, default=20.0, help='K值阈值')
     parser.add_argument('--trend-drop-pct', type=float, default=5.0, help='短期趋势线最大容忍回落百分比')
+    parser.add_argument('--paper-file', type=str, help='论文文本文件路径（research 命令使用）')
+    parser.add_argument('--paper-title', type=str, help='论文标题（research 命令使用）')
+    parser.add_argument('--research-output', type=str, default='', help='生成策略代码的输出路径（research 命令可选）')
+    parser.add_argument('--kb-path', type=str, default='', help='知识库文件路径（research 命令可选）')
     parser.add_argument('--workers', type=int, default=None, help='选股并发线程数（默认自动；单核设备会自动降级为1）')
     parser.add_argument('--stock-code', type=str, help='股票代码')
     parser.add_argument('--date', type=str, help='回溯日期，格式为YYYY-MM-DD')
@@ -198,6 +205,47 @@ def main():
         except Exception as e:
             print(f"回溯分析失败: {e}")
         return
+
+    elif args.command == 'research':
+        from research.paper_agent import PaperAgent
+
+        kb_path = args.kb_path if args.kb_path else None
+        agent = PaperAgent(kb_path=kb_path)
+
+        if args.paper_file:
+            # 分析指定论文文件
+            try:
+                with open(args.paper_file, 'r', encoding='utf-8') as f:
+                    paper_text = f.read()
+            except Exception as e:
+                print(f"⚠️ 读取论文文件失败: {e}")
+                return
+            title = args.paper_title or ''
+            print(f"\n📚 正在分析论文: {args.paper_file}")
+            report = agent.analyze_text(paper_text, title=title, generate_code=True, save_to_kb=True)
+            print(agent.format_report(report))
+            if args.research_output and report.generated_code:
+                if agent.save_generated_strategy(report, args.research_output):
+                    print(f"\n✅ 策略代码已保存到: {args.research_output}")
+        else:
+            # 无文件时显示知识库统计
+            stats = agent.knowledge_base.get_stats()
+            print("\n📊 研究论文知识库统计")
+            print("=" * 50)
+            print(f"  论文总数: {stats.total_papers}")
+            if stats.total_papers > 0:
+                print(f"  策略类型分布: {stats.strategy_type_dist}")
+                print(f"  最常用指标: {dict(list(stats.factor_frequency.items())[:5])}")
+                print(f"  市场分布: {stats.universe_dist}")
+                print(f"  最近添加: {stats.latest_added[:10] if stats.latest_added else '—'}")
+                gaps = agent.knowledge_base.identify_research_gaps()
+                print(f"\n🔍 研究空白:")
+                print(f"  缺失策略类型: {gaps.get('missing_strategy_types', [])}")
+                print(f"  未覆盖常用指标: {gaps.get('missing_common_factors', [])}")
+            else:
+                print("\n  知识库为空。使用 --paper-file 参数分析论文：")
+                print("  python main.py research --paper-file paper.txt --paper-title '策略标题'")
+                print("  python main.py research --paper-file paper.txt --research-output strategy/new_strategy.py")
 
 
 if __name__ == '__main__':

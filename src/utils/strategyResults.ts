@@ -24,7 +24,7 @@ export interface FetchAllStrategyOptions {
   maxPages?: number
 }
 
-export type StrategyGroupKey = 'b1' | 'b2' | 'bowl'
+export type StrategyGroupKey = 'b1' | 'b2' | 'bowl' | 'brick'
 
 export interface StrategyGroup<T = StrategyResultListItem> {
   key: StrategyGroupKey
@@ -39,6 +39,7 @@ export const STRATEGY_GROUP_META: Array<{ key: StrategyGroupKey; label: string }
   { key: 'b1', label: 'B1形态' },
   { key: 'b2', label: 'B2突破' },
   { key: 'bowl', label: '碗底反弹' },
+  { key: 'brick', label: '砖型图' },
 ]
 
 export async function fetchAllStrategyResultItems<T = StrategyResultListItem>(
@@ -83,12 +84,20 @@ export function buildUniqueStrategyList<T extends StrategyResultListItem>(items:
 
 export function getStrategyGroupKey(item: StrategyResultListItem): StrategyGroupKey {
   const strategyFilter = String(item.strategy_filter || '').toLowerCase()
-  if (strategyFilter === 'b1' || strategyFilter === 'b2' || strategyFilter === 'bowl') {
+  if (strategyFilter === 'b1' || strategyFilter === 'b2' || strategyFilter === 'bowl' || strategyFilter === 'brick') {
     return strategyFilter
   }
 
   const name = String(item.strategy_name || '').toLowerCase()
   const category = String(item.category || '').toLowerCase()
+  if (
+    strategyFilter.includes('brick')
+    || name.includes('brick')
+    || category.includes('brick')
+    || category.includes('砖')
+  ) {
+    return 'brick'
+  }
   if (strategyFilter.includes('bowl') || name.includes('bowl') || category.includes('bowl')) {
     return 'bowl'
   }

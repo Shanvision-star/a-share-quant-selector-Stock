@@ -11,7 +11,7 @@ import {
   getTxtDownloadUrl,
 } from '@/api'
 
-type TxtStrategy = 'all' | 'b1' | 'b2' | 'bowl'
+type TxtStrategy = 'all' | 'b1' | 'b2' | 'bowl' | 'brick'
 
 const props = defineProps<{
   strategy?: string
@@ -19,7 +19,7 @@ const props = defineProps<{
 }>()
 
 function normalizeStrategy(value?: string): TxtStrategy {
-  return value === 'b1' || value === 'b2' || value === 'bowl' ? value : 'all'
+  return value === 'b1' || value === 'b2' || value === 'bowl' || value === 'brick' ? value : 'all'
 }
 
 const txtFiles = ref<any[]>([])
@@ -186,6 +186,7 @@ function onTxtDateChange() {
           <el-option value="b1" label="B1形态" />
           <el-option value="b2" label="B2突破" />
           <el-option value="bowl" label="碗底反弹" />
+          <el-option value="brick" label="砖型图" />
         </el-select>
         <el-select
           v-model="txtFilterDate"

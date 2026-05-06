@@ -79,23 +79,31 @@ const chartState = reactive({
 })
 
 // ============ 可拖拽面板尺寸状态 ============
-const PANEL_KEYS = ['main', 'volume', 'adjVolume', 'kdj', 'macd'] as const
+const PANEL_KEYS = ['main', 'volume', 'adjVolume', 'indicator'] as const
 type PanelKey = typeof PANEL_KEYS[number]
+const SUB_INDICATOR_OPTIONS = [
+  { key: 'macd', label: 'MACD' },
+  { key: 'kdj', label: 'KDJ' },
+  { key: 'brick', label: '砖型图' },
+] as const
+type SubIndicatorKey = typeof SUB_INDICATOR_OPTIONS[number]['key']
+const activeSubIndicator = ref<SubIndicatorKey>('macd')
+const activeSubIndicatorLabel = computed(() =>
+  SUB_INDICATOR_OPTIONS.find(item => item.key === activeSubIndicator.value)?.label || 'MACD',
+)
 const TOP_MARGIN = 40
 const BOTTOM_MARGIN = 55   // 增大底部留白，避免横向时间轴与 dataZoom 滑块重叠
 const PANEL_GAP = 10
 const MIN_PANEL_PX = 40
 const EXPANDED_MAIN_RATIO = 0.48
 
-// 五个面板的高度比例（加起来 = 1.0）
-// main=主图, volume=成交量, adjVolume=还原成交量, kdj, macd
-// 副图默认折叠，主图占据大部分空间
+// 四个面板的高度比例（加起来 = 1.0）
+// main=主图, volume=成交量, adjVolume=还原成交量, indicator=当前副图指标
 const panelRatios = reactive<Record<PanelKey, number>>({
-  main: 0.80,
-  volume: 0.05,
-  adjVolume: 0.05,
-  kdj: 0.05,
-  macd: 0.05,
+  main: 0.64,
+  volume: 0.08,
+  adjVolume: 0.08,
+  indicator: 0.20,
 })
 
 function getEffectivePanelRatios(): Record<PanelKey, number> {
@@ -109,8 +117,7 @@ function getEffectivePanelRatios(): Record<PanelKey, number> {
     main: mainRatio,
     volume: expandedSubPanel.value === 'volume' ? subBudget : 0,
     adjVolume: expandedSubPanel.value === 'adjVolume' ? subBudget : 0,
-    kdj: expandedSubPanel.value === 'kdj' ? subBudget : 0,
-    macd: expandedSubPanel.value === 'macd' ? subBudget : 0,
+    indicator: expandedSubPanel.value === 'indicator' ? subBudget : 0,
   }
 }
 
@@ -136,8 +143,7 @@ const subPanelLabels = computed(() => {
   const labels = [
     { key: 'volume' as PanelKey,    name: '成交量',    top: grids[1].top + 3 },
     { key: 'adjVolume' as PanelKey, name: '还原成交量', top: grids[2].top + 3 },
-    { key: 'kdj' as PanelKey,       name: 'KDJ',       top: grids[3].top + 3 },
-    { key: 'macd' as PanelKey,      name: 'MACD',      top: grids[4].top + 3 },
+    { key: 'indicator' as PanelKey, name: activeSubIndicatorLabel.value, top: grids[3].top + 3 },
   ]
   return expandedSubPanel.value
     ? labels.filter(label => label.key === expandedSubPanel.value)
@@ -272,7 +278,7 @@ function updateCursorLatestChange(rawIndex: unknown) {
 
 function shouldIgnoreChartPointerEvent(event: MouseEvent): boolean {
   const target = event.target as HTMLElement | null
-  return !!target?.closest('button, .el-select, .zoom-presets, .panel-divider, .panel-label-row, .intraday-popup, .range-stats-popup')
+  return !!target?.closest('button, .el-select, .zoom-presets, .sub-indicator-selector, .panel-divider, .panel-label-row, .intraday-popup, .range-stats-popup')
 }
 
 function getPanelKeyByLocalY(localY: number): PanelKey | null {
@@ -501,6 +507,43 @@ async function renderChart() {
       value,
       itemStyle: { color: (value ?? 0) >= 0 ? '#ef5350' : '#26a69a' },
     }))
+    const brickValues = sanitizeIndicator(indicators.brick_value)
+    const brickBars = brickValues.map((value: number | null, index: number) => {
+      const prev = index > 0 ? brickValues[index - 1] : null
+      const rising = value !== null && prev !== null ? value >= prev : (value ?? 0) > 0
+      return {
+        value,
+        itemStyle: { color: rising ? '#ef5350' : '#26a69a' },
+      }
+    })
+    const subIndicatorSeries = activeSubIndicator.value === 'kdj'
+      ? [
+          { name: 'K', type: 'line', data: kData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
+          { name: 'D', type: 'line', data: dData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#42a5f5' } },
+          { name: 'J', type: 'line', data: jData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#ab47bc' } },
+        ]
+      : activeSubIndicator.value === 'brick'
+        ? [
+            {
+              name: '砖型图',
+              type: 'bar',
+              data: brickBars,
+              xAxisIndex: 3,
+              yAxisIndex: 3,
+              barWidth: 8,
+              markLine: {
+                silent: true,
+                symbol: 'none',
+                lineStyle: { color: '#5b607a', width: 1, type: 'dashed' },
+                data: [{ yAxis: 0 }],
+              },
+            },
+          ]
+        : [
+            { name: 'DIF', type: 'line', data: difData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
+            { name: 'DEA', type: 'line', data: deaData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#42a5f5' } },
+            { name: 'MACD', type: 'bar', data: macdBars, xAxisIndex: 3, yAxisIndex: 3 },
+          ]
 
     // 记录总轴长度，供时间跨度按钮 handleZoomPreset 计算百分比
     totalAxisLength.value = axisDates.length
@@ -523,12 +566,12 @@ async function renderChart() {
         return {
           name: `${signal.label || signal.category || 'signal'}-${index}`,
           coord: [signalDate, Number((signalPrice * 0.97).toFixed(2))],
-          value: signal.category?.includes('b1') ? 'B1' : signal.category?.includes('bowl') ? 'BOWL' : 'B2',
+          value: signal.category?.includes('b1') ? 'B1' : signal.category?.includes('bowl') ? 'BOWL' : signal.category?.includes('brick') ? '砖' : 'B2',
           symbol: 'arrow',
           symbolSize: 12,
           symbolRotate: 180,
           itemStyle: {
-            color: signal.category?.includes('b1') ? '#f5222d' : signal.category?.includes('bowl') ? '#faad14' : '#1890ff',
+            color: signal.category?.includes('b1') ? '#f5222d' : signal.category?.includes('bowl') ? '#faad14' : signal.category?.includes('brick') ? '#ef5350' : '#1890ff',
           },
           label: {
             show: true,
@@ -615,9 +658,9 @@ async function renderChart() {
         selected: legendSelected,
       },
       axisPointer: {
-        link: [{ xAxisIndex: [0, 1, 2, 3, 4] }],
+        link: [{ xAxisIndex: [0, 1, 2, 3] }],
       },
-      // 五段 grid 分别承载主图、成交量、还原成交量、KDJ、MACD
+      // 四段 grid 分别承载主图、成交量、还原成交量、当前副图指标
       grid: computeGrids(),
       xAxis: [
         {
@@ -646,13 +689,6 @@ async function renderChart() {
           data: axisDates,
           gridIndex: 3,
           axisLine: { lineStyle: { color: '#363a45' } },
-          axisLabel: { show: false, formatter: (value: unknown) => formatAxisCategory(value) },
-        },
-        {
-          type: 'category',
-          data: axisDates,
-          gridIndex: 4,
-          axisLine: { lineStyle: { color: '#363a45' } },
           axisLabel: {
             color: '#787b86',
             fontSize: 10,
@@ -665,12 +701,11 @@ async function renderChart() {
         { scale: false, min: 0, max: (v: any) => (v?.max ?? 0) * 1.05, gridIndex: 1, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
         { scale: false, min: 0, max: (v: any) => (v?.max ?? 0) * 1.05, gridIndex: 2, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
         { scale: true, gridIndex: 3, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
-        { scale: true, gridIndex: 4, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
       ],
       dataZoom: [
         {
           type: 'inside',
-          xAxisIndex: [0, 1, 2, 3, 4],
+          xAxisIndex: [0, 1, 2, 3],
           start: zoomStart,
           end: 100,
           filterMode: 'weakFilter',
@@ -679,7 +714,7 @@ async function renderChart() {
         },
         {
           type: 'slider',
-          xAxisIndex: [0, 1, 2, 3, 4],
+          xAxisIndex: [0, 1, 2, 3],
           start: zoomStart,
           end: 100,
           filterMode: 'weakFilter',
@@ -723,18 +758,7 @@ async function renderChart() {
         { name: 'Volume', type: 'bar', data: volumes, xAxisIndex: 1, yAxisIndex: 1 },
         // 还原成交量：按前一日收盘与当日收盘比较确定颜色
         { name: 'AdjVolume', type: 'bar', data: adjVolumes, xAxisIndex: 2, yAxisIndex: 2 },
-        { name: 'K', type: 'line', data: kData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
-        { name: 'D', type: 'line', data: dData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#42a5f5' } },
-        { name: 'J', type: 'line', data: jData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#ab47bc' } },
-        { name: 'DIF', type: 'line', data: difData, xAxisIndex: 4, yAxisIndex: 4, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
-        { name: 'DEA', type: 'line', data: deaData, xAxisIndex: 4, yAxisIndex: 4, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#42a5f5' } },
-        {
-          name: 'MACD',
-          type: 'bar',
-          data: macdBars,
-          xAxisIndex: 4,
-          yAxisIndex: 4,
-        },
+        ...(subIndicatorSeries as any[]),
       ],
     }
 
@@ -798,13 +822,12 @@ async function retryRender() {
 }
 
 // ============ 副图折叠 ============
-// 默认所有副图均折叠，保存原始比例以便展开时恢复
-const collapsedPanels = reactive(new Set<PanelKey>(['volume', 'adjVolume', 'kdj', 'macd']))
+// 默认全部展开，当前指标副图有固定大空间；用户可手动折叠任一副图。
+const collapsedPanels = reactive(new Set<PanelKey>())
 const savedPanelRatios: Partial<Record<PanelKey, number>> = {
   volume: 0.12,
   adjVolume: 0.12,
-  kdj: 0.17,
-  macd: 0.17,
+  indicator: 0.20,
 }
 
 // ── 副图最大化模式 ──────────────────────────────────────────────────
@@ -845,6 +868,16 @@ function togglePanelCollapse(key: PanelKey) {
     collapsedPanels.add(key)
   }
   scheduleGridUpdate()
+}
+
+function selectSubIndicator(key: SubIndicatorKey) {
+  if (activeSubIndicator.value === key) return
+  activeSubIndicator.value = key
+  collapsedPanels.delete('indicator')
+  if (expandedSubPanel.value && expandedSubPanel.value !== 'indicator') {
+    expandedSubPanel.value = null
+  }
+  void safeRenderChart()
 }
 
 // 时间跨度按钮点击：通过 dispatchAction 直接更新 dataZoom，无需重新请求数据
@@ -1352,6 +1385,18 @@ onUnmounted(() => {
       >{{ preset.label }}</button>
     </div>
 
+    <div class="sub-indicator-selector">
+      <button
+        v-for="item in SUB_INDICATOR_OPTIONS"
+        :key="item.key"
+        class="sub-indicator-btn"
+        :class="{ active: activeSubIndicator === item.key }"
+        type="button"
+        :title="`切换副图指标：${item.label}`"
+        @click.stop="selectSubIndicator(item.key)"
+      >{{ item.label }}</button>
+    </div>
+
     <div v-if="chartState.errorMessage || chartState.emptyMessage" class="chart-status-overlay">
       <div class="chart-status-card">
         <div class="chart-status-title">
@@ -1684,6 +1729,37 @@ onUnmounted(() => {
   border-color: #5b8ff9;
 }
 .zoom-preset-btn.active {
+  color: #fff;
+  background: #2962ff;
+  border-color: #2962ff;
+}
+.sub-indicator-selector {
+  position: absolute;
+  top: 6px;
+  right: 250px;
+  z-index: 15;
+  display: flex;
+  gap: 3px;
+  pointer-events: all;
+}
+.sub-indicator-btn {
+  min-width: 45px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #a8adbd;
+  background: rgba(19, 23, 34, 0.72);
+  border: 1px solid #363a45;
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.sub-indicator-btn:hover {
+  color: #d1d4dc;
+  border-color: #5b8ff9;
+}
+.sub-indicator-btn.active {
   color: #fff;
   background: #2962ff;
   border-color: #2962ff;

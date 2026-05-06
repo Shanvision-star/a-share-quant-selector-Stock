@@ -1,15 +1,27 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import KlineChart from '@/components/KlineChart.vue'
 import StockInfoPanel from '@/components/StockInfoPanel.vue'
-import { getStockPrice, getStrategyResultsHistory, getStockInfo } from '@/api'
+import { getStockPrice, getStrategyResultsHistory, getStockInfo, prefetchKline } from '@/api'
+import { getNeighborCodes } from '@/components/klineRequest'
 import { useStrategyListStore } from '@/stores/strategyList'
+import { useManualSelectionStore } from '@/stores/manualSelection'
+import {
+  buildStrategyGroups,
+  fetchAllStrategyResultItems,
+  formatSimilarityPercent,
+} from '@/utils/strategyResults'
 
 const props = defineProps<{ code: string }>()
 const router = useRouter()
+const route = useRoute()
 const strategyListStore = useStrategyListStore()
+const manualSelectionStore = useManualSelectionStore()
 const KLINE_LIMIT_10Y = 2600
+const KLINE_PREFETCH_LIMIT = 500
+const KLINE_PREFETCH_RADIUS = 5
 
 const period = ref('daily')
 const adjust = ref<'qfq' | 'hfq' | 'nfq'>('qfq')
@@ -18,6 +30,7 @@ const stockInfo = ref<any>(null)
 const signals = ref<any[]>([])
 const strategyCard = ref<any>(null)
 const loading = ref(false)
+const showInitialLoading = computed(() => loading.value && !priceInfo.value)
 const showShortTermTrend = ref(true)
 const showBullBearLine = ref(true)
 
@@ -95,23 +108,134 @@ function stopCardResize() {
 
 // ─── 策略选股列表 ──────────────────────────────────────────────────────
 const strategyListItems = computed(() => strategyListStore.items)
-const strategyListDate = computed(() => strategyListStore.tradeDate)
+const strategyGroups = computed(() => buildStrategyGroups(strategyListItems.value))
+const sidebarSignalCount = computed(() => strategyListItems.value.length)
+const sidebarUniqueCount = computed(() => new Set(strategyListItems.value.map(item => item.code)).size)
+// strategyListDate was superseded by sidebarSelectedDate (date picker)
+const sidebarSelectedDate = computed({
+  get: () => strategyListStore.selectedDate,
+  set: (val: string) => { void selectSidebarDate(val) },
+})
+const sidebarAvailableDates = computed(() => strategyListStore.availableDates)
+const sidebarLoadingList = computed(() => strategyListStore.isLoadingList)
 
 function goToStockFromList(targetCode: string) {
+  prefetchKlineCode(targetCode)
   router.push(`/stocks/${targetCode}`)
+}
+
+function prefetchKlineCode(targetCode: string) {
+  if (!targetCode) return
+  void prefetchKline(targetCode, {
+    period: period.value,
+    limit: KLINE_PREFETCH_LIMIT,
+    adjust: adjust.value,
+  })
+}
+
+function scheduleKlinePrefetch(codes: string[]) {
+  const targets = Array
+    .from(new Set(codes.filter(code => code && code !== props.code)))
+    .slice(0, KLINE_PREFETCH_RADIUS * 2)
+
+  if (!targets.length || typeof window === 'undefined') return
+
+  const run = () => {
+    for (const targetCode of targets) {
+      prefetchKlineCode(targetCode)
+    }
+  }
+
+  const requestIdleCallback = (window as any).requestIdleCallback
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(run, { timeout: 1200 })
+  } else {
+    window.setTimeout(run, 120)
+  }
+}
+
+function prefetchAroundCode(centerCode: string) {
+  const codes = strategyListItems.value.map(item => item.code)
+  scheduleKlinePrefetch(getNeighborCodes(codes, centerCode, KLINE_PREFETCH_RADIUS))
+}
+
+function prefetchStrategyItem(item: { code?: string }) {
+  if (item?.code) {
+    scheduleKlinePrefetch([item.code])
+  }
 }
 
 onMounted(() => {
   loadAll(props.code)
-  // 从非策略结果页面直接进入时，自动加载最新策略列表填充右侧面板
-  if (!strategyListStore.items.length) {
-    loadDefaultStrategyList()
-  }
+  void initStrategySidebar()
 })
+
+async function initStrategySidebar() {
+  // 加载可用交易日列表（供右侧日期选择器使用）
+  await strategyListStore.fetchAvailableDates(30)
+  // 若 route 带有 date 参数，优先按该日期加载侧栏列表；否则加载最新有结果日期
+  const routeDate = route.query.date as string | undefined
+  if (routeDate) {
+    await selectSidebarDate(routeDate)
+  } else if (strategyListStore.selectedDate) {
+    await selectSidebarDate(strategyListStore.selectedDate)
+  } else if (!strategyListStore.items.length) {
+    await loadDefaultStrategyList()
+    if (strategyListStore.selectedDate) {
+      await manualSelectionStore.fetchByDate(strategyListStore.selectedDate)
+    }
+  }
+}
+
+async function selectSidebarDate(date: string) {
+  await strategyListStore.fetchListByDate(date)
+  await manualSelectionStore.fetchByDate(date)
+}
+
+async function toggleManualSelection(item: any, checked: boolean) {
+  const selectionDate = strategyListStore.selectedDate || item.trade_date || item.signal_date
+  if (!selectionDate) {
+    ElMessage.warning('请先选择日期')
+    return
+  }
+  try {
+    if (checked) {
+      await manualSelectionStore.add({
+        selection_date: selectionDate,
+        code: item.code,
+        name: item.name || '',
+        strategy_name: item.strategy_name || '',
+        source_trade_date: item.trade_date || selectionDate,
+        source_signal_date: item.signal_date || item.trade_date || selectionDate,
+        source_payload: item,
+      })
+      ElMessage.success(`${item.code} 已加入人工选股池`)
+    } else {
+      await manualSelectionStore.remove(selectionDate, item.code)
+      ElMessage.success(`${item.code} 已移出人工选股池`)
+    }
+  } catch (error) {
+    console.error('人工选股保存失败', error)
+    ElMessage.error('人工选股保存失败')
+  }
+}
 
 watch(() => props.code, (newCode) => {
   loadAll(newCode)
 })
+
+watch(
+  () => [
+    strategyListItems.value.map(item => item.code).join(','),
+    props.code,
+    period.value,
+    adjust.value,
+  ],
+  () => {
+    prefetchAroundCode(props.code)
+  },
+  { flush: 'post' },
+)
 
 // 个股扩展信息客户端缓存（行业/地区/经营范围/概念标签，同一股票只请求一次）
 const _stockInfoCache = new Map<string, any>()
@@ -150,18 +274,20 @@ async function loadAll(code: string) {
 /** 当 store 为空时（例如从首页或直接导航），自动拉取最新策略结果填右侧列表 */
 async function loadDefaultStrategyList() {
   try {
-    const res = await getStrategyResultsHistory({
-      strategy: 'all',
-      per_page: 100,
-      sort_by: 'run_started_at',
-      sort_order: 'desc',
-    })
-    const items: any[] = res.data.data?.items || []
+    const items = await fetchAllStrategyResultItems(
+      async (params) => {
+        const res = await getStrategyResultsHistory(params as any)
+        return res.data.data || {}
+      },
+      {
+        strategy: 'all',
+        sort_by: 'run_started_at',
+        sort_order: 'desc',
+      },
+      { pageSize: 200 },
+    )
     if (items.length) {
-      const uniqueList = Array.from(
-        new Map(items.map((i: any) => [i.code, i])).values(),
-      ) as any[]
-      strategyListStore.setList(uniqueList, 'all', items[0]?.trade_date || '')
+      strategyListStore.setList(items as any[], 'all', items[0]?.signal_date || items[0]?.trade_date || '')
     }
   } catch (e) {
     console.error('自动加载策略列表失败', e)
@@ -202,10 +328,14 @@ async function loadSignals(code: string) {
 function onPeriodChange(nextPeriod: string) {
   period.value = nextPeriod
 }
+
+function formatListSimilarity(score: unknown): string {
+  return formatSimilarityPercent(score)
+}
 </script>
 
 <template>
-  <div class="stock-detail" v-loading="loading">
+  <div class="stock-detail" v-loading="showInitialLoading">
     <!-- ══ 左侧：个股信息面板 ═══════════════════════════════════════════ -->
     <div
       class="panel-aside panel-left"
@@ -304,24 +434,58 @@ function onPeriodChange(nextPeriod: string) {
     >
       <div class="slp-header">
         <span class="slp-title">策略选股列表</span>
-        <span class="slp-meta" v-if="strategyListDate">{{ strategyListDate }}</span>
-        <span class="slp-count">{{ strategyListItems.length }} 只</span>
-      </div>
-      <div class="slp-scroll" v-if="strategyListItems.length">
-        <div
-          v-for="item in strategyListItems"
-          :key="item.code"
-          class="slp-item"
-          :class="{ active: item.code === code }"
-          @click="goToStockFromList(item.code)"
+        <el-select
+          v-model="sidebarSelectedDate"
+          placeholder="选择日期"
+          size="small"
+          class="slp-date-select"
+          :loading="strategyListStore.isLoadingDates"
         >
-          <span class="slp-code">{{ item.code }}</span>
-          <span class="slp-name">{{ item.name }}</span>
-          <span class="slp-date">{{ item.signal_date || item.trade_date }}</span>
+          <el-option
+            v-for="d in sidebarAvailableDates"
+            :key="d"
+            :label="d"
+            :value="d"
+          />
+        </el-select>
+        <span class="slp-count" v-if="!sidebarLoadingList">
+          {{ sidebarUniqueCount }} 只 / {{ sidebarSignalCount }} 条
+        </span>
+      </div>
+      <div class="slp-scroll" v-if="!sidebarLoadingList && strategyGroups.length">
+        <div v-for="group in strategyGroups" :key="group.key" class="slp-group">
+          <div class="slp-group-head">
+            <span>{{ group.label }}</span>
+            <em>{{ group.uniqueCount }} 只 / {{ group.signalCount }} 条</em>
+          </div>
+          <div
+            v-for="item in group.items"
+            :key="`${group.key}-${item.code}`"
+            class="slp-item"
+            :class="{ active: item.code === code }"
+            @mouseenter="prefetchStrategyItem(item)"
+            @click="goToStockFromList(item.code)"
+          >
+            <el-checkbox
+              class="slp-check"
+              :model-value="manualSelectionStore.isSelected(item.code)"
+              :disabled="manualSelectionStore.savingCodes.has(item.code)"
+              title="加入人工选股池"
+              @click.stop
+              @change="(checked: any) => toggleManualSelection(item, Boolean(checked))"
+            />
+            <span class="slp-code">{{ item.code }}</span>
+            <span class="slp-name">{{ item.name }}</span>
+            <span class="slp-sim">{{ formatListSimilarity(item.similarity_score) }}</span>
+            <span class="slp-date">{{ item.signal_date || item.trade_date }}</span>
+          </div>
         </div>
       </div>
+      <div class="slp-empty" v-else-if="sidebarLoadingList">
+        <span>加载中...</span>
+      </div>
       <div class="slp-empty" v-else>
-        <span>加载策略选股中...</span>
+        <span>该日期无策略结果</span>
       </div>
     </div>
   </div>
@@ -478,17 +642,25 @@ function onPeriodChange(nextPeriod: string) {
 /* ─── 右侧股票列表 ────────────────────────────────────────────────── */
 .slp-header {
   flex-shrink: 0;
-  padding: 10px 12px 8px;
+  padding: 8px 10px 6px;
   border-bottom: 1px solid #ebeef5;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
   background: #f5f7fa;
 }
 .slp-title {
   font-size: 13px;
   font-weight: 600;
   color: #303133;
+  margin-right: auto;
+}
+.slp-date-select {
+  width: 110px;
+}
+:deep(.slp-date-select .el-input__wrapper) {
+  padding: 0 6px;
 }
 .slp-meta {
   font-size: 11px;
@@ -502,14 +674,41 @@ function onPeriodChange(nextPeriod: string) {
   flex: 1;
   overflow-y: auto;
 }
+.slp-group {
+  border-bottom: 1px solid #ebeef5;
+}
+.slp-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  background: #eef5ff;
+  border-bottom: 1px solid #d9ecff;
+}
+.slp-group-head span {
+  font-size: 12px;
+  font-weight: 600;
+  color: #303133;
+}
+.slp-group-head em {
+  font-size: 11px;
+  color: #909399;
+  font-style: normal;
+  white-space: nowrap;
+}
 .slp-item {
   padding: 7px 10px;
   cursor: pointer;
   border-bottom: 1px solid #f0f0f0;
   transition: background 0.15s;
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2px;
+  grid-template-columns: 22px minmax(62px, 1fr) minmax(64px, 1fr);
+  gap: 2px 4px;
+  align-items: center;
 }
 .slp-item:hover {
   background-color: #e6f4ff;
@@ -523,6 +722,15 @@ function onPeriodChange(nextPeriod: string) {
   font-weight: 600;
   color: #409eff;
 }
+.slp-check {
+  grid-row: 1 / span 2;
+  align-self: center;
+  justify-self: center;
+  height: 16px;
+}
+:deep(.slp-check .el-checkbox__label) {
+  display: none;
+}
 .slp-name {
   font-size: 12px;
   color: #606266;
@@ -530,10 +738,15 @@ function onPeriodChange(nextPeriod: string) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.slp-sim {
+  font-size: 11px;
+  color: #909399;
+  text-align: right;
+}
 .slp-date {
   font-size: 11px;
   color: #909399;
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
 }
 .slp-empty {
   padding: 24px 12px;

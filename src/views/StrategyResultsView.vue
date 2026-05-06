@@ -13,6 +13,11 @@ import { useUpdateJobStore } from '@/stores/updateJob'
 import { useQueryStateStore } from '@/stores/queryState'
 import TxtLibraryPanel from '@/components/TxtLibraryPanel.vue'
 import { createRequestManager, isAbortError } from '@/api/requestManager'
+import {
+  buildStrategyGroups,
+  fetchAllStrategyResultItems,
+  formatSimilarityPercent,
+} from '@/utils/strategyResults'
 
 const route = useRoute()
 const router = useRouter()
@@ -37,6 +42,7 @@ const resultsPageSize = computed(() => queryStateStore.results.perPage)
 const resultsLoading = ref(false)
 const sortBy = computed(() => queryStateStore.results.sortBy)
 const sortOrder = computed(() => queryStateStore.results.sortOrder)
+const resultGroups = computed(() => buildStrategyGroups(results.value as any[]))
 
 // ─── 筛选条件 ───
 const activeStrategy = computed({
@@ -178,35 +184,41 @@ async function loadCacheStatus() {
   }
 }
 
+function buildResultsQueryParams(overrides: Record<string, unknown> = {}) {
+  const params: Record<string, unknown> = {
+    strategy: activeStrategy.value,
+    ...overrides,
+  }
+  if (filterKeyword.value) params.keyword = filterKeyword.value
+  const effectiveDateRange = filterDateRange.value || (requestedTradeDate.value
+    ? [requestedTradeDate.value, requestedTradeDate.value]
+    : null)
+  if (effectiveDateRange) {
+    params.start_date = effectiveDateRange[0]
+    params.end_date = effectiveDateRange[1]
+  }
+  if (filterJRange.value) {
+    params.min_j_value = filterJRange.value[0]
+    params.max_j_value = filterJRange.value[1]
+  }
+  if (filterSimilarityRange.value) {
+    params.min_similarity = filterSimilarityRange.value[0]
+    params.max_similarity = filterSimilarityRange.value[1]
+  }
+  params.sort_by = sortBy.value
+  params.sort_order = sortOrder.value === 'ascending' ? 'asc' : 'desc'
+  return params
+}
+
 // ─── 加载正式结果 ───
 async function loadResults() {
   const controller = requestManager.start('results:list')
   resultsLoading.value = true
   try {
-    const params: any = {
-      strategy: activeStrategy.value,
+    const params = buildResultsQueryParams({
       page: resultsPage.value,
       per_page: resultsPageSize.value,
-    }
-    if (filterKeyword.value) params.keyword = filterKeyword.value
-    const effectiveDateRange = filterDateRange.value || (requestedTradeDate.value
-      ? [requestedTradeDate.value, requestedTradeDate.value]
-      : null)
-    if (effectiveDateRange) {
-      params.start_date = effectiveDateRange[0]
-      params.end_date = effectiveDateRange[1]
-    }
-    if (filterJRange.value) {
-      params.min_j_value = filterJRange.value[0]
-      params.max_j_value = filterJRange.value[1]
-    }
-    if (filterSimilarityRange.value) {
-      params.min_similarity = filterSimilarityRange.value[0]
-      params.max_similarity = filterSimilarityRange.value[1]
-    }
-    params.sort_by = sortBy.value
-    params.sort_order = sortOrder.value === 'ascending' ? 'asc' : 'desc'
-
+    })
     const res = await getStrategyResultsHistory(params, { signal: controller.signal })
     if (!requestManager.isCurrent('results:list', controller)) return
     const data = res.data.data || {}
@@ -444,11 +456,35 @@ function onSortChange({ prop, order }: { prop: string; order: string | null }) {
   loadResults()
 }
 
+async function hydrateFullStrategyListForDetail() {
+  try {
+    const allItems = await fetchAllStrategyResultItems(
+      async (params) => {
+        const res = await getStrategyResultsHistory(params as any)
+        return res.data.data || {}
+      },
+      buildResultsQueryParams(),
+      { pageSize: 200 },
+    )
+    strategyListStore.setList(
+      allItems as any[],
+      activeStrategy.value,
+      requestedTradeDate.value || (filterDateRange.value?.[0] ?? ''),
+    )
+  } catch (error) {
+    console.error('[StrategyResultsView] 预加载完整策略列表失败', error)
+  }
+}
+
 function goToStock(code: string) {
-  // 保存当前结果列表到 store，供 K 线详情页右侧展示
-  const uniqueList = Array.from(new Map(results.value.map((item: any) => [item.code, item])).values())
-  strategyListStore.setList(uniqueList, activeStrategy.value, requestedTradeDate.value || (filterDateRange.value?.[0] ?? ''))
+  // 先使用当前页结果快速回填，再异步补全完整分页结果，避免右侧列表被 50 条截断。
+  strategyListStore.setList(
+    results.value as any[],
+    activeStrategy.value,
+    requestedTradeDate.value || (filterDateRange.value?.[0] ?? ''),
+  )
   router.push(`/stocks/${code}`)
+  void hydrateFullStrategyListForDetail()
 }
 
 function getStatusType(s: string) {
@@ -584,10 +620,54 @@ function formatDuration(start: string, end?: string) {
     <!-- 区块 D：正式结果表 -->
     <div class="results-section" v-loading="resultsLoading">
       <h3>正式结果 (共 {{ resultsTotal }} 条信号，{{ resultsUniqueTotal }} 只股票)</h3>
+      <div class="results-note" v-if="activeStrategy === 'all'">
+        全部策略下方按策略分组展示；每组会按股票代码去重，顶部总数仍保留原始信号条数，便于识别重合。
+      </div>
       <div class="results-note" v-if="requestedTradeDate && !filterDateRange">
         当前默认展示 {{ requestedTradeDate }} 的最新执行结果；如需反查其他日期，可直接使用上方日期筛选或下方运行记录。
       </div>
+      <div class="strategy-group-overview" v-if="activeStrategy === 'all' && resultGroups.length">
+        <div v-for="group in resultGroups" :key="group.key" class="strategy-group-card">
+          <span>{{ group.label }}</span>
+          <strong>{{ group.uniqueCount }} 只</strong>
+          <em>{{ group.signalCount }} 条，重合 {{ group.overlapCount }} 条</em>
+        </div>
+      </div>
+      <template v-if="activeStrategy === 'all' && resultGroups.length">
+        <div v-for="group in resultGroups" :key="group.key" class="result-group-section">
+          <h4>{{ group.label }}（当前页 {{ group.signalCount }} 条信号，{{ group.uniqueCount }} 只股票）</h4>
+          <el-table
+            :data="group.items"
+            stripe
+            size="small"
+            style="width: 100%"
+            @row-click="(row: any) => goToStock(row.code)"
+          >
+            <el-table-column prop="code" label="代码" width="90">
+              <template #default="{ row }">
+                <el-link type="primary">{{ row.code }}</el-link>
+              </template>
+            </el-table-column>
+            <el-table-column prop="name" label="名称" width="100" />
+            <el-table-column prop="category" label="分类" width="110" />
+            <el-table-column prop="signal_date" label="信号日期" width="110" />
+            <el-table-column prop="trigger_price" label="触发价" width="90">
+              <template #default="{ row }">{{ row.trigger_price?.toFixed(2) ?? '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="j_value" label="J值" width="70">
+              <template #default="{ row }">{{ row.j_value?.toFixed(1) ?? '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="similarity_score" label="相似度" width="80">
+              <template #default="{ row }">
+                {{ formatSimilarityPercent(row.similarity_score) }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="reason" label="原因" show-overflow-tooltip />
+          </el-table>
+        </div>
+      </template>
       <el-table
+        v-else
         :data="results"
         stripe
         style="width: 100%"
@@ -615,7 +695,7 @@ function formatDuration(start: string, end?: string) {
         </el-table-column>
         <el-table-column prop="similarity_score" label="相似度" width="80" sortable="custom">
           <template #default="{ row }">
-            {{ row.similarity_score ? (row.similarity_score * 100).toFixed(0) + '%' : '-' }}
+            {{ formatSimilarityPercent(row.similarity_score) }}
           </template>
         </el-table-column>
         <el-table-column prop="reason" label="原因" show-overflow-tooltip />
@@ -687,7 +767,7 @@ function formatDuration(start: string, end?: string) {
 
     <!-- 区块 E：通达信 TXT 文件库 -->
     <div id="txt-library" ref="txtSectionRef">
-      <TxtLibraryPanel />
+      <TxtLibraryPanel :strategy="activeStrategy" :date="requestedTradeDate" />
     </div>
 
     <!-- 作业详情抽屉 -->
@@ -837,6 +917,48 @@ function formatDuration(start: string, end?: string) {
   background: #f4faff;
   color: #606266;
   font-size: 13px;
+}
+
+.strategy-group-overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.strategy-group-card {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.strategy-group-card span {
+  font-size: 12px;
+  color: #606266;
+}
+
+.strategy-group-card strong {
+  font-size: 16px;
+  color: #303133;
+}
+
+.strategy-group-card em {
+  font-size: 12px;
+  color: #909399;
+  font-style: normal;
+}
+
+.result-group-section {
+  margin-bottom: 16px;
+}
+
+.result-group-section h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #303133;
 }
 
 .pagination-row {

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import * as echarts from 'echarts'
-import { getKline, getIntradayKline } from '@/api'
+import { getCachedKlineResponse, getKline, getIntradayKline } from '@/api'
+import type { KlineAdjust } from '@/api'
 import { createRequestManager, isAbortError } from '@/api/requestManager'
-import { buildMainKlineRequestKey } from '@/components/klineRequest'
+import { buildMainKlineRequestKey, selectFastKlineLimit, shouldShowBlockingKlineLoading } from '@/components/klineRequest'
 
 const props = withDefaults(defineProps<{
   code: string
@@ -31,6 +32,19 @@ let pendingResizeFrame: number | null = null
 let pendingGridFrame: number | null = null
 let isApplyingOption = false
 
+/** 当前渲染的K线数组（供区间统计使用） */
+const renderedBars = ref<any[]>([])
+
+interface CursorLatestChange {
+  fromDate: string
+  toDate: string
+  bars: number
+  change: number
+  changePct: number
+}
+
+const cursorLatestChange = ref<CursorLatestChange | null>(null)
+
 // ── 时间跨度快速缩放预设 ─────────────────────────────────────────────────
 // 日线预设（交易日近似：1月≈22根，1年≈252根）
 // 周线预设（1年≈52根，3年≈156根）
@@ -55,6 +69,8 @@ const zoomPresets = computed(() =>
 )
 let renderSeq = 0
 const loading = ref(false)
+const hasRenderedChart = ref(false)
+const showBlockingLoading = computed(() => shouldShowBlockingKlineLoading(loading.value, hasRenderedChart.value))
 const containerHeight = ref(600)
 const requestManager = createRequestManager()
 const chartState = reactive({
@@ -69,6 +85,7 @@ const TOP_MARGIN = 40
 const BOTTOM_MARGIN = 55   // 增大底部留白，避免横向时间轴与 dataZoom 滑块重叠
 const PANEL_GAP = 10
 const MIN_PANEL_PX = 40
+const EXPANDED_MAIN_RATIO = 0.48
 
 // 五个面板的高度比例（加起来 = 1.0）
 // main=主图, volume=成交量, adjVolume=还原成交量, kdj, macd
@@ -81,15 +98,32 @@ const panelRatios = reactive<Record<PanelKey, number>>({
   macd: 0.05,
 })
 
+function getEffectivePanelRatios(): Record<PanelKey, number> {
+  if (!expandedSubPanel.value) {
+    return { ...panelRatios }
+  }
+
+  const mainRatio = Math.min(panelRatios.main, EXPANDED_MAIN_RATIO)
+  const subBudget = Math.max(0.05, 1 - mainRatio)
+  return {
+    main: mainRatio,
+    volume: expandedSubPanel.value === 'volume' ? subBudget : 0,
+    adjVolume: expandedSubPanel.value === 'adjVolume' ? subBudget : 0,
+    kdj: expandedSubPanel.value === 'kdj' ? subBudget : 0,
+    macd: expandedSubPanel.value === 'macd' ? subBudget : 0,
+  }
+}
+
 function getUsableHeight() {
   return containerHeight.value - TOP_MARGIN - BOTTOM_MARGIN - (PANEL_KEYS.length - 1) * PANEL_GAP
 }
 
 function computeGrids() {
   const usable = getUsableHeight()
+  const effectiveRatios = getEffectivePanelRatios()
   let top = TOP_MARGIN
   return PANEL_KEYS.map((key) => {
-    const h = panelRatios[key] * usable
+    const h = effectiveRatios[key] * usable
     const grid = { left: 60, right: 60, top, height: h }
     top += h + PANEL_GAP
     return grid
@@ -99,21 +133,26 @@ function computeGrids() {
 // ── 副图左上角指标名称标签（与面板高度联动，拖拽时自动更新）─────────────
 const subPanelLabels = computed(() => {
   const grids = computeGrids()
-  return [
+  const labels = [
     { key: 'volume' as PanelKey,    name: '成交量',    top: grids[1].top + 3 },
     { key: 'adjVolume' as PanelKey, name: '还原成交量', top: grids[2].top + 3 },
     { key: 'kdj' as PanelKey,       name: 'KDJ',       top: grids[3].top + 3 },
     { key: 'macd' as PanelKey,      name: 'MACD',      top: grids[4].top + 3 },
   ]
+  return expandedSubPanel.value
+    ? labels.filter(label => label.key === expandedSubPanel.value)
+    : labels
 })
 
 // 分割线的 CSS top 位置（像素）
 const dividerPositions = computed(() => {
+  if (expandedSubPanel.value) return []
   const usable = getUsableHeight()
+  const effectiveRatios = getEffectivePanelRatios()
   const positions: number[] = []
   let top = TOP_MARGIN
   for (let i = 0; i < PANEL_KEYS.length - 1; i++) {
-    top += panelRatios[PANEL_KEYS[i]] * usable
+    top += effectiveRatios[PANEL_KEYS[i]] * usable
     positions.push(top)
     top += PANEL_GAP
   }
@@ -144,13 +183,25 @@ function onDrag(event: MouseEvent) {
   const lowerKey = PANEL_KEYS[dragIndex + 1]
   const minRatio = MIN_PANEL_PX / usable
 
-  const newUpper = dragStartRatios[upperKey] + deltaRatio
-  const newLower = dragStartRatios[lowerKey] - deltaRatio
-
-  if (newUpper >= minRatio && newLower >= minRatio) {
-    panelRatios[upperKey] = newUpper
-    panelRatios[lowerKey] = newLower
-    scheduleGridUpdate()
+  if (dragIndex === 0) {
+    // 主图与第一个副图之间：主图 <-> 第一副图互换
+    const newUpper = dragStartRatios[upperKey] + deltaRatio
+    const newLower = dragStartRatios[lowerKey] - deltaRatio
+    if (newUpper >= minRatio && newLower >= minRatio) {
+      panelRatios[upperKey] = newUpper
+      panelRatios[lowerKey] = newLower
+      scheduleGridUpdate()
+    }
+  } else {
+    // 副图之间：只在副图预算池内重新分配，不影响主图
+    // 拖动 divider 上方面板扩大/缩小，下方面板同等补偿
+    const newUpper = dragStartRatios[upperKey] + deltaRatio
+    const newLower = dragStartRatios[lowerKey] - deltaRatio
+    if (newUpper >= minRatio && newLower >= minRatio) {
+      panelRatios[upperKey] = newUpper
+      panelRatios[lowerKey] = newLower
+      scheduleGridUpdate()
+    }
   }
 }
 
@@ -190,6 +241,62 @@ function formatSignalMarkLabel(params: any): string {
   return labelValue == null ? '' : String(labelValue)
 }
 
+function updateCursorLatestChange(rawIndex: unknown) {
+  const bars = renderedBars.value
+  if (!bars.length) {
+    cursorLatestChange.value = null
+    return
+  }
+  const index = Math.max(0, Math.min(bars.length - 1, Math.round(Number(rawIndex))))
+  if (!Number.isFinite(index)) {
+    cursorLatestChange.value = null
+    return
+  }
+  const fromBar = bars[index]
+  const latestBar = bars[bars.length - 1]
+  const baseClose = Number(fromBar?.close)
+  const latestClose = Number(latestBar?.close)
+  if (!Number.isFinite(baseClose) || !Number.isFinite(latestClose) || baseClose <= 0) {
+    cursorLatestChange.value = null
+    return
+  }
+  const change = latestClose - baseClose
+  cursorLatestChange.value = {
+    fromDate: fromBar.date,
+    toDate: latestBar.date,
+    bars: bars.length - 1 - index,
+    change,
+    changePct: (change / baseClose) * 100,
+  }
+}
+
+function shouldIgnoreChartPointerEvent(event: MouseEvent): boolean {
+  const target = event.target as HTMLElement | null
+  return !!target?.closest('button, .el-select, .zoom-presets, .panel-divider, .panel-label-row, .intraday-popup, .range-stats-popup')
+}
+
+function getPanelKeyByLocalY(localY: number): PanelKey | null {
+  const grids = computeGrids()
+  for (let i = 1; i < grids.length; i += 1) {
+    const grid = grids[i]
+    if (grid.height <= 0) continue
+    if (localY >= grid.top && localY <= grid.top + grid.height) {
+      return PANEL_KEYS[i]
+    }
+  }
+  return null
+}
+
+function onChartDoubleClick(event: MouseEvent) {
+  if (shouldIgnoreChartPointerEvent(event) || !wrapperRef.value) return
+  const rect = wrapperRef.value.getBoundingClientRect()
+  const panelKey = getPanelKeyByLocalY(event.clientY - rect.top)
+  if (panelKey && panelKey !== 'main') {
+    event.preventDefault()
+    toggleMaximizeSubPanel(panelKey)
+  }
+}
+
 function normalizeBar(rawBar: any) {
   const open = toFiniteNumber(rawBar?.open)
   const close = toFiniteNumber(rawBar?.close)
@@ -205,6 +312,8 @@ function normalizeBar(rawBar: any) {
     volume: volume === null ? null : volume,
     turnover: toFiniteNumber(rawBar?.turnover) ?? 0,
     amount: toFiniteNumber(rawBar?.amount) ?? 0,
+    vol_ratio_10d: toFiniteNumber(rawBar?.vol_ratio_10d) ?? null,
+    avg_volume_10d: toFiniteNumber(rawBar?.avg_volume_10d) ?? null,
   }
 }
 
@@ -314,9 +423,18 @@ async function renderChart() {
     }
 
     // 当前组件自己取 K 线数据，父组件只负责传入叠加用的策略信号和显示开关。
+    const fullKlineParams = {
+      period: props.period,
+      limit: props.limit,
+      adjust: props.adjust as KlineAdjust,
+    }
+    const hasFullKlineCache = !!getCachedKlineResponse(props.code, fullKlineParams)
+    const requestLimit = selectFastKlineLimit(props.limit, hasFullKlineCache)
+    const shouldWarmFullKline = requestLimit < props.limit
+    const requestParams = { ...fullKlineParams, limit: requestLimit }
     const res = await getKline(
       props.code,
-      { period: props.period, limit: props.limit, adjust: props.adjust as 'qfq' | 'hfq' | 'nfq' },
+      requestParams,
       { signal: controller.signal },
     )
     if (!requestManager.isCurrent(requestKey, controller)) return
@@ -329,9 +447,11 @@ async function renderChart() {
 
     if (!normalizedBars.length) {
       chart?.clear()
+      hasRenderedChart.value = false
       chartState.emptyMessage = '当前股票暂无可展示的K线数据。'
       return
     }
+    renderedBars.value = normalizedBars
 
     const indicators = data?.indicators || {}
 
@@ -435,9 +555,20 @@ async function renderChart() {
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'cross' },
-        backgroundColor: '#1e222d',
+        backgroundColor: 'rgba(20,30,45,0.92)',
         borderColor: '#363a45',
-        textStyle: { color: '#d1d4dc', fontSize: 12 },
+        padding: [6, 8],
+        textStyle: { color: '#d1d4dc', fontSize: 11, lineHeight: 14 },
+        confine: true,
+        position: (point: number[], _params: any, _dom: any, _rect: any, size: any) => {
+          const [px] = point
+          const { viewSize, contentSize } = size as { viewSize: number[]; contentSize: number[] }
+          const margin = 12
+          const right = px + margin
+          const left = px - contentSize[0] - margin
+          const x = right + contentSize[0] > viewSize[0] ? Math.max(0, left) : right
+          return [x, 8]
+        },
         formatter: (params: any): string => {
           if (!Array.isArray(params) || params.length === 0) return ''
           const idx = (params[0] as any)?.dataIndex as number
@@ -454,20 +585,24 @@ async function renderChart() {
           for (const p of params as any[]) {
             const sn: string = p?.seriesName ?? ''
             if ((sn.startsWith('MA') || sn === 'BBI' || sn === '\u77ed\u671f\u8d8b\u52bf\u7ebf' || sn === '\u77e5\u884c\u591a\u7a7a\u7ebf') && p.value != null) {
-              maLines += `<div><span style="color:${p.color}">●</span> ${sn}: ${Number(p.value).toFixed(2)}</div>`
+              maLines += `<tr><td style="color:${p.color};padding-right:6px">●${sn}</td><td style="text-align:right">${Number(p.value).toFixed(2)}</td></tr>`
             }
           }
           const turnoverStr = (bar as any).turnover > 0 ? `${((bar as any).turnover as number).toFixed(2)}%` : '-'
           const amountStr = (bar as any).amount > 0 ? `${((bar as any).amount as number).toFixed(2)}万` : '-'
-          return `<div style="min-width:190px;line-height:1.7">
-            <div style="font-weight:600;margin-bottom:4px;color:#d1d4dc">${bar.date}</div>
-            <div>开: ${(bar.open ?? 0).toFixed(2)}&nbsp; 高: <span style="color:#ef5350">${(bar.high ?? 0).toFixed(2)}</span></div>
-            <div>低: <span style="color:#26a69a">${(bar.low ?? 0).toFixed(2)}</span>&nbsp; 收: <span style="color:${changeColor}">${(bar.close ?? 0).toFixed(2)}</span></div>
-            <div>涨跌: <span style="color:${changeColor}">${changeStr} (${changePct}%)</span></div>
-            <div>成交量: ${(bar.volume ?? 0).toLocaleString()}</div>
-            <div>成交额: ${amountStr}</div>
-            <div>换手率: ${turnoverStr}</div>
-            ${maLines}
+          const volRatio = (bar as any).vol_ratio_10d
+          const volRatioColor = volRatio == null ? '#d1d4dc' : volRatio >= 1.5 ? '#ef5350' : volRatio < 1.0 ? '#26a69a' : '#d1d4dc'
+          const volRatioStr = volRatio != null ? `<span style="color:${volRatioColor}">x${volRatio.toFixed(2)}</span>` : ''
+          return `<div style="min-width:160px;font-size:11px">
+            <div style="font-weight:600;margin-bottom:3px;color:#d1d4dc">${bar.date}</div>
+            <table style="border-collapse:collapse;width:100%">
+              <tr><td>开</td><td style="text-align:right">${(bar.open ?? 0).toFixed(2)}</td><td style="padding-left:8px">高</td><td style="text-align:right;color:#ef5350">${(bar.high ?? 0).toFixed(2)}</td></tr>
+              <tr><td>低</td><td style="text-align:right;color:#26a69a">${(bar.low ?? 0).toFixed(2)}</td><td style="padding-left:8px">收</td><td style="text-align:right;color:${changeColor}">${(bar.close ?? 0).toFixed(2)}</td></tr>
+              <tr><td>涨跌</td><td colspan="3" style="text-align:right;color:${changeColor}">${changeStr} (${changePct}%)</td></tr>
+              <tr><td>量</td><td colspan="3" style="text-align:right">${(bar.volume ?? 0).toLocaleString()} ${volRatioStr}</td></tr>
+              <tr><td>额</td><td style="text-align:right">${amountStr}</td><td style="padding-left:8px">换手</td><td style="text-align:right">${turnoverStr}</td></tr>
+              ${maLines}
+            </table>
           </div>`
         },
       },
@@ -527,8 +662,8 @@ async function renderChart() {
       ],
       yAxis: [
         { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
-        { scale: true, gridIndex: 1, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
-        { scale: true, gridIndex: 2, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
+        { scale: false, min: 0, max: (v: any) => (v?.max ?? 0) * 1.05, gridIndex: 1, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
+        { scale: false, min: 0, max: (v: any) => (v?.max ?? 0) * 1.05, gridIndex: 2, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
         { scale: true, gridIndex: 3, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
         { scale: true, gridIndex: 4, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
       ],
@@ -604,10 +739,27 @@ async function renderChart() {
     }
 
     applyOptionWithFallback(option)
+    hasRenderedChart.value = true
+
+    if (shouldWarmFullKline) {
+      void getKline(props.code, fullKlineParams)
+        .then(() => {
+          if (seq === renderSeq) {
+            void safeRenderChart()
+          }
+        })
+        .catch((error) => {
+          if (!isAbortError(error)) {
+            console.warn('后台补全K线失败', error)
+          }
+        })
+    }
 
     // 日K点击开启分时K线弹窗（先清除旧监听防止重复注册）
     if (chart) {
       chart.off('click')
+      chart.off('updateAxisPointer')
+      chart.off('globalout')
       chart.on('click', 'series', (params: any) => {
         // 跳过 markPoint（信号箭头）点击，避免 dataIndex 对应错误的日期
         if (params.seriesName === 'Candles' && props.period === 'daily' && params.dataType !== 'markPoint') {
@@ -619,6 +771,14 @@ async function renderChart() {
             openIntradayPopup(date)
           }
         }
+      })
+      chart.on('updateAxisPointer', (event: any) => {
+        const axesInfo = Array.isArray(event?.axesInfo) ? event.axesInfo : []
+        const xAxisInfo = axesInfo.find((info: any) => info?.axisDim === 'x' && Number.isFinite(Number(info?.value)))
+        if (xAxisInfo) updateCursorLatestChange(xAxisInfo.value)
+      })
+      chart.on('globalout', () => {
+        cursorLatestChange.value = null
       })
     }
   } catch (error) {
@@ -647,7 +807,23 @@ const savedPanelRatios: Partial<Record<PanelKey, number>> = {
   macd: 0.17,
 }
 
+// ── 副图最大化模式 ──────────────────────────────────────────────────
+/** 当前最大化的副图面板（null = 无最大化） */
+const expandedSubPanel = ref<PanelKey | null>(null)
+
+/** 双击副图标签或副图区：在最大化与正常模式之间切换 */
+function toggleMaximizeSubPanel(key: PanelKey) {
+  collapsedPanels.delete(key)
+  expandedSubPanel.value = expandedSubPanel.value === key ? null : key
+  scheduleGridUpdate()
+}
+
 function togglePanelCollapse(key: PanelKey) {
+  // 若处于最大化模式，折叠按钮先退出最大化再折叠
+  if (expandedSubPanel.value !== null) {
+    toggleMaximizeSubPanel(expandedSubPanel.value)
+  }
+
   const usable = getUsableHeight()
   const minRatio = MIN_PANEL_PX / usable
 
@@ -696,6 +872,7 @@ watch(() => props.signals, () => {
 
 function setRenderError(error: any) {
   chart?.clear()
+  hasRenderedChart.value = false
   chartState.emptyMessage = ''
   chartState.errorMessage = `K线加载失败：${getErrorMessage(error)}`
   console.error('K线渲染失败', error)
@@ -920,7 +1097,8 @@ function renderIntradayChart(bars: any[]) {
         axisLabel: { color: '#787b86', fontSize: 10, formatter: (v: number) => v.toFixed(2) },
       },
       {
-        scale: true, gridIndex: 1, splitNumber: 2,
+        scale: false, min: 0, max: (v: any) => (v?.max ?? 0) * 1.05,
+        gridIndex: 1, splitNumber: 2,
         splitLine: { show: false },
         axisLabel: { color: '#787b86', fontSize: 9 },
       },
@@ -1005,11 +1183,162 @@ onUnmounted(() => {
 })
 
 defineExpose({ renderChart: safeRenderChart })
+
+// ── 长按区间统计 ─────────────────────────────────────────────────────────
+const LONG_PRESS_DELAY = 300 // ms
+let longPressTimer: ReturnType<typeof setTimeout> | null = null
+
+interface RangeStats {
+  barCount: number
+  startDate: string
+  endDate: string
+  priceChange: number        // %
+  high: number
+  low: number
+  amplitude: number          // %
+  bullTurnoverSum: number    // 阳线换手率累计 %
+  bearTurnoverSum: number    // 阴线换手率累计 %
+}
+
+const rangeSelecting = ref(false)
+const rangeAnchorIdx = ref<number | null>(null)
+const rangeCursorIdx = ref<number | null>(null)
+const rangeStats = ref<RangeStats | null>(null)
+const rangeStatsPos = ref({ x: 0, y: 0 })
+const rangeSelectionRect = ref({ left: 0, top: 0, width: 0, height: 0, visible: false })
+
+function getBarIdxFromPixel(clientX: number): number | null {
+  if (!chart || !wrapperRef.value) return null
+  const rect = wrapperRef.value.getBoundingClientRect()
+  const localX = clientX - rect.left
+  const result = chart.convertFromPixel({ gridIndex: 0 }, [localX, 0])
+  if (!Array.isArray(result) || result[0] == null) return null
+  const idx = Math.round(result[0] as number)
+  return Math.max(0, Math.min(renderedBars.value.length - 1, idx))
+}
+
+function computeRangeStats(a: number, b: number): RangeStats {
+  const bars = renderedBars.value
+  const lo = Math.min(a, b)
+  const hi = Math.max(a, b)
+  const slice = bars.slice(lo, hi + 1)
+  const startBar = slice[0]
+  const endBar = slice[slice.length - 1]
+  const priceChange = startBar?.close ? ((endBar.close - startBar.close) / startBar.close) * 100 : 0
+  const allHigh = Math.max(...slice.map((b: any) => b.high ?? 0))
+  const allLow = Math.min(...slice.map((b: any) => b.low ?? Infinity))
+  const amplitude = allLow > 0 ? ((allHigh - allLow) / allLow) * 100 : 0
+  let bullTurnover = 0, bearTurnover = 0
+  for (const bar of slice) {
+    const t = bar.turnover ?? 0
+    if ((bar.close ?? 0) >= (bar.open ?? 0)) bullTurnover += t
+    else bearTurnover += t
+  }
+  return {
+    barCount: slice.length,
+    startDate: startBar?.date ?? '',
+    endDate: endBar?.date ?? '',
+    priceChange,
+    high: allHigh,
+    low: allLow,
+    amplitude,
+    bullTurnoverSum: bullTurnover,
+    bearTurnoverSum: bearTurnover,
+  }
+}
+
+function updateSelectionRect(anchorIdx: number, cursorIdx: number) {
+  if (!chart || !wrapperRef.value) return
+  const lo = Math.min(anchorIdx, cursorIdx)
+  const hi = Math.max(anchorIdx, cursorIdx)
+  const p1 = chart.convertToPixel({ gridIndex: 0 }, [lo, 0])
+  const p2 = chart.convertToPixel({ gridIndex: 0 }, [hi, 0])
+  if (!p1 || !p2) return
+  // Get grid top/height from chart getOption
+  const option = chart.getOption() as any
+  const grid = Array.isArray(option?.grid) ? option.grid[0] : option?.grid
+  const topPx = typeof grid?.top === 'number' ? grid.top : 0
+  const heightPx = typeof grid?.height === 'number' ? grid.height : (wrapperRef.value.clientHeight - topPx - 55)
+  rangeSelectionRect.value = {
+    left: (p1 as number[])[0],
+    top: topPx,
+    width: Math.max(1, (p2 as number[])[0] - (p1 as number[])[0]),
+    height: heightPx,
+    visible: true,
+  }
+}
+
+function onChartMouseDown(e: MouseEvent) {
+  // Only trigger on the main chart area, ignore dividers
+  if (shouldIgnoreChartPointerEvent(e)) return
+  longPressTimer = setTimeout(() => {
+    rangeSelecting.value = true
+    const idx = getBarIdxFromPixel(e.clientX)
+    if (idx !== null) {
+      rangeAnchorIdx.value = idx
+      rangeCursorIdx.value = idx
+    }
+    longPressTimer = null
+  }, LONG_PRESS_DELAY)
+}
+
+function onChartMouseMove(e: MouseEvent) {
+  if (!rangeSelecting.value || rangeAnchorIdx.value === null) return
+  const idx = getBarIdxFromPixel(e.clientX)
+  if (idx !== null) {
+    rangeCursorIdx.value = idx
+    updateSelectionRect(rangeAnchorIdx.value, idx)
+  }
+}
+
+function onChartMouseUp(e: MouseEvent) {
+  if (longPressTimer !== null) {
+    clearTimeout(longPressTimer)
+    longPressTimer = null
+    return
+  }
+  if (!rangeSelecting.value) return
+  rangeSelecting.value = false
+  const a = rangeAnchorIdx.value
+  const b = rangeCursorIdx.value
+  if (a !== null && b !== null && a !== b) {
+    rangeStats.value = computeRangeStats(a, b)
+    if (wrapperRef.value) {
+      const rect = wrapperRef.value.getBoundingClientRect()
+      rangeStatsPos.value = {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      }
+    }
+  } else {
+    rangeSelectionRect.value = { ...rangeSelectionRect.value, visible: false }
+  }
+  rangeAnchorIdx.value = null
+  rangeCursorIdx.value = null
+}
+
+function closeRangeStats() {
+  rangeStats.value = null
+  rangeSelectionRect.value = { ...rangeSelectionRect.value, visible: false }
+}
+
+// Clean up long-press timer on unmount
+onUnmounted(() => {
+  if (longPressTimer !== null) clearTimeout(longPressTimer)
+})
 </script>
 
 <template>
-  <div class="kline-chart-wrapper" ref="wrapperRef">
-    <div ref="chartRef" v-loading="loading" class="kline-chart"></div>
+  <div
+    class="kline-chart-wrapper"
+    ref="wrapperRef"
+    @mousedown="onChartMouseDown"
+    @mousemove="onChartMouseMove"
+    @mouseup="onChartMouseUp"
+    @mouseleave="onChartMouseUp"
+    @dblclick="onChartDoubleClick"
+  >
+    <div ref="chartRef" v-loading="showBlockingLoading" class="kline-chart"></div>
 
     <!-- 时间跨度快速缩放按钮（右上角浮层）-->
     <div class="zoom-presets">
@@ -1035,21 +1364,37 @@ defineExpose({ renderChart: safeRenderChart })
       </div>
     </div>
 
-    <!-- 副图左上角：指标名称 + 一键折叠按钮（reactive，拖拽时自动跟随）；双击可展开折叠面板 -->
+    <div
+      v-if="cursorLatestChange"
+      class="cursor-latest-change"
+      :class="{ positive: cursorLatestChange.change >= 0, negative: cursorLatestChange.change < 0 }"
+    >
+      <span>{{ cursorLatestChange.fromDate }} → {{ cursorLatestChange.toDate }}</span>
+      <strong>{{ cursorLatestChange.change >= 0 ? '+' : '' }}{{ cursorLatestChange.change.toFixed(2) }}</strong>
+      <strong>{{ cursorLatestChange.changePct >= 0 ? '+' : '' }}{{ cursorLatestChange.changePct.toFixed(2) }}%</strong>
+      <span>{{ cursorLatestChange.bars }}根</span>
+    </div>
+
+    <!-- 副图左上角：指标名称 + 一键折叠按钮（reactive，拖拽时自动跟随）；双击可最大化/恢复该副图 -->
     <div
       v-for="label in subPanelLabels"
       :key="label.key"
       class="panel-label-row"
       :style="{ top: label.top + 'px' }"
-      @dblclick="togglePanelCollapse(label.key)"
+      @dblclick.stop="toggleMaximizeSubPanel(label.key)"
     >
       <span class="panel-label-text">{{ label.name }}</span>
+      <span
+        v-if="expandedSubPanel === label.key"
+        class="panel-maximize-badge"
+        title="双击恢复"
+      >⛶</span>
       <button
         class="panel-collapse-btn"
         :class="{ collapsed: collapsedPanels.has(label.key) }"
         type="button"
         :title="collapsedPanels.has(label.key) ? '展开' : '折叠'"
-        @click="togglePanelCollapse(label.key)"
+        @click.stop="togglePanelCollapse(label.key)"
       >{{ collapsedPanels.has(label.key) ? '▶' : '▼' }}</button>
     </div>
 
@@ -1090,6 +1435,68 @@ defineExpose({ renderChart: safeRenderChart })
       @mousedown="startDrag($event, i)"
     >
       <div class="divider-handle"></div>
+    </div>
+
+    <!-- 长按区间选择蒙层 -->
+    <div
+      v-if="rangeSelectionRect.visible"
+      class="range-selection-rect"
+      :style="{
+        left: rangeSelectionRect.left + 'px',
+        top: rangeSelectionRect.top + 'px',
+        width: rangeSelectionRect.width + 'px',
+        height: rangeSelectionRect.height + 'px',
+      }"
+    ></div>
+
+    <!-- 区间统计浮层 -->
+    <div
+      v-if="rangeStats"
+      class="range-stats-popup"
+      :style="{
+        left: Math.min(rangeStatsPos.x + 12, wrapperRef ? wrapperRef.clientWidth - 210 : 0) + 'px',
+        top: Math.max(rangeStatsPos.y - 20, 0) + 'px',
+      }"
+    >
+      <div class="range-stats-header">
+        <span>区间统计</span>
+        <button class="range-stats-close" type="button" @click.stop="closeRangeStats">×</button>
+      </div>
+      <div class="range-stats-row">
+        <span class="range-stats-label">区间</span>
+        <span class="range-stats-value">{{ rangeStats.startDate }} ~ {{ rangeStats.endDate }}</span>
+      </div>
+      <div class="range-stats-row">
+        <span class="range-stats-label">K线数</span>
+        <span class="range-stats-value">{{ rangeStats.barCount }} 根</span>
+      </div>
+      <div class="range-stats-row">
+        <span class="range-stats-label">区间涨幅</span>
+        <span
+          class="range-stats-value"
+          :style="{ color: rangeStats.priceChange >= 0 ? '#ef5350' : '#26a69a' }"
+        >{{ rangeStats.priceChange >= 0 ? '+' : '' }}{{ rangeStats.priceChange.toFixed(2) }}%</span>
+      </div>
+      <div class="range-stats-row">
+        <span class="range-stats-label">最高</span>
+        <span class="range-stats-value" style="color:#ef5350">{{ rangeStats.high.toFixed(2) }}</span>
+      </div>
+      <div class="range-stats-row">
+        <span class="range-stats-label">最低</span>
+        <span class="range-stats-value" style="color:#26a69a">{{ rangeStats.low.toFixed(2) }}</span>
+      </div>
+      <div class="range-stats-row">
+        <span class="range-stats-label">振幅</span>
+        <span class="range-stats-value">{{ rangeStats.amplitude.toFixed(2) }}%</span>
+      </div>
+      <div class="range-stats-row">
+        <span class="range-stats-label">阳线换手</span>
+        <span class="range-stats-value" style="color:#ef5350">{{ rangeStats.bullTurnoverSum.toFixed(2) }}%</span>
+      </div>
+      <div class="range-stats-row">
+        <span class="range-stats-label">阴线换手</span>
+        <span class="range-stats-value" style="color:#26a69a">{{ rangeStats.bearTurnoverSum.toFixed(2) }}%</span>
+      </div>
     </div>
   </div>
 </template>
@@ -1147,6 +1554,30 @@ defineExpose({ renderChart: safeRenderChart })
 .chart-status-retry:hover {
   background: #2563eb;
 }
+.cursor-latest-change {
+  position: absolute;
+  right: 64px;
+  bottom: 30px;
+  z-index: 18;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border: 1px solid #363a45;
+  border-radius: 4px;
+  background: rgba(30, 34, 45, 0.92);
+  color: #d1d4dc;
+  font-size: 11px;
+  line-height: 1.2;
+  pointer-events: none;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+}
+.cursor-latest-change.positive strong {
+  color: #ef5350;
+}
+.cursor-latest-change.negative strong {
+  color: #26a69a;
+}
 .panel-divider {
   position: absolute;
   left: 60px;
@@ -1170,6 +1601,61 @@ defineExpose({ renderChart: safeRenderChart })
   border-radius: 2px;
   background: rgba(120, 123, 134, 0.3);
   transition: background 0.15s, height 0.15s;
+}
+/* ── 长按区间选择 ────────────────────────────────────────── */
+.range-selection-rect {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(91, 143, 249, 0.12);
+  border: 1px solid rgba(91, 143, 249, 0.5);
+  z-index: 20;
+}
+.range-stats-popup {
+  position: absolute;
+  z-index: 40;
+  background: #1e222d;
+  border: 1px solid #363a45;
+  border-radius: 6px;
+  padding: 8px 10px;
+  min-width: 195px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  font-size: 12px;
+  color: #d1d4dc;
+}
+.range-stats-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #9598a1;
+  border-bottom: 1px solid #2a2e39;
+  padding-bottom: 5px;
+}
+.range-stats-close {
+  background: transparent;
+  border: none;
+  color: #787b86;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.range-stats-close:hover { color: #ef5350; }
+.range-stats-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.range-stats-label {
+  color: #787b86;
+  white-space: nowrap;
+}
+.range-stats-value {
+  font-weight: 500;
+  text-align: right;
 }
 /* ── 时间跨度缩放按钮 ─────────────────────────────────────────── */
 .zoom-presets {
@@ -1236,6 +1722,14 @@ defineExpose({ renderChart: safeRenderChart })
 }
 .panel-collapse-btn.collapsed {
   color: #5b8ff9;
+}
+.panel-maximize-badge {
+  font-size: 10px;
+  color: #f0a500;
+  margin-left: 2px;
+  cursor: pointer;
+  user-select: none;
+  line-height: 1;
 }
 /* ── 分时K线弹窗 ─────────────────────────────────────────── */
 .intraday-popup {

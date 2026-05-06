@@ -1,30 +1,66 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  getAvailableDates,
   getTxtDates,
   getTxtFiles,
   getTxtInfo,
+  getTxtSummary,
   generateTxtFile,
+  generateTxtFilesBatch,
   getTxtDownloadUrl,
 } from '@/api'
+
+type TxtStrategy = 'all' | 'b1' | 'b2' | 'bowl'
+
+const props = defineProps<{
+  strategy?: string
+  date?: string
+}>()
+
+function normalizeStrategy(value?: string): TxtStrategy {
+  return value === 'b1' || value === 'b2' || value === 'bowl' ? value : 'all'
+}
 
 const txtFiles = ref<any[]>([])
 const txtDates = ref<string[]>([])
 const txtFilterDate = ref<string>('')
-const txtStrategy = ref<'all' | 'b1' | 'b2' | 'bowl'>('all')
+const txtStrategy = ref<TxtStrategy>(normalizeStrategy(props.strategy))
 const txtGenerating = ref(false)
+const txtBatchGenerating = ref(false)
 const txtLoading = ref(false)
 const txtInfo = ref<{ storage_dir: string; relative_dir: string; filename_pattern: string } | null>(null)
+const txtSummary = ref<any>(null)
 
 const storageDirLabel = computed(() => txtInfo.value?.relative_dir || 'data/txt/web_export')
+const summaryDate = computed(() => txtFilterDate.value || props.date || txtSummary.value?.date || '')
+const hasSummary = computed(() => !!txtSummary.value && Number(txtSummary.value.signal_total || 0) > 0)
 
 onMounted(() => {
   loadTxtInfo()
   loadTxtDates()
   loadTxtFiles()
+  loadTxtSummary()
 })
+
+watch(
+  () => props.strategy,
+  (value) => {
+    txtStrategy.value = normalizeStrategy(value)
+  },
+  { immediate: true },
+)
+
+watch(
+  () => props.date,
+  (value) => {
+    if (value && !txtFilterDate.value) {
+      txtFilterDate.value = value
+      loadTxtSummary()
+    }
+  },
+  { immediate: true },
+)
 
 async function loadTxtInfo() {
   try {
@@ -58,19 +94,27 @@ async function loadTxtFiles() {
   }
 }
 
+async function loadTxtSummary() {
+  try {
+    const params: { date?: string } = {}
+    const targetDate = txtFilterDate.value || props.date || ''
+    if (targetDate) params.date = targetDate
+    const res = await getTxtSummary(params)
+    txtSummary.value = res.data.data || null
+  } catch (e) {
+    console.error('加载TXT统计失败', e)
+    txtSummary.value = null
+  }
+}
+
 async function onGenerateTxt() {
   txtGenerating.value = true
   try {
-    const dates = await getAvailableDates(1)
-    const latestDate = (dates.data.data || [])[0]
-    const targetDate = txtFilterDate.value || latestDate
+    const targetDate = txtFilterDate.value || props.date || ''
+    const params: { strategy: string; date?: string } = { strategy: txtStrategy.value }
+    if (targetDate) params.date = targetDate
 
-    if (!targetDate) {
-      ElMessage.warning('暂无可用策略结果，请先执行选股')
-      return
-    }
-
-    const res = await generateTxtFile({ strategy: txtStrategy.value, date: targetDate })
+    const res = await generateTxtFile(params)
     if (!res.data.success) {
       ElMessage.error(res.data.error || '生成失败')
       return
@@ -86,10 +130,39 @@ async function onGenerateTxt() {
     }
     await loadTxtFiles()
     await loadTxtDates()
+    await loadTxtSummary()
   } catch (e: any) {
     ElMessage.error('生成失败：' + (e?.message || '未知错误'))
   } finally {
     txtGenerating.value = false
+  }
+}
+
+async function onGenerateBatchTxt() {
+  txtBatchGenerating.value = true
+  try {
+    const params: { date?: string } = {}
+    const targetDate = txtFilterDate.value || props.date || ''
+    if (targetDate) params.date = targetDate
+    const res = await generateTxtFilesBatch(params)
+    if (!res.data.success) {
+      ElMessage.error(res.data.error || '生成失败')
+      return
+    }
+
+    const payload = res.data.data
+    const fileCount = Array.isArray(payload.files) ? payload.files.length : 0
+    const summary = payload.summary || {}
+    ElMessage.success(
+      `已生成 ${fileCount} 个分类TXT；最终 ${summary.unique_code_total || 0} 只股票，跨策略重合 ${summary.cross_strategy_overlap_count || 0} 只`,
+    )
+    await loadTxtFiles()
+    await loadTxtDates()
+    await loadTxtSummary()
+  } catch (e: any) {
+    ElMessage.error('批量生成失败：' + (e?.message || '未知错误'))
+  } finally {
+    txtBatchGenerating.value = false
   }
 }
 
@@ -99,6 +172,7 @@ function onDownloadTxt(filename: string) {
 
 function onTxtDateChange() {
   loadTxtFiles()
+  loadTxtSummary()
 }
 </script>
 
@@ -126,7 +200,25 @@ function onTxtDateChange() {
         <el-button type="primary" :loading="txtGenerating" @click="onGenerateTxt">
           生成TXT
         </el-button>
+        <el-button type="success" :loading="txtBatchGenerating" @click="onGenerateBatchTxt">
+          分类生成
+        </el-button>
         <el-button :loading="txtLoading" @click="loadTxtFiles">刷新列表</el-button>
+      </div>
+    </div>
+
+    <div v-if="hasSummary" class="txt-summary">
+      <div class="txt-summary-head">
+        <span>{{ summaryDate || txtSummary.date }} 导出统计</span>
+        <strong>{{ txtSummary.signal_total }} 条信号 / {{ txtSummary.unique_code_total }} 只股票</strong>
+        <em>跨策略重合 {{ txtSummary.cross_strategy_overlap_count }} 只</em>
+      </div>
+      <div class="txt-summary-grid">
+        <div v-for="item in txtSummary.strategies" :key="item.strategy" class="txt-summary-item">
+          <span>{{ item.strategy_label }}</span>
+          <strong>{{ item.unique_code_total }} 只</strong>
+          <em>{{ item.signal_total }} 条，重合 {{ item.overlap_signal_count }} 条</em>
+        </div>
       </div>
     </div>
 
@@ -189,6 +281,66 @@ function onTxtDateChange() {
 
 .txt-hint {
   margin-bottom: 12px;
+}
+
+.txt-summary {
+  margin-bottom: 12px;
+  border: 1px solid #d9ecff;
+  border-radius: 8px;
+  background: #f4faff;
+  overflow: hidden;
+}
+
+.txt-summary-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-bottom: 1px solid #d9ecff;
+  font-size: 13px;
+}
+
+.txt-summary-head span {
+  font-weight: 600;
+  color: #303133;
+}
+
+.txt-summary-head strong {
+  color: #409eff;
+}
+
+.txt-summary-head em {
+  color: #909399;
+  font-style: normal;
+}
+
+.txt-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.txt-summary-item {
+  padding: 10px 12px;
+  display: grid;
+  gap: 3px;
+  border-right: 1px solid #e8f4ff;
+}
+
+.txt-summary-item span {
+  font-size: 12px;
+  color: #606266;
+}
+
+.txt-summary-item strong {
+  font-size: 15px;
+  color: #303133;
+}
+
+.txt-summary-item em {
+  font-size: 12px;
+  color: #909399;
+  font-style: normal;
 }
 
 .txt-file-list {

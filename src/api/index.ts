@@ -9,6 +9,14 @@ interface RequestOptions {
   signal?: AbortSignal
 }
 
+export type KlineAdjust = 'qfq' | 'hfq' | 'nfq'
+
+export interface KlineRequestParams {
+  period?: string
+  limit?: number
+  adjust?: KlineAdjust
+}
+
 // 股票列表
 export const getStockList = (params: {
   page?: number
@@ -20,12 +28,72 @@ export const getStockList = (params: {
   api.get('/stock/list', { params, signal: options.signal })
 
 // K 线数据
-export const getKline = (code: string, params?: {
-  period?: string
-  limit?: number
-  adjust?: 'qfq' | 'hfq' | 'nfq'
-}, options: RequestOptions = {}) =>
-  api.get(`/kline/${code}`, { params, signal: options.signal })
+const DEFAULT_KLINE_PERIOD = 'daily'
+const DEFAULT_KLINE_LIMIT = 2600
+const DEFAULT_KLINE_ADJUST: KlineAdjust = 'qfq'
+const klineResponseCache = new Map<string, any>()
+const klinePendingRequests = new Map<string, Promise<any>>()
+
+function normalizeKlineParams(params?: KlineRequestParams): Required<KlineRequestParams> {
+  const limit = typeof params?.limit === 'number' && Number.isFinite(params.limit) && params.limit > 0
+    ? Math.floor(params.limit)
+    : DEFAULT_KLINE_LIMIT
+
+  return {
+    period: params?.period || DEFAULT_KLINE_PERIOD,
+    limit,
+    adjust: params?.adjust || DEFAULT_KLINE_ADJUST,
+  }
+}
+
+export function getKlineCacheKey(code: string, params?: KlineRequestParams): string {
+  const normalized = normalizeKlineParams(params)
+  return `${code}|${normalized.period}|${normalized.adjust}|${normalized.limit}`
+}
+
+export function clearKlineCache() {
+  klineResponseCache.clear()
+  klinePendingRequests.clear()
+}
+
+export function getCachedKlineResponse(code: string, params?: KlineRequestParams) {
+  return klineResponseCache.get(getKlineCacheKey(code, params))
+}
+
+export const getKline = (
+  code: string,
+  params?: KlineRequestParams,
+  options: RequestOptions = {},
+) => {
+  const normalizedParams = normalizeKlineParams(params)
+  const cacheKey = getKlineCacheKey(code, normalizedParams)
+  const cached = klineResponseCache.get(cacheKey)
+  if (cached) return Promise.resolve(cached)
+
+  const pending = klinePendingRequests.get(cacheKey)
+  if (pending) return pending
+
+  const request = api
+    .get(`/kline/${code}`, { params: normalizedParams, signal: options.signal })
+    .then((response) => {
+      klineResponseCache.set(cacheKey, response)
+      return response
+    })
+    .finally(() => {
+      if (klinePendingRequests.get(cacheKey) === request) {
+        klinePendingRequests.delete(cacheKey)
+      }
+    })
+
+  klinePendingRequests.set(cacheKey, request)
+
+  return request
+}
+
+export const prefetchKline = (
+  code: string,
+  params?: KlineRequestParams,
+) => getKline(code, params).catch(() => null)
 
 // 股票价格面板
 export const getStockPrice = (code: string) =>
@@ -60,9 +128,9 @@ export const getStrategyResultsHistory = (params?: {
   sort_by?: string; sort_order?: string;
 }, options: RequestOptions = {}) => api.get('/strategy/results/history', { params, signal: options.signal })
 
-// 有结果的交易日期
-export const getAvailableDates = (limit?: number) =>
-  api.get('/strategy/results/dates', { params: { limit } })
+// 有结果的日期（按信号日期优先）
+export const getAvailableDates = (limit?: number, strategy?: string) =>
+  api.get('/strategy/results/dates', { params: { limit, strategy } })
 
 // 策略缓存状态
 export const getStrategyCacheStatus = (
@@ -128,9 +196,17 @@ export const getTxtDates = () =>
 export const getTxtInfo = () =>
   api.get('/txt/info')
 
+/** 获取 TXT 导出统计摘要 */
+export const getTxtSummary = (params?: { date?: string }) =>
+  api.get('/txt/summary', { params })
+
 /** 从策略结果数据库生成通达信 TXT 文件 */
 export const generateTxtFile = (params: { strategy: string; date?: string }) =>
   api.post('/txt/generate', null, { params })
+
+/** 按策略分类批量生成通达信 TXT 文件 */
+export const generateTxtFilesBatch = (params?: { date?: string }) =>
+  api.post('/txt/generate-batch', null, { params })
 
 /** 返回下载链接（直接浏览器跳转） */
 export const getTxtDownloadUrl = (filename: string) =>
@@ -139,5 +215,74 @@ export const getTxtDownloadUrl = (filename: string) =>
 // 从内存缓存获取最新市值（后台刷新完成后调用）
 export const getMarketCap = (codes?: string[]) =>
   api.get('/market-cap', { params: codes?.length ? { codes: codes.join(',') } : undefined })
+
+// ─── 人工选股池 ───
+export interface ManualSelectionPayload {
+  selection_date: string
+  code: string
+  name?: string
+  strategy_name?: string
+  source_trade_date?: string
+  source_signal_date?: string
+  source_payload?: Record<string, any>
+  note?: string
+}
+
+export const getManualSelections = (params?: {
+  date?: string
+  start_date?: string
+  end_date?: string
+}) => api.get('/manual-selections', { params })
+
+export const getManualSelectionDates = (limit?: number) =>
+  api.get('/manual-selections/dates', { params: { limit } })
+
+export const saveManualSelection = (payload: ManualSelectionPayload) =>
+  api.post('/manual-selections', payload)
+
+export const deleteManualSelection = (date: string, code: string) =>
+  api.delete('/manual-selections', { params: { date, code } })
+
+// ─── 回测 ───
+export interface BacktestRequestPayload {
+  start_date: string
+  end_date: string
+  source: 'manual' | 'strategy' | 'codes'
+  strategy: 'all' | 'b1' | 'b2' | 'bowl'
+  selected_codes?: string[]
+  selected_candidates?: Array<{
+    code: string
+    name?: string
+    strategy_name?: string
+    trade_date?: string
+    signal_date?: string
+  }>
+  input_codes?: string[]
+  holding_days: number
+  buy_offset_days: number
+  buy_price: 'open' | 'close'
+  sell_price: 'open' | 'close'
+  fee_rate: number
+  slippage_rate: number
+  take_profit_pct?: number
+  stop_loss_pct?: number
+  max_positions_per_day: number
+  codes_fallback_to_start_date?: boolean
+  profit_run_enabled?: boolean
+  profit_trigger_pct?: number
+  profit_step_pct?: number
+  profit_sell_pct?: number
+  hold_above_short_trend_after_trigger?: boolean
+  enable_no_gain_exit?: boolean
+  no_gain_days?: number
+  exit_on_bull_bear_break?: boolean
+  exit_on_short_trend_break?: boolean
+  short_trend_break_days?: number
+  exit_on_short_trend_drawdown?: boolean
+  short_trend_drawdown_pct?: number
+}
+
+export const runBacktest = (payload: BacktestRequestPayload) =>
+  api.post('/backtest', payload)
 
 export default api

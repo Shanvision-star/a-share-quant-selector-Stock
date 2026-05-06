@@ -36,10 +36,10 @@ const logLines = ref<string[]>([])
 const logAreaRef = ref<HTMLElement | null>(null)
 
 const slowPathReasonText: Record<string, string> = {
-  time_gate: '时间门禁（盘中未启用快路径）',
+  time_gate: '快路径门禁（目标日不是最近已完成交易日）',
   missing_local_data: '本地无历史数据',
   gap_gt1: '缺口大于1个交易日',
-  missing_spot: '当日快照缺失',
+  missing_spot: '目标日快照缺失',
   suspended: '停牌或无成交',
   other: '其他原因',
 }
@@ -99,10 +99,7 @@ onMounted(async () => {
   if (route.query.init === '1') {
     ElMessage.info('检测到首次使用，更新任务会先执行全量初始化，再进入日更分流。')
   }
-  // 作业进行中时跳过慢查询，直接展示 store 里的进度即可
-  if (!updateJobStore.isRunning) {
-    await loadStatus()
-  }
+  await loadStatus()
 })
 
 async function loadStatus() {
@@ -200,6 +197,11 @@ async function startUpdate(autoRebuild: boolean = true) {
       for (const chunk of chunks) {
         consumeSseBlock(chunk)
       }
+    }
+
+    if (updateJobStore.isRunning) {
+      ElMessage.warning('作业连接已结束，已停止本地运行状态，请刷新状态确认结果。')
+      updateJobStore.reset()
     }
   } catch (e: any) {
     ElMessage.error('作业请求失败: ' + e.message)

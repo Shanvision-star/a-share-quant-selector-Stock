@@ -8,7 +8,7 @@
 
 - 远程仓库名称（remote name）：**Shanvision-star**（非默认 origin，核心注意点）
 
-- 推送分支：**master**
+- 推送分支：优先**web**
 
 - 代理配置（Clash）：地址 127.0.0.1，端口 7890（解决 GitHub 连接失败）
 
@@ -55,7 +55,7 @@ git config --global https.proxy http://127.0.0.1:7890
 ### 步骤 5：推送到 GitHub 远端仓库
 
 ```bash
-git push -u Shanvision-star master
+git push -u Shanvision-star web
 ```
 
 说明：首次推送需加 `-u`，绑定远程仓库和分支，后续推送可直接简化为 `git push Shanvision-star master`。

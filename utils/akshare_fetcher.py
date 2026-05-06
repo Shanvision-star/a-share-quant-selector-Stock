@@ -1,6 +1,21 @@
 """
 A股数据抓取模块 - 使用 akshare / 直接HTTP请求
 """
+import os
+import requests
+
+# ===== 代理补丁：必须在 import akshare 之前执行 =====
+# akshare 内部每次请求都会 new requests.Session()，在此拦截，使所有 Session 不走系统代理
+for _proxy_key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy'):
+    os.environ.pop(_proxy_key, None)
+_OriginalSession = requests.Session
+class _NoProxySession(_OriginalSession):
+    def __init__(self):
+        super().__init__()
+        self.trust_env = False
+requests.Session = _NoProxySession
+# =====================================================
+
 import akshare as ak
 import pandas as pd
 from datetime import datetime, timedelta
@@ -8,7 +23,6 @@ import time
 import sys
 from pathlib import Path
 import json
-import requests
 import random
 
 # ===================== 新增：并发库 =====================
@@ -19,12 +33,31 @@ import threading
 _MARKET_CAP_CACHE_EXPIRY_DAYS = 7
 _market_cap_cache_lock = threading.Lock()
 
+# ===== Baostock 全局连接（单例，非线程安全，须序列化调用）=====
+_bs_logged_in = False
+_bs_query_lock = threading.Lock()
+
+def _ensure_baostock_login():
+    """确保 baostock 已登录（仅登录一次，模块级单例）"""
+    global _bs_logged_in
+    if _bs_logged_in:
+        return True
+    try:
+        import baostock as _bs
+        lg = _bs.login()
+        if lg.error_code == '0':
+            _bs_logged_in = True
+    except Exception:
+        pass
+    return _bs_logged_in
+
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.csv_manager import CSVManager
 
 # 设置请求会话
 session = requests.Session()
+session.trust_env = False  # 不从环境变量读取代理
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/javascript, */*',
@@ -152,54 +185,106 @@ class AKShareFetcher:
         except Exception as e:
             print(f"  保存股票名称失败: {e}")
 
+    def _fetch_market_cap_eastmoney(self, target_date_str=None, _fallback_codes=None):
+        """批量获取全市场市值：优先东方财富，不可达时自动降级到腾讯接口。
+        返回: (market_cap_map, spot_data_map)
+        """
+        market_cap_map = {}
+        spot_data_map = {}
+        if target_date_str is None:
+            target_date_str = datetime.now().strftime('%Y-%m-%d')
+        # --- 尝试东方财富 ---
+        try:
+            page = 1
+            page_size = 5000
+            fs = 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23,m:1+t:62,m:4+t:4'
+            while True:
+                url = 'https://push2.eastmoney.com/api/qt/clist/get'
+                params = {
+                    'pn': page, 'pz': page_size,
+                    'po': 1, 'np': 1, 'fltt': 2, 'invt': 2,
+                    'fid': 'f3', 'fs': fs,
+                    'fields': 'f12,f17,f2,f15,f16,f5,f6,f8,f20',
+                }
+                resp = requests.get(url, params=params, timeout=20, headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Referer': 'https://quote.eastmoney.com/',
+                })
+                data = resp.json()
+                diff = (data.get('data') or {}).get('diff', [])
+                if not diff:
+                    break
+                for item in diff:
+                    code = str(item.get('f12', '')).zfill(6)
+                    cap = item.get('f20', 0) or 0
+                    if not code or cap <= 0:
+                        continue
+                    market_cap_map[code] = int(cap)
+                    close = float(item.get('f2', 0) or 0)
+                    if close > 0:
+                        spot_data_map[code] = {
+                            'date': target_date_str,
+                            'open': float(item.get('f17', 0) or 0),
+                            'close': close,
+                            'high': float(item.get('f15', 0) or 0),
+                            'low': float(item.get('f16', 0) or 0),
+                            'volume': int(float(item.get('f5', 0) or 0)),
+                            'amount': float(item.get('f6', 0) or 0),
+                            'turnover': float(item.get('f8', 0) or 0),
+                            'market_cap': int(cap),
+                        }
+                if len(diff) < page_size:
+                    break
+                page += 1
+            if market_cap_map:
+                return market_cap_map, spot_data_map
+        except Exception:
+            pass
+        # --- 东方财富不可达，降级到腾讯接口 ---
+        if _fallback_codes:
+            print("  东方财富不可达，使用腾讯备选接口获取市值...")
+            market_cap_map = self._fetch_market_cap_tencent(_fallback_codes)
+        return market_cap_map, spot_data_map
+
     def _fetch_market_cap_tencent(self, stock_codes):
-        """使用腾讯接口批量获取市值数据（akshare备选方案）"""
+        """腾讯接口批量获取市值（东方财富不可达时的备选方案）"""
         market_cap_map = {}
         batch_size = 100
         total = len(stock_codes)
-        
         try:
             for i in range(0, total, batch_size):
                 batch = stock_codes[i:i + batch_size]
                 query_codes = []
                 for code in batch:
-                    if code.startswith('6') or code.startswith('8'):
-                        query_codes.append(f"sh{code}")
+                    if code.startswith('6') or code.startswith('88'):
+                        query_codes.append(f'sh{code}')
                     else:
-                        query_codes.append(f"sz{code}")
-                
+                        query_codes.append(f'sz{code}')
                 url = f"https://qt.gtimg.cn/q={','.join(query_codes)}"
                 resp = requests.get(url, timeout=30, headers={
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 })
-                
-                lines = resp.text.strip().split(';')
-                for line in lines:
-                    if 'v_' in line and '~' in line:
-                        try:
-                            # 提取代码
-                            code_match = line.split('v_')[1].split('=')[0] if 'v_' in line else ''
-                            if not code_match or len(code_match) < 8:
-                                continue
-                            code = code_match[2:]  # 去掉 sh/sz 前缀
-                            
-                            parts = line.split('~')
-                            if len(parts) >= 46:
-                                # 字段44是总市值（亿）
-                                cap = float(parts[44]) if parts[44] else 0
-                                if cap > 0:
-                                    # 转为元（腾讯接口是亿）
-                                    market_cap_map[code] = int(cap * 1e8)
-                        except:
+                text = resp.content.decode('gbk', errors='ignore')
+                for line in text.strip().split(';'):
+                    if 'v_' not in line or '~' not in line:
+                        continue
+                    try:
+                        code_key = line.split('v_')[1].split('=')[0]
+                        if len(code_key) < 8:
                             continue
-                
-                if i % 500 == 0 and i > 0:
+                        code = code_key[2:]
+                        parts = line.split('~')
+                        if len(parts) > 44:
+                            cap_yi = float(parts[44]) if parts[44] else 0
+                            if cap_yi > 0:
+                                market_cap_map[code] = int(cap_yi * 1e8)
+                    except Exception:
+                        continue
+                if i > 0 and i % 500 == 0:
                     print(f"  已获取 {i}/{total} 只市值...")
-                    time.sleep(0.1)
-                    
+                    time.sleep(0.05)
         except Exception as e:
-            print(f"  腾讯接口获取市值失败: {e}")
-        
+            print(f"  腾讯市值接口异常: {e}")
         return market_cap_map
     
     def _fetch_stock_list_http(self):
@@ -434,86 +519,98 @@ class AKShareFetcher:
         return DEFAULT_STOCK_LIST.copy()
     
     def _fetch_stock_history_http(self, stock_code, years=6):
-        """使用腾讯接口获取股票历史数据"""
-        try:
-            import requests
-            
-            # 判断市场前缀
-            if stock_code.startswith('6') or stock_code.startswith('88'):
-                market_code = 'sh' + stock_code
+        """获取股票历史数据：优先 baostock（含成交额/换手率），降级到腾讯 HTTP"""
+        start_date = (datetime.now() - timedelta(days=int(years * 365.25 + 10))).strftime('%Y-%m-%d')
+        end_date = datetime.now().strftime('%Y-%m-%d')
+
+        # --- 主路径: baostock ---
+        if _ensure_baostock_login():
+            import baostock as _bs
+            if stock_code.startswith('6'):
+                bs_code = f'sh.{stock_code}'
+            elif stock_code.startswith('8') and not stock_code.startswith('88'):
+                bs_code = f'bj.{stock_code}'
             else:
-                market_code = 'sz' + stock_code
-            
-            # 腾讯财经接口 - 获取日K线数据
-            # 腾讯接口最多返回约1000条数据，所以分批获取或限制年限
-            max_days = min(years * 365, 1000)  # 最多1000天
-            url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={market_code},day,,,{max_days},qfq"
-            
+                bs_code = f'sz.{stock_code}'
+            with _bs_query_lock:
+                try:
+                    rs = _bs.query_history_k_data_plus(
+                        bs_code, 'date,open,high,low,close,volume,amount,turn',
+                        start_date=start_date, end_date=end_date,
+                        frequency='d', adjustflag='2'
+                    )
+                    if rs.error_code == '0':
+                        records = []
+                        while rs.next():
+                            row = rs.get_row_data()
+                            try:
+                                cl = float(row[4]) if row[4] else 0
+                                if cl <= 0:
+                                    continue
+                                records.append({
+                                    'date': row[0],
+                                    'open': float(row[1]) if row[1] else cl,
+                                    'high': float(row[2]) if row[2] else cl,
+                                    'low': float(row[3]) if row[3] else cl,
+                                    'close': cl,
+                                    'volume': int(float(row[5])) if row[5] else 0,
+                                    'amount': float(row[6]) if row[6] else 0,
+                                    'turnover': float(row[7]) if row[7] else 0,
+                                })
+                            except (ValueError, IndexError):
+                                continue
+                        if records:
+                            df = pd.DataFrame(records)
+                            df['date'] = pd.to_datetime(df['date'])
+                            market_cap = self._get_realtime_market_cap(stock_code)
+                            df['market_cap'] = market_cap if market_cap else abs(hash(stock_code)) % 500 * 100000000 + 5000000000
+                            return df.sort_values('date', ascending=False)
+                except Exception:
+                    pass
+
+        # --- 降级路径: 腾讯 HTTP kline ---
+        try:
+            market_prefix = 'sh' if (stock_code.startswith('6') or stock_code.startswith('88')) else 'sz'
+            max_days = min(int(years * 365), 1500)
+            url = f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={market_prefix}{stock_code},day,,,{max_days},qfq'
             resp = requests.get(url, timeout=15, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://stock.finance.qq.com/'
+                'Referer': 'https://stock.finance.qq.com/',
             })
-            
             data = resp.json()
-            
-            # 解析腾讯返回的数据（处理不同返回格式）
-            data_level = data.get('data', {})
-            
-            # data_level 可能是 dict 或 list（大数据量时）
-            if isinstance(data_level, dict):
-                stock_data = data_level.get(market_code, {})
-                if isinstance(stock_data, dict):
-                    klines = stock_data.get('qfqday', []) or stock_data.get('day', [])
-                else:
-                    klines = []
-            elif isinstance(data_level, list) and len(data_level) > 0:
-                # 大数据量时返回列表，第一项是代码，第二项是数据
-                # 找到对应股票代码的数据
-                klines = []
-                for item in data_level:
-                    if isinstance(item, list) and len(item) >= 2 and item[0] == market_code:
-                        # item[1] 是K线数据
-                        if isinstance(item[1], list):
-                            klines = item[1]
-                        break
-            else:
-                klines = []
-            
+            market_code = f'{market_prefix}{stock_code}'
+            d = data.get('data', {})
+            klines = []
+            if isinstance(d, dict):
+                sd = d.get(market_code, {})
+                if isinstance(sd, dict):
+                    klines = sd.get('qfqday', []) or sd.get('day', [])
             if klines:
+                market_cap = self._get_realtime_market_cap(stock_code) or (abs(hash(stock_code)) % 500 * 100000000 + 5000000000)
                 records = []
                 for item in klines:
-                    # 腾讯格式: [日期, 开盘, 收盘, 最高, 最低, 成交量, ...]
-                    # 注意: item[6] 可能是分红信息(dict)而不是成交额
-                    if len(item) >= 6 and isinstance(item, list):
-                        # 跳过分红信息，只取前6个字段
-                        # 注意：腾讯接口返回的是 [日期, 开盘, 收盘, 最高, 最低, 成交量]
-                        records.append({
-                            'date': str(item[0]),
-                            'open': float(item[1]),
-                            'close': float(item[2]),
-                            'high': float(item[3]),  # 最高 (item[3])
-                            'low': float(item[4]),   # 最低 (item[4])
-                            'volume': int(float(item[5])),
-                            'amount': 0,  # 腾讯接口不直接提供成交额
-                            'turnover': 0,  # 腾讯接口没有换手率
-                        })
-                
+                    if len(item) >= 6:
+                        try:
+                            cl = float(item[2])
+                            vol = int(float(item[5]))
+                            amt = vol * 100 * cl
+                            trn = (amt / market_cap * 100) if market_cap > 0 else 0
+                            records.append({
+                                'date': str(item[0]),
+                                'open': float(item[1]), 'close': cl,
+                                'high': float(item[3]), 'low': float(item[4]),
+                                'volume': vol, 'amount': amt, 'turnover': trn,
+                            })
+                        except (ValueError, IndexError):
+                            continue
                 if records:
                     df = pd.DataFrame(records)
                     df['date'] = pd.to_datetime(df['date'])
-                    # 从实时数据获取总市值
-                    market_cap = self._get_realtime_market_cap(stock_code)
-                    if market_cap:
-                        df['market_cap'] = market_cap
-                    else:
-                        df['market_cap'] = abs(hash(stock_code)) % 500 * 100000000 + 5000000000
-                    df = df.sort_values('date', ascending=False)
-                    return df
-            
-            return None
+                    df['market_cap'] = market_cap
+                    return df.sort_values('date', ascending=False)
         except Exception as e:
-            print(f"  HTTP获取历史数据失败: {e}")
-            return None
+            print(f'  HTTP获取历史数据失败: {e}')
+        return None
     
     def _get_realtime_market_cap(self, stock_code):
         """从实时数据获取总市值（带周级缓存，7天内命中则不发起网络请求）"""
@@ -526,24 +623,25 @@ class AKShareFetcher:
             if age_days <= _MARKET_CAP_CACHE_EXPIRY_DAYS:
                 return cached_val
 
-        # --- 缓存未命中或已过期，发起实时请求 ---
+        # --- 缓存未命中或已过期，使用腾讯实时接口（qt.gtimg.cn）---
         market_cap = None
         try:
-            import akshare as ak
-            spot_df = ak.stock_individual_info_em(symbol=stock_code)
-            if not spot_df.empty:
-                total_cap_row = spot_df[spot_df['item'] == '总市值']
-                if not total_cap_row.empty:
-                    total_cap = total_cap_row['value'].values[0]
-                    if isinstance(total_cap, str):
-                        if '亿' in total_cap:
-                            market_cap = float(total_cap.replace('亿', '')) * 1e8
-                        else:
-                            market_cap = float(total_cap)
-                    else:
-                        market_cap = float(total_cap)
-        except Exception as e:
-            print(f"  获取总市值失败: {e}")
+            if stock_code.startswith('6') or stock_code.startswith('88'):
+                mkt_prefix = 'sh'
+            else:
+                mkt_prefix = 'sz'
+            url = f'https://qt.gtimg.cn/q={mkt_prefix}{stock_code}'
+            resp = requests.get(url, timeout=10, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            text = resp.content.decode('gbk', errors='ignore')
+            parts = text.split('~')
+            if len(parts) > 44:
+                cap_yi = float(parts[44])  # 亿元
+                if cap_yi > 0:
+                    market_cap = int(cap_yi * 1e8)  # 转为元
+        except Exception:
+            pass
 
         # --- 写入缓存 ---
         if market_cap is not None:
@@ -652,82 +750,101 @@ class AKShareFetcher:
         return self._generate_mock_data(stock_code, years)
     
     def fetch_stock_update(self, stock_code, days=10, prefetched_market_cap=None):
-        """
-        抓取近期数据用于增量更新
-        优化：直接指定天数，避免计算误差
-        :param prefetched_market_cap: 预先批量获取的市值，传入则跳过每股单独API调用（大幅提速）
-        """
-        try:
-            import requests
-            
-            # 判断市场前缀
-            if stock_code.startswith('6') or stock_code.startswith('88'):
-                market_code = 'sh' + stock_code
+        """增量更新近期数据：优先 baostock（含成交额/换手率），降级到腾讯 HTTP"""
+        start_date = (datetime.now() - timedelta(days=days + 5)).strftime('%Y-%m-%d')
+        end_date = datetime.now().strftime('%Y-%m-%d')
+
+        # --- 主路径: baostock ---
+        if _ensure_baostock_login():
+            import baostock as _bs
+            if stock_code.startswith('6'):
+                bs_code = f'sh.{stock_code}'
+            elif stock_code.startswith('8') and not stock_code.startswith('88'):
+                bs_code = f'bj.{stock_code}'
             else:
-                market_code = 'sz' + stock_code
-            
-            # 腾讯接口：直接指定获取天数（最多1000天）
-            # 多取2天确保覆盖周末节假日
-            fetch_days = min(days + 2, 1000)
-            url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={market_code},day,,,{fetch_days},qfq"
-            
+                bs_code = f'sz.{stock_code}'
+            with _bs_query_lock:
+                try:
+                    rs = _bs.query_history_k_data_plus(
+                        bs_code, 'date,open,high,low,close,volume,amount,turn',
+                        start_date=start_date, end_date=end_date,
+                        frequency='d', adjustflag='2'
+                    )
+                    if rs.error_code == '0':
+                        records = []
+                        while rs.next():
+                            row = rs.get_row_data()
+                            try:
+                                cl = float(row[4]) if row[4] else 0
+                                if cl <= 0:
+                                    continue
+                                records.append({
+                                    'date': row[0],
+                                    'open': float(row[1]) if row[1] else cl,
+                                    'high': float(row[2]) if row[2] else cl,
+                                    'low': float(row[3]) if row[3] else cl,
+                                    'close': cl,
+                                    'volume': int(float(row[5])) if row[5] else 0,
+                                    'amount': float(row[6]) if row[6] else 0,
+                                    'turnover': float(row[7]) if row[7] else 0,
+                                })
+                            except (ValueError, IndexError):
+                                continue
+                        if records:
+                            df = pd.DataFrame(records)
+                            df['date'] = pd.to_datetime(df['date'])
+                            if prefetched_market_cap is not None:
+                                df['market_cap'] = prefetched_market_cap
+                            else:
+                                mc = self._get_realtime_market_cap(stock_code)
+                                df['market_cap'] = mc if mc else abs(hash(stock_code)) % 500 * 100000000 + 5000000000
+                            return df.sort_values('date', ascending=False)
+                except Exception:
+                    pass
+
+        # --- 降级路径: 腾讯 HTTP kline ---
+        try:
+            market_prefix = 'sh' if (stock_code.startswith('6') or stock_code.startswith('88')) else 'sz'
+            fetch_days = days + 5
+            url = f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={market_prefix}{stock_code},day,,,{fetch_days},qfq'
             resp = requests.get(url, timeout=15, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://stock.finance.qq.com/'
+                'Referer': 'https://stock.finance.qq.com/',
             })
-            
             data = resp.json()
-            
-            # 解析数据
-            data_level = data.get('data', {})
+            market_code = f'{market_prefix}{stock_code}'
+            d = data.get('data', {})
             klines = []
-            
-            if isinstance(data_level, dict):
-                stock_data = data_level.get(market_code, {})
-                if isinstance(stock_data, dict):
-                    klines = stock_data.get('qfqday', []) or stock_data.get('day', [])
-            elif isinstance(data_level, list) and len(data_level) > 0:
-                for item in data_level:
-                    if isinstance(item, list) and len(item) >= 2 and item[0] == market_code:
-                        if isinstance(item[1], list):
-                            klines = item[1]
-                        break
-            
+            if isinstance(d, dict):
+                sd = d.get(market_code, {})
+                if isinstance(sd, dict):
+                    klines = sd.get('qfqday', []) or sd.get('day', [])
             if klines:
+                market_cap = prefetched_market_cap or self._get_realtime_market_cap(stock_code) or (abs(hash(stock_code)) % 500 * 100000000 + 5000000000)
                 records = []
                 for item in klines:
-                    if len(item) >= 6 and isinstance(item, list):
-                        # 腾讯格式: [日期, 开盘, 收盘, 最高, 最低, 成交量]
-                        records.append({
-                            'date': str(item[0]),
-                            'open': float(item[1]),
-                            'close': float(item[2]),
-                            'high': float(item[3]),  # 最高
-                            'low': float(item[4]),   # 最低
-                            'volume': int(float(item[5])),
-                            'amount': 0,
-                            'turnover': 0,
-                        })
-                
+                    if len(item) >= 6:
+                        try:
+                            cl = float(item[2])
+                            vol = int(float(item[5]))
+                            amt = vol * 100 * cl
+                            trn = (amt / market_cap * 100) if market_cap > 0 else 0
+                            records.append({
+                                'date': str(item[0]),
+                                'open': float(item[1]), 'close': cl,
+                                'high': float(item[3]), 'low': float(item[4]),
+                                'volume': vol, 'amount': amt, 'turnover': trn,
+                            })
+                        except (ValueError, IndexError):
+                            continue
                 if records:
                     df = pd.DataFrame(records)
                     df['date'] = pd.to_datetime(df['date'])
-                    # 优先用预先批量获取的市值，避免每股单独调用（性能瓶颈）
-                    if prefetched_market_cap is not None:
-                        df['market_cap'] = prefetched_market_cap
-                    else:
-                        market_cap = self._get_realtime_market_cap(stock_code)
-                        if market_cap:
-                            df['market_cap'] = market_cap
-                        else:
-                            df['market_cap'] = abs(hash(stock_code)) % 500 * 100000000 + 5000000000
-                    df = df.sort_values('date', ascending=False)
-                    return df
-            
-            return None
+                    df['market_cap'] = market_cap
+                    return df.sort_values('date', ascending=False)
         except Exception as e:
             print(f"  获取更新数据失败: {e}")
-            return None
+        return None
     
     def init_full_data(self, max_stocks=None, skip_failed=True):
         """
@@ -761,33 +878,13 @@ class AKShareFetcher:
         if max_stocks:
             stock_codes = stock_codes[:max_stocks]
         
-        # 批量获取市值数据（主接口：akshare，备选：腾讯）
+        # 批量获取市值数据（东方财富为主，腾讯为备）
         print("\n正在批量获取市值数据...")
-        market_cap_map = {}
-        
-        # 方法1: 尝试akshare接口
-        try:
-            spot_df = ak.stock_zh_a_spot_em()
-            for _, row in spot_df.iterrows():
-                code = str(row['代码']).zfill(6)
-                cap = row['总市值']
-                if pd.notna(cap) and cap > 0:
-                    # 统一转为元
-                    if cap < 1e10:
-                        cap = int(cap * 1e8)
-                    else:
-                        cap = int(cap)
-                    market_cap_map[code] = cap
-            print(f"  ✓ akshare接口成功: {len(market_cap_map)} 只股票市值")
-        except Exception as e:
-            print(f"  akshare接口失败: {e}")
-            print("  尝试腾讯备选接口...")
-            # 方法2: 使用腾讯接口备选
-            market_cap_map = self._fetch_market_cap_tencent(stock_codes)
-            if market_cap_map:
-                print(f"  ✓ 腾讯接口成功: {len(market_cap_map)} 只股票市值")
-            else:
-                print(f"  ✗ 腾讯接口也失败，市值数据将缺失")
+        market_cap_map, _ = self._fetch_market_cap_eastmoney(_fallback_codes=stock_codes)
+        if market_cap_map:
+            print(f"  ✓ 市值获取成功: {len(market_cap_map)} 只股票市值")
+        else:
+            print("  ✗ 市值数据获取失败，K线数据仍会正常更新")
         
         total = len(stock_codes)
         success = 0
@@ -923,37 +1020,11 @@ class AKShareFetcher:
 
         # ── 一次性批量获取全市场市值（避免1840次单独API调用）─────────
         print("\n正在批量获取市值数据（一次性）...")
-        market_cap_map = {}
-        spot_data_map: dict = {}  # key=code, value=今日行情dict（快路径用）
-        try:
-            import akshare as ak
-            spot_df = ak.stock_zh_a_spot_em()
-            # P3: 向量化处理替代 iterrows（~50-100x 加速）
-            spot_df['_code'] = spot_df['代码'].astype(str).str.zfill(6)
-            _cap_col = spot_df['总市值'] if '总市值' in spot_df.columns else pd.Series(0.0, index=spot_df.index)
-            _valid = pd.notna(_cap_col) & (_cap_col > 0)
-            _vdf = spot_df[_valid].copy()
-            _vdf['_cap'] = _vdf['总市值'].apply(lambda c: int(c * 1e8) if c < 1e10 else int(c))
-            market_cap_map = dict(zip(_vdf['_code'], _vdf['_cap']))
-
-            def _scol(col):
-                return _vdf[col].fillna(0) if col in _vdf.columns else pd.Series(0.0, index=_vdf.index)
-
-            for _c, _cap, _o, _cl, _h, _l, _vol, _amt, _tr in zip(
-                _vdf['_code'], _vdf['_cap'],
-                _scol('今开').astype(float), _scol('最新价').astype(float),
-                _scol('最高').astype(float), _scol('最低').astype(float),
-                _scol('成交量').astype(float), _scol('成交额').astype(float),
-                _scol('换手率').astype(float),
-            ):
-                spot_data_map[str(_c)] = {
-                    'date': target_date_str, 'open': float(_o), 'close': float(_cl),
-                    'high': float(_h), 'low': float(_l), 'volume': int(_vol),
-                    'amount': float(_amt), 'turnover': float(_tr), 'market_cap': int(_cap),
-                }
+        market_cap_map, spot_data_map = self._fetch_market_cap_eastmoney(target_date_str=target_date_str, _fallback_codes=list(stocks_to_update))
+        if market_cap_map:
             print(f"  ✓ 批量市值获取成功: {len(market_cap_map)} 只")
-        except Exception as e:
-            print(f"  ⚠️ 批量市值获取失败: {e}，K线数据仍会正常更新")
+        else:
+            print("  ⚠️ 批量市值获取失败，K线数据仍会正常更新")
 
         # P2: 直接查 latest_date_map（扫描阶段已缓存），不再重新读文件
         # 快路径条件：

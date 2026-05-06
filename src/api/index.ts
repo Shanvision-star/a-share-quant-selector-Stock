@@ -342,6 +342,7 @@ export const deleteManualSelection = (date: string, code: string) =>
 export interface BacktestRequestPayload {
   start_date: string
   end_date: string
+  simulation_end_date?: string
   source: 'manual' | 'strategy' | 'codes'
   strategy: 'all' | 'b1' | 'b2' | 'bowl' | 'brick'
   selected_codes?: string[]

@@ -13,6 +13,10 @@ dist/
 dist-ssr/
 *.local
 
+# Python helpers used by the local quant tooling
+__pycache__/
+*.py[cod]
+
 # Editor / OS
 .vscode/*
 !.vscode/extensions.json

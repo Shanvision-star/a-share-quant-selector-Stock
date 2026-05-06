@@ -5,6 +5,7 @@ import { getCachedKlineResponse, getKline, getIntradayKline } from '@/api'
 import type { KlineAdjust } from '@/api'
 import { createRequestManager, isAbortError } from '@/api/requestManager'
 import { buildMainKlineRequestKey, selectFastKlineLimit, shouldShowBlockingKlineLoading } from '@/components/klineRequest'
+import { buildBrickStackedBars } from '@/utils/klineIndicators'
 
 const props = withDefaults(defineProps<{
   code: string
@@ -508,14 +509,7 @@ async function renderChart() {
       itemStyle: { color: (value ?? 0) >= 0 ? '#ef5350' : '#26a69a' },
     }))
     const brickValues = sanitizeIndicator(indicators.brick_value)
-    const brickBars = brickValues.map((value: number | null, index: number) => {
-      const prev = index > 0 ? brickValues[index - 1] : null
-      const rising = value !== null && prev !== null ? value >= prev : (value ?? 0) > 0
-      return {
-        value,
-        itemStyle: { color: rising ? '#ef5350' : '#26a69a' },
-      }
-    })
+    const brickBars = buildBrickStackedBars(brickValues)
     const subIndicatorSeries = activeSubIndicator.value === 'kdj'
       ? [
           { name: 'K', type: 'line', data: kData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
@@ -525,18 +519,27 @@ async function renderChart() {
       : activeSubIndicator.value === 'brick'
         ? [
             {
-              name: '砖型图',
+              name: '砖型图基线',
               type: 'bar',
-              data: brickBars,
+              stack: 'brick',
+              data: brickBars.base,
               xAxisIndex: 3,
               yAxisIndex: 3,
               barWidth: 8,
-              markLine: {
-                silent: true,
-                symbol: 'none',
-                lineStyle: { color: '#5b607a', width: 1, type: 'dashed' },
-                data: [{ yAxis: 0 }],
-              },
+              silent: true,
+              tooltip: { show: false },
+              itemStyle: { color: 'transparent', borderColor: 'transparent' },
+              emphasis: { disabled: true },
+            },
+            {
+              name: '砖型图',
+              type: 'bar',
+              stack: 'brick',
+              data: brickBars.body,
+              xAxisIndex: 3,
+              yAxisIndex: 3,
+              barWidth: 8,
+              barMinHeight: 1,
             },
           ]
         : [
@@ -700,7 +703,20 @@ async function renderChart() {
         { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
         { scale: false, min: 0, max: (v: any) => (v?.max ?? 0) * 1.05, gridIndex: 1, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
         { scale: false, min: 0, max: (v: any) => (v?.max ?? 0) * 1.05, gridIndex: 2, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
-        { scale: true, gridIndex: 3, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
+        {
+          scale: true,
+          gridIndex: 3,
+          splitNumber: activeSubIndicator.value === 'brick' ? 5 : 2,
+          splitLine: {
+            lineStyle: {
+              color: '#1e222d',
+              type: activeSubIndicator.value === 'brick' ? 'dotted' : 'solid',
+            },
+          },
+          axisLabel: activeSubIndicator.value === 'brick'
+            ? { show: false }
+            : { color: '#787b86' },
+        },
       ],
       dataZoom: [
         {

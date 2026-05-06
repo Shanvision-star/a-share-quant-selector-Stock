@@ -13,6 +13,11 @@ const routes = [
     component: () => import('@/views/StrategyResultsView.vue'),
   },
   {
+    path: '/manual-pool',
+    name: 'ManualSelectionPool',
+    component: () => import('@/views/ManualSelectionPoolView.vue'),
+  },
+  {
     path: '/stocks/:code',
     name: 'StockDetail',
     component: () => import('@/views/StockDetail.vue'),

@@ -13,12 +13,18 @@ import {
   fetchAllStrategyResultItems,
   formatSimilarityPercent,
 } from '@/utils/strategyResults'
+import {
+  createStockDetailLoadGuard,
+  getDisplayStockName,
+  type StockDetailLoadTicket,
+} from '@/views/stockDetailState'
 
 const props = defineProps<{ code: string }>()
 const router = useRouter()
 const route = useRoute()
 const strategyListStore = useStrategyListStore()
 const manualSelectionStore = useManualSelectionStore()
+const loadGuard = createStockDetailLoadGuard()
 const KLINE_LIMIT_10Y = 2600
 const KLINE_PREFETCH_LIMIT = 500
 const KLINE_PREFETCH_RADIUS = 5
@@ -109,6 +115,8 @@ function stopCardResize() {
 
 // ─── 策略选股列表 ──────────────────────────────────────────────────────
 const strategyListItems = computed(() => strategyListStore.items)
+const currentStrategyItem = computed(() => strategyListItems.value.find(item => item.code === props.code))
+const displayStockName = computed(() => getDisplayStockName(priceInfo.value, props.code, currentStrategyItem.value?.name || ''))
 const strategyGroups = computed(() => buildStrategyGroups(strategyListItems.value))
 const sidebarSignalCount = computed(() => strategyListItems.value.length)
 const sidebarUniqueCount = computed(() => new Set(strategyListItems.value.map(item => item.code)).size)
@@ -265,28 +273,40 @@ watch(
 const _stockInfoCache = new Map<string, any>()
 
 async function loadAll(code: string) {
+  const ticket = loadGuard.start(code)
   loading.value = true
+  priceInfo.value = null
   stockInfo.value = null
+  strategyCard.value = null
+  signals.value = []
   try {
     const [pRes] = await Promise.all([
       getStockPrice(code),
-      loadSignals(code),
+      loadSignals(code, ticket),
     ])
+    if (!loadGuard.isCurrent(ticket, props.code)) return
     priceInfo.value = pRes.data.data
   } catch (e) {
-    console.error('加载失败', e)
+    if (loadGuard.isCurrent(ticket, props.code)) {
+      console.error('加载失败', e)
+    }
   } finally {
-    loading.value = false
+    if (loadGuard.isCurrent(ticket, props.code)) {
+      loading.value = false
+    }
   }
   // 懒加载扩展信息（行业/地区/经营范围/概念标签）——有客户端缓存，同一股票只请求一次
   if (_stockInfoCache.has(code)) {
+    if (!loadGuard.isCurrent(ticket, props.code)) return
     stockInfo.value = _stockInfoCache.get(code)
   } else {
     getStockInfo(code).then(res => {
+      if (!loadGuard.isCurrent(ticket, props.code)) return
       const data = res.data.data
       _stockInfoCache.set(code, data)
       stockInfo.value = data
     }).catch((err) => {
+      if (!loadGuard.isCurrent(ticket, props.code)) return
       console.warn('扩展信息加载失败', err)
       const fallback = { industry: '', region: '', main_business: '', concept_tags: [] }
       _stockInfoCache.set(code, fallback)
@@ -318,7 +338,7 @@ async function loadDefaultStrategyList() {
   }
 }
 
-async function loadSignals(code: string) {
+async function loadSignals(code: string, ticket?: StockDetailLoadTicket) {
   try {
     const response = await getStrategyResultsHistory({
       strategy: 'all',
@@ -330,6 +350,7 @@ async function loadSignals(code: string) {
     const allResults = response.data.data?.items || []
 
     const matched = allResults.filter((row: any) => row.code === code)
+    if (ticket && !loadGuard.isCurrent(ticket, props.code)) return
     strategyCard.value = matched[0] || null
     signals.value = matched.map((item: any) => ({
       date: item.signal_date || item.trade_date,
@@ -343,9 +364,11 @@ async function loadSignals(code: string) {
             : 'B2',
     }))
   } catch (e) {
-    console.error('加载策略信号失败', e)
-    strategyCard.value = null
-    signals.value = []
+    if (!ticket || loadGuard.isCurrent(ticket, props.code)) {
+      console.error('加载策略信号失败', e)
+      strategyCard.value = null
+      signals.value = []
+    }
   }
 }
 
@@ -387,7 +410,7 @@ function formatListSimilarity(score: unknown): string {
     <!-- ══ 中间：K线 + 策略详情 ════════════════════════════════════════ -->
     <div class="detail-main">
       <div class="detail-header">
-        <h2>{{ priceInfo?.name }} {{ code }}</h2>
+        <h2>{{ displayStockName || '加载中' }} {{ code }}</h2>
         <div class="detail-actions">
           <el-checkbox v-model="showShortTermTrend">短期趋势线</el-checkbox>
           <el-checkbox v-model="showBullBearLine">知行多空线</el-checkbox>

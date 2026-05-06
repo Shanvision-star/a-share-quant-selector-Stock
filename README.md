@@ -5,7 +5,7 @@
 基于 **Python + akshare + FastAPI + Vue 3** 的A股量化选股系统，覆盖从数据获取、策略扫描、图形匹配到可视化分析的完整链路：
 
 - **多策略量化引擎**：碗口反弹（BowlRebound）、B1完美图形匹配、B2三分类策略、阶段型B1前瞻扫描，多策略并行，按需组合。
-- **全市场并发扫描**：自动按CPU核心数分配线程，单核设备自动降级，千只股票分钟级扫描完毕。
+- **全市场并发扫描**：自动按CPU核心数分配线程，单核设备自动降级；策略默认只读取近期窗口并复用共享指标，目标是在本地缓存完整时将全市场选股控制在10分钟内。
 - **全自动风险过滤**：ST/*ST、退市、异常成交量、最大阴量出逃信号，多重过滤保障选股质量。
 - **B1完美图形匹配**：基于12个历史成功案例，双线结构+量比+价格形态+KDJ四维相似度（DTW算法）精准排序。
 - **B1阶段前瞻扫描**：基于掌阅科技模板抽象的6阶段模型，提前发现处于启动前窗口的潜在个股。
@@ -33,7 +33,7 @@
 ### 数据与扫描
 - 🚫 **多重风险过滤** — ST/*ST、退市关键词、成交量异常、最大量为阴线（大资金出逃信号）四道过滤，开盘前自动剔除
 - 🔄 **智能增量更新** — 15点前检查最近已收盘交易日，15点后检查当天数据；已是最新数据则直接跳过网络请求
-- ⚙️ **自动并发/单核降级** — 默认按CPU核心数自动分配线程；检测到单核时自动切回单线程，避免线程切换拖慢执行；每只股票只读一次CSV，B1匹配与基础选股在同一工作线程内串行完成，消除重复IO
+- ⚙️ **自动并发/单核降级** — 默认按CPU核心数自动分配线程；检测到单核时自动切回单线程；每只股票只读一次近期CSV窗口，KDJ与知行双线等基础指标只预计算一次，再复用到 BowlRebound、B1、B2 和 Web 策略缓存重建中
 
 ### Web工作台（Vue 3 + FastAPI）
 - 🌐 **专业K线工作台** — Vue 3 + ECharts 渲染，主图含MA/BBI/短期趋势线/多空线，支持日线/周线切换，时间范围快速缩放（7日/30日/60日/1年/全部）
@@ -77,7 +77,22 @@ python3 main.py run --b1-match
 
 # 8. 并发加速（按机器核心数自动扩展；单核自动降级保证稳定性）
 python3 main.py run --b1-match --workers 10
+
+# 9. B2规则扫描（已复用近期窗口、共享指标和B2快速预筛）
+python3 main.py run --b2-match --workers 8
 ```
+
+### 策略选股性能目标
+
+日常选股以 `data/` 里的本地 CSV 为源数据，默认按每只股票最近 `320` 行执行扫描；如果需要扩大指标上下文，可以在 `config/config.yaml` 顶层增加 `strategy_scan_rows`，但建议先用默认值验证。当前优化路径包括：
+
+1. CSV 默认不解析日期，只有需要日期运算的路径再显式转换，降低全市场读盘成本。
+2. 每只股票只读取一次近期窗口，BowlRebound、B1、B2 和 Web 缓存重建共用同一份基础行情。
+3. KDJ 与知行双线在单股上下文中预计算一次，策略内部只补充各自阈值状态。
+4. B2 规则扫描先做必要涨幅快筛，再对三类模板复用同一份 prepared DataFrame。
+5. `--workers` 传入主流程、B1/B2 扫描和 B2 图形匹配，推荐多核本机从 `8` 开始试；磁盘繁忙时降低到 `4`。
+
+在当前样本验证中，B2 规则扫描 `200` 只股票耗时约 `12.9` 秒，按 `5157` 只估算约 `5.6` 分钟。不同机器、磁盘和数据完整度会有差异；如果超过10分钟，优先检查 `--workers`、`strategy_scan_rows`、CSV 是否落在机械硬盘或同步盘目录。
 
 ### 一键启动 Web 工作台（Windows）
 
@@ -467,20 +482,33 @@ EMA(EMA(CLOSE, 10), 10)
 | `python3 main.py run --b1-match --min-similarity 70` | 指定最低相似度 70%。相似度按百分比计算（0-100），低于 70% 的结果不展示。 |
 | `python3 main.py run --b1-match --lookback-days 30 --min-similarity 70` | 回看 30 个交易日 + 相似度至少 70%，适合实盘中等偏严格筛选。 |
 
-#### B1 运行提速说明
+#### 3）B2三分类策略命令
 
-`python3 main.py run --b1-match` 现在做了两层提速优化：
+| 命令 | 说明 |
+|------|------|
+| `python3 main.py run --b2-match` | 执行 B2 规则扫描，输出横盘突破、灾后重建、平行重炮三类命中。 |
+| `python3 main.py run --b2-match --workers 8` | 指定并发线程数执行 B2 规则扫描，推荐多核机器日常使用。 |
+| `python3 main.py run --b2-today --workers 8` | 仅保留最新交易日触发的 B2 信号。 |
+| `python3 main.py run --b2-pattern-match --workers 8` | 先规则扫描，再执行 B2 图形相似度评分。 |
 
-1. **基础选股改为单股一次读盘**：同一只股票只读取一次 CSV，在同一个工作线程里连续跑 BowlReboundStrategy 和 B1CaseStrategy，避免以前按策略重复读盘、重复算指标。
-2. **并发模式自动判定**：默认根据 CPU 核心数自动分配线程；如果机器只有单核，程序会自动回退到单线程，避免线程切换成本反而拖慢运行。
+#### 策略运行提速说明
+
+`python3 main.py run --b1-match`、`python3 main.py run --b2-match` 和 Web 策略缓存重建共用同一套提速路径：
+
+1. **近期窗口读盘**：默认每只股票读取最新 `320` 行 CSV，减少全历史反复解析；历史回测指定旧日期时会按目标日期重新裁剪，避免未来函数。
+2. **单股一次读盘**：同一只股票只读取一次 CSV，在同一个工作线程里连续跑 BowlRebound、B1/B2 等策略，避免按策略重复 IO。
+3. **共享指标复用**：KDJ、知行短期趋势线、多空线等基础指标在单股上下文中只算一次，各策略复用后再计算自身阈值状态。
+4. **B2快筛与模板复用**：B2 先检查近期是否存在满足 B2 涨幅门槛的阳线；不满足则跳过重分析，满足后对三类模板复用同一份 prepared DataFrame。
+5. **并发模式自动判定**：默认根据 CPU 核心数自动分配线程；如果机器只有单核，程序会自动回退到单线程，避免线程切换成本反而拖慢运行。
 
 如果你在低配机器上仍然觉得慢，可以优先调这几个参数：
 
 1. `--max-stocks 500`：先缩小扫描范围验证逻辑。
 2. `--workers 4`：在 4 核以上机器上显式限制线程，避免开太多线程导致磁盘竞争。
-3. `config/strategy_params.yaml` 里的 `B1PatternMatch.max_candidates`：降低 B1 二次匹配的候选上限。
+3. `config/config.yaml` 顶层的 `strategy_scan_rows`：默认 `320`，最低保护值 `160`；只有策略确实需要更长历史时再调大。
+4. `config/strategy_params.yaml` 里的 `B1PatternMatch.max_candidates`：降低 B1 二次匹配的候选上限。
 
-#### 3）阶段型B1前瞻扫描命令（run_b1_scan.py）
+#### 4）阶段型B1前瞻扫描命令（run_b1_scan.py）
 
 | 命令 | 说明 |
 |------|------|
@@ -520,7 +548,16 @@ EMA(EMA(CLOSE, 10), 10)
 | `.\.venv\Scripts\python.exe .\main.py run --b1-match --min-similarity 70` | 指定最低相似度 70%。相似度按百分比计算（0-100），低于 70% 的结果不展示。 |
 | `.\.venv\Scripts\python.exe .\main.py run --b1-match --lookback-days 30 --min-similarity 70` | 回看 30 个交易日 + 相似度至少 70%，适合实盘中等偏严格筛选。 |
 
-#### 3）阶段型B1前瞻扫描命令（run_b1_scan.py）
+#### 3）B2三分类策略命令
+
+| 命令 | 说明 |
+|------|------|
+| `.\.venv\Scripts\python.exe .\main.py run --b2-match` | 执行 B2 规则扫描，输出横盘突破、灾后重建、平行重炮三类命中。 |
+| `.\.venv\Scripts\python.exe .\main.py run --b2-match --workers 8` | 指定并发线程数执行 B2 规则扫描，推荐多核机器日常使用。 |
+| `.\.venv\Scripts\python.exe .\main.py run --b2-today --workers 8` | 仅保留最新交易日触发的 B2 信号。 |
+| `.\.venv\Scripts\python.exe .\main.py run --b2-pattern-match --workers 8` | 先规则扫描，再执行 B2 图形相似度评分。 |
+
+#### 4）阶段型B1前瞻扫描命令（run_b1_scan.py）
 
 | 命令 | 说明 |
 |------|------|
@@ -540,6 +577,9 @@ EMA(EMA(CLOSE, 10), 10)
 | `--workers` | 并发线程数（选股/匹配加速） | `None`（自动按系统策略分配） |
 | `--category` | 分类过滤（`all/bowl_center/near_duokong/near_short_trend`） | `all` |
 | `--b1-match` | 启用 B1 完美图形匹配 | `False`（不传则关闭） |
+| `--b2-match` | 启用 B2 三分类规则扫描 | `False`（不传则关闭） |
+| `--b2-today` | 仅输出最新交易日触发的 B2 信号 | `False`（不传则关闭） |
+| `--b2-pattern-match` | 启用 B2 规则扫描 + 图形相似度评分 | `False`（不传则关闭） |
 | `--lookback-days` | B1 匹配回看交易日天数 | `None`（读取配置默认 `25`） |
 | `--min-similarity` | B1 最低相似度阈值（百分比，0-100） | `None`（读取配置默认 `60`） |
 | `--backtest-days` | 回溯天数（连续 K 条件窗口） | `3` |
@@ -560,7 +600,11 @@ EMA(EMA(CLOSE, 10), 10)
 
 ### 五、配置文件参数位置
 
-编辑 config/strategy_params.yaml 中 B1PatternMatch 可调整：
+编辑 `config/config.yaml` 顶层可调整策略扫描窗口：
+
+- `strategy_scan_rows`: 默认 `320`，主流程和 B2 扫描每只股票读取的最新 CSV 行数；代码最低保护值为 `160`。
+
+编辑 `config/strategy_params.yaml` 中 B1PatternMatch 可调整：
 - min_similarity: 默认最小相似度阈值
 - lookback_days: 默认回看天数
 - weights: 四维相似度权重
@@ -623,7 +667,7 @@ B1PatternMatch:
 
 **退避策略**：
 - 第 1 次重试：等待 1 秒
-- 第 2 次重试：等待 4 秒  
+- 第 2 次重试：等待 4 秒
 - 第 3 次重试：等待 8 秒
 
 ## 📱 钉钉通知格式
@@ -752,19 +796,19 @@ from strategy.base_strategy import BaseStrategy
 class MyStrategy(BaseStrategy):
     def __init__(self, params=None):
         super().__init__("我的策略", params)
-    
+
     def calculate_indicators(self, df):
         # 计算指标
         return df
-    
+
     def select_stocks(self, df, stock_name=''):
         # 选股逻辑
         return signals
 ```
 
-### 扩展B2/B3完美图形（已在原代码上添加类似性能，需继续优化B2策略）
+### 扩展B2/B3完美图形
 
-系统已为B2、B3等新型完美图形预留扩展空间：
+系统已为B2、B3等新型完美图形预留扩展空间。当前 B2 已实现三分类规则扫描、并发执行、近期窗口读盘、共享指标复用和必要条件快筛；后续扩展应沿用这条性能路径，避免新增按模板重复读盘或重复计算指标的实现。
 
 1. **创建新配置** - 在 `pattern_config.py` 添加 `B2_PERFECT_CASES` 配置
 2. **创建新库类** - 参照 `B1PatternLibrary` 创建 `B2PatternLibrary` 类

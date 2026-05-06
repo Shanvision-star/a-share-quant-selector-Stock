@@ -5,6 +5,10 @@ import pandas as pd
 import numpy as np
 
 
+KDJ_ATTR_KEY = '_kdj_params'
+ZHIXING_ATTR_KEY = '_zhixing_params'
+
+
 def MA(series, n):
     """
     简单移动平均 - 正确处理倒序排列的数据
@@ -144,7 +148,7 @@ def KDJ(df, n=9, m1=3, m2=3):
     
     注意：数据可能是倒序（最新在前）或正序，需要自动检测并处理
     """
-    # 检测数据顺序
+    # CSV日期统一为YYYY-MM-DD，懒解析后仍可用字符串比较判断正倒序。
     is_descending = df['date'].iloc[0] > df['date'].iloc[-1]
     
     # 统一转换为正序计算（从早到晚）
@@ -213,6 +217,7 @@ def calculate_zhixing_trend(df, m1=14, m2=28, m3=57, m4=114):
     参数:
         m1, m2, m3, m4: 多空线计算用的MA周期，默认14, 28, 57, 114
     """
+    # CSV日期统一为YYYY-MM-DD，懒解析后仍可用字符串比较判断正倒序。
     is_descending = 'date' in df.columns and df['date'].iloc[0] > df['date'].iloc[-1]
 
     if is_descending:
@@ -253,8 +258,18 @@ def calculate_zhixing_state(df, m1=14, m2=28, m3=57, m4=114, duokong_pct=3, shor
     """
     trend_df = calculate_zhixing_trend(df, m1=m1, m2=m2, m3=m3, m4=m4)
 
-    short_term_trend = trend_df['short_term_trend']
-    bull_bear_line = trend_df['bull_bear_line']
+    return calculate_zhixing_position_state(
+        df,
+        trend_df['short_term_trend'],
+        trend_df['bull_bear_line'],
+        duokong_pct=duokong_pct,
+        short_pct=short_pct,
+    )
+
+
+def calculate_zhixing_position_state(df, short_term_trend, bull_bear_line, duokong_pct=3, short_pct=2):
+    """基于已计算好的知行双线生成位置状态，避免多策略重复计算均线。"""
+
     close = df['close']
 
     duokong_ratio = duokong_pct / 100
@@ -284,3 +299,48 @@ def calculate_zhixing_state(df, m1=14, m2=28, m3=57, m4=114, duokong_pct=3, shor
     }, index=df.index)
 
     return state_df
+
+
+def has_cached_kdj(df, params=(9, 3, 3)):
+    """判断 DataFrame 中是否已有同参数 KDJ 列。"""
+    return {'K', 'D', 'J'}.issubset(df.columns) and tuple(df.attrs.get(KDJ_ATTR_KEY, ())) == tuple(params)
+
+
+def has_cached_zhixing(df, params=(14, 28, 57, 114)):
+    """判断 DataFrame 中是否已有同参数知行双线列。"""
+    required = {'short_term_trend', 'bull_bear_line'}
+    return required.issubset(df.columns) and tuple(df.attrs.get(ZHIXING_ATTR_KEY, ())) == tuple(params)
+
+
+def prepare_shared_indicators(df, zhixing_params=None, kdj_params=(9, 3, 3)):
+    """为单只股票预计算多策略共享指标。
+
+    共享范围只包含不依赖策略阈值的 KDJ 与知行双线基础列；靠近多空线、
+    靠近短期趋势线等布尔分类仍由各策略按自己的参数重新计算。
+    """
+    if df is None or df.empty:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    result = df.loc[:, ~df.columns.duplicated()].copy()
+
+    kdj_required_columns = {'date', 'high', 'low', 'close'}
+    if kdj_required_columns.issubset(result.columns) and not has_cached_kdj(result, kdj_params):
+        kdj_df = KDJ(result, n=kdj_params[0], m1=kdj_params[1], m2=kdj_params[2])
+        for column in ['K', 'D', 'J']:
+            result[column] = pd.to_numeric(kdj_df[column], errors='coerce')
+        result.attrs[KDJ_ATTR_KEY] = tuple(kdj_params)
+
+    zhixing_required_columns = {'date', 'close'}
+    if zhixing_params and zhixing_required_columns.issubset(result.columns) and not has_cached_zhixing(result, zhixing_params):
+        trend_df = calculate_zhixing_trend(
+            result,
+            m1=zhixing_params[0],
+            m2=zhixing_params[1],
+            m3=zhixing_params[2],
+            m4=zhixing_params[3],
+        )
+        result['short_term_trend'] = trend_df['short_term_trend']
+        result['bull_bear_line'] = trend_df['bull_bear_line']
+        result.attrs[ZHIXING_ATTR_KEY] = tuple(zhixing_params)
+
+    return result

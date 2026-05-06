@@ -1,5 +1,5 @@
 """Pydantic 数据模型"""
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional, Dict, Any
 
 
@@ -107,6 +107,8 @@ class StrategyParamConfig(BaseModel):
 
 class ConfigUpdateRequest(BaseModel):
     """策略参数更新请求"""
-    strategy_name: str
-    params: Dict[str, Any]
-    expected_revision: str
+    model_config = ConfigDict(extra="forbid")
+
+    strategy_name: str = Field(..., min_length=1, max_length=80, pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+    params: Dict[str, Any] = Field(..., min_length=1)
+    expected_revision: str = Field(..., min_length=1, max_length=128)

@@ -8,7 +8,7 @@
 
 1. 更新本地日线数据。
 2. 基于本地 CSV 运行 B1、B2、碗形等策略。
-3. 将策略结果写入缓存或数据库。
+3. 将策略结果写入 JSON/TXT 缓存并推送通知。
 4. 前端展示策略列表、K 线、回测结果，并支持 txt 导出。
 
 做任何修改时，优先保护两件事：数据完整性和策略日期一致性。
@@ -17,9 +17,16 @@
 
 | 模块 | 作用 | 关键点 |
 | --- | --- | --- |
+| `main.py` | CLI 入口 | run/backtest/web/schedule 统一从这里调度 |
+| `quant_system.py` | 量化主编排 | 数据更新、并发策略扫描、B1/B2匹配、通知和导出 |
 | `utils/akshare_fetcher.py` | 行情数据更新 | 快路径、慢路径、快照通道、节假日 gap 判断 |
-| `utils/csv_manager.py` | 本地 CSV 读写 | 去重、倒序、单日 prepend、幂等写入 |
+| `utils/csv_manager.py` | 本地 CSV 读写 | 去重、倒序、单日 prepend、幂等写入、近期窗口读取 |
+| `utils/technical.py` | 共享指标 | KDJ、知行双线、共享指标缓存标记 |
 | `utils/trading_calendar.py` | A 股交易日判断 | 周末和节假日都要排除 |
+| `strategy/base_strategy.py` | 策略抽象 | 新策略必须继承 BaseStrategy 并兼容自动注册 |
+| `strategy/bowl_rebound.py` | 碗形反弹 | 复用共享 KDJ/知行基础指标 |
+| `strategy/b1_case_analyzer.py` | B1阶段与案例分析 | 复用共享指标，按目标日期视角输出信号 |
+| `strategy/b2_strategy.py` | B2三分类策略 | 并发扫描、必要条件快筛、三类模板复用 prepared DataFrame |
 | `web/backend/services/strategy_service.py` | 策略扫描与缓存 | 按目标日期裁剪数据，避免未来函数 |
 | `web/backend/services/data_service.py` | 更新作业编排 | SSE 进度、更新后自动策略重建 |
 | `web/backend/routers/update.py` | 更新 API | 前端参数传入和流式事件输出 |
@@ -27,6 +34,65 @@
 | `web/frontend/src/views/StrategyResultsView.vue` | 策略结果页 | 分类展示、txt 导出、结果去重 |
 | `web/frontend/src/views/StockDetail.vue` | K 线详情页 | K 线缓存、预热、请求竞态保护 |
 
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" -> "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" -> "Write a test that reproduces it, then make it pass"
+- "Refactor X" -> "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```text
+1. [Step] -> verify: [check]
+2. [Step] -> verify: [check]
+3. [Step] -> verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 ## 数据更新逻辑
 
 ### 快路径
@@ -99,6 +165,27 @@
 
 - 一个作业可以在某个交易日扫描，但信号可能来自策略允许的观察窗口。
 - 导出和前端筛选需要知道“这次作业日期”和“信号触发日期”各自是什么。
+
+## 策略选股性能规则
+
+当前目标：本地 CSV 缓存完整时，全市场策略选股总耗时应控制在 10 分钟内。后续 Agent 修改策略时，必须保护这条性能路径，不要重新引入按策略重复读盘或按模板重复算指标。
+
+核心实现：
+
+- `quant_system.py` 和 `web/backend/services/strategy_service.py` 默认按最近 `320` 行读取 CSV；配置项是 `config/config.yaml` 顶层 `strategy_scan_rows`，代码最低保护值为 `160`。
+- `CSVManager.read_stock()` 默认不解析日期。只有需要日期比较、回测裁剪、图表展示时才显式转换日期。
+- 单只股票在一次扫描中只读一次 CSV，再把 DataFrame 传给多个策略。
+- `utils/technical.py` 的 `prepare_shared_indicators()` 负责预计算 KDJ 和知行双线；BowlRebound、B1、B2 应优先复用已有列，缺少阈值状态时只补算状态列。
+- B2 扫描必须先做必要条件快筛：近期没有达到 `b2_min_pct` 涨幅门槛的阳线时，直接跳过重分析。
+- B2 三分类模板必须复用同一份 prepared DataFrame，不要对横盘突破、灾后重建、平行重炮分别重复准备指标。
+- `--workers` 要从 CLI 传到主流程、B1/B2 匹配和 Web 缓存重建相关路径；单核设备允许自动降级。
+
+性能验证建议：
+
+- 小样本正确性：`python main.py run --help`，再运行 `QuantSystem.select_stocks(max_stocks=20, max_workers=2)`。
+- B2速度验证：用 `B2PatternLibrary().scan_all(codes[:200], cm, max_workers=8, recent_rows=320)`，当前参考结果约 `12.9` 秒 / 200 只，折算 5157 只约 `5.6` 分钟。
+- 如果全量超过 10 分钟，先检查 `--workers`、`strategy_scan_rows`、CSV 所在磁盘和同步软件，再考虑修改策略逻辑。
+- 如果必须放大窗口或增加新指标，先用 200 只股票估算全量耗时，并在 README 记录新基线。
 
 ## 前端 K 线逻辑
 

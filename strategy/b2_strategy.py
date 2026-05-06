@@ -105,6 +105,7 @@ TODO（后续优化预留）：
 """
 
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -122,7 +123,13 @@ from strategy.base_strategy import BaseStrategy
 #                             near_short_trend（价格贴近短期趋势线）、
 #                             bull_bear_line（多空线数值）、
 #                             short_term_trend（短期趋势线数值）
-from utils.technical import KDJ, calculate_zhixing_state
+from utils.technical import (
+    KDJ,
+    calculate_zhixing_state,
+    calculate_zhixing_position_state,
+    has_cached_kdj,
+    has_cached_zhixing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -292,18 +299,31 @@ class B2CaseAnalyzer:
         if df is None or len(df) < min_rows:
             return None
 
+        source_attrs = dict(getattr(df, 'attrs', {}))
         df_asc = df.sort_values("date").reset_index(drop=True)
+        df_asc.attrs.update(source_attrs)
         if not pd.api.types.is_datetime64_any_dtype(df_asc["date"]):
             df_asc["date"] = pd.to_datetime(df_asc["date"])
 
         try:
-            state_df = calculate_zhixing_state(df_asc)
+            zhixing_params = (14, 28, 57, 114)
+            if has_cached_zhixing(df_asc, zhixing_params):
+                state_df = calculate_zhixing_position_state(
+                    df_asc,
+                    df_asc["short_term_trend"],
+                    df_asc["bull_bear_line"],
+                )
+            else:
+                state_df = calculate_zhixing_state(df_asc)
         except Exception as e:
             logger.warning("[B2] %s 计算双线状态失败: %s", code, e)
             return None
 
         try:
-            kdj_df = KDJ(df_asc)
+            if has_cached_kdj(df_asc, (9, 3, 3)):
+                kdj_df = df_asc[["K", "D", "J"]]
+            else:
+                kdj_df = KDJ(df_asc)
         except Exception as e:
             logger.warning("[B2] %s 计算KDJ失败: %s", code, e)
             return None
@@ -801,6 +821,13 @@ class B2CaseAnalyzer:
             后置过滤(J值) → 组装结果字典
         """
         working_df = self._prepare_working_df(code, df)
+        if working_df is None or working_df.empty:
+            return None
+
+        return self.analyze_prepared(code, working_df, case_cfg)
+
+    def analyze_prepared(self, code: str, working_df: pd.DataFrame, case_cfg: dict) -> Optional[dict]:
+        """复用已准备好的 B2 指标数据执行单个模板分析。"""
         if working_df is None or working_df.empty:
             return None
 
@@ -1350,9 +1377,27 @@ class B2PatternLibrary:
             templates.append(case_cfg)
         return templates
 
+    def _passes_fast_prefilter(self, df: pd.DataFrame) -> bool:
+        """B2 必要条件快筛：近期至少出现过达到 B2 涨幅门槛的阳线。"""
+        if df is None or df.empty or len(df) < 130:
+            return False
+
+        close = pd.to_numeric(df.get("close"), errors="coerce")
+        volume = pd.to_numeric(df.get("volume"), errors="coerce")
+        if close.isna().all() or volume.fillna(0).max() <= 0:
+            return False
+
+        if "pct_chg" in df.columns:
+            pct_chg = pd.to_numeric(df["pct_chg"], errors="coerce")
+        else:
+            pct_chg = (close / close.shift(-1) - 1) * 100
+
+        min_b2_pct = float(self.analyzer.params.get("b2_min_pct", 4.0))
+        return bool((pct_chg >= min_b2_pct).any())
+
     # ────────────────── 全市场扫描 ───────────────────────────────────────────
 
-    def scan_all(self, stock_list: list, cm, progress_callback=None) -> list:
+    def scan_all(self, stock_list: list, cm, progress_callback=None, max_workers=None, recent_rows: int = 320) -> list:
         """
         对给定股票列表执行 B2 扫描。
 
@@ -1378,20 +1423,32 @@ class B2PatternLibrary:
         # 保存命中股票的原始 DataFrame，供 notify_and_export 中生成 K 线图使用
         self._stock_data_dict = {}
 
-        for i, code in enumerate(stock_list, 1):
-            # 调用进度回调（用于在 quant_system.py 中更新进度条）
-            if progress_callback:
-                progress_callback(i, total, code)
+        if total <= 0:
+            return []
 
-            # 读取 CSV 数据；read_stock 返回 None 或空 DataFrame 时跳过
-            df = cm.read_stock(code)
+        worker_count = max_workers
+        if worker_count is None:
+            cpu_count = os.cpu_count() or 1
+            worker_count = 1 if cpu_count <= 1 else min(8, cpu_count * 2, total)
+        else:
+            worker_count = min(max(1, int(worker_count)), total)
+
+        def _scan_one(code):
+            # B2 只依赖近期整理/突破窗口，默认读取最新窗口可避免每只股票解析多年历史。
+            df = cm.read_stock(code, nrows=recent_rows)
             if df is None or df.empty:
-                continue
+                return code, None, None
+            if not self._passes_fast_prefilter(df):
+                return code, None, None
+
+            working_df = self.analyzer._prepare_working_df(code, df)
+            if working_df is None or working_df.empty:
+                return code, None, None
 
             best_result = None
             for case_cfg in self.pattern_templates:
                 try:
-                    result = self.analyzer.analyze(code, df, case_cfg)
+                    result = self.analyzer.analyze_prepared(code, working_df, case_cfg)
                     if result:
                         if (
                             best_result is None
@@ -1406,17 +1463,43 @@ class B2PatternLibrary:
                     # 单股异常不中断整体流程，记录日志后继续
                     logger.warning("[B2] 分析 %s 时发生异常: %s", code, e)
 
-            if best_result:
-                results.append(best_result)
-                self._stock_data_dict[code] = df
-                logger.info(
-                    "[B2] %s 命中！分类=%s 突破日=%s 涨幅=%.1f%% 量比=%.1fx",
-                    code,
-                    best_result.get("pattern_label", best_result.get("pattern_type", "-")),
-                    best_result["b2_date"],
-                    best_result["b2_pct_chg"],
-                    best_result["b2_vol_ratio"],
-                )
+            return code, best_result, df if best_result else None
+
+        def _record_result(code, best_result, df):
+            if not best_result:
+                return
+            results.append(best_result)
+            self._stock_data_dict[code] = df
+            logger.info(
+                "[B2] %s 命中！分类=%s 突破日=%s 涨幅=%.1f%% 量比=%.1fx",
+                code,
+                best_result.get("pattern_label", best_result.get("pattern_type", "-")),
+                best_result["b2_date"],
+                best_result["b2_pct_chg"],
+                best_result["b2_vol_ratio"],
+            )
+
+        if worker_count <= 1:
+            for processed, code in enumerate(stock_list, 1):
+                scanned_code, best_result, df = _scan_one(code)
+                _record_result(scanned_code, best_result, df)
+                if progress_callback:
+                    progress_callback(processed, total, scanned_code)
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                future_map = {executor.submit(_scan_one, code): code for code in stock_list}
+                for processed, future in enumerate(as_completed(future_map), 1):
+                    fallback_code = future_map[future]
+                    try:
+                        scanned_code, best_result, df = future.result()
+                    except Exception as exc:
+                        logger.warning("[B2] 扫描 %s 时发生异常: %s", fallback_code, exc)
+                        scanned_code, best_result, df = fallback_code, None, None
+                    _record_result(scanned_code, best_result, df)
+                    if progress_callback:
+                        progress_callback(processed, total, scanned_code)
 
         # 按 B2 突破日倒序排列：最新日期的命中结果排在前面，方便快速查阅
         results.sort(
@@ -1456,10 +1539,17 @@ class B2Strategy(BaseStrategy):
             if stock_name.startswith('ST') or stock_name.startswith('*ST'):
                 return None
 
+        if not self.library._passes_fast_prefilter(df):
+            return None
+
         best_result = None
+        working_df = self.library.analyzer._prepare_working_df(stock_code, df)
+        if working_df is None or working_df.empty:
+            return None
+
         for case_cfg in self.library.pattern_templates:
             try:
-                result = self.library.analyzer.analyze(stock_code, df, case_cfg)
+                result = self.library.analyzer.analyze_prepared(stock_code, working_df, case_cfg)
             except Exception as exc:
                 logger.warning("[B2] Web 扫描 %s 时发生异常: %s", stock_code, exc)
                 continue

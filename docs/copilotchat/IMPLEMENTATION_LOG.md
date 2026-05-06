@@ -245,3 +245,8 @@ cd web/frontend && npm run test
 | 2026-04-25 | Step 3.2 | web/frontend/src/views/StockDetail.vue | 右侧策略列表头部新增日期选择器 |
 | 2026-04-25 | Step 4.1 | web/frontend/src/components/KlineChart.vue | Pane Manager重构：副图自由布局+双击最大化/恢复 |
 | 2026-04-25 | Step 5.1 | web/frontend/src/components/KlineChart.vue | 长按拖动区间统计浮层 |
+| 2026-04-26 | Step 6.1 | docs/copilotchat/plan.md | 新增K线交互、人工选股与回测实施计划 |
+| 2026-04-26 | Step 6.2 | web/frontend/src/components/KlineChart.vue | 修复副图最大化有效比例，支持双击副图区放大/恢复，新增光标到最新K线涨跌浮层 |
+| 2026-04-26 | Step 6.3 | web/frontend/src/stores/strategyList.ts、web/frontend/src/views/StockDetail.vue | 修复日期接口响应解析，按日期正确加载右侧策略列表 |
+| 2026-04-26 | Step 6.4 | web/backend/routers/manual_selection.py、web/backend/services/manual_selection_service.py、web/frontend/src/stores/manualSelection.ts | 新增人工选股池API、SQLite持久化与右侧列表勾选功能 |
+| 2026-04-26 | Step 6.5 | web/backend/routers/backtest.py、web/backend/services/backtest_service.py、web/frontend/src/views/BacktestView.vue | 新增同步回测MVP与前端参数工作台 |

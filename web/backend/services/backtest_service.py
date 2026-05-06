@@ -263,11 +263,20 @@ def _simulate_trade(candidate: dict, params: dict) -> Optional[dict]:
     if buy_index >= len(frame):
         return None
 
-    end_ts = pd.to_datetime(params['end_date'])
-    end_matches = frame.index[frame['date'] <= end_ts]
-    if len(end_matches) == 0:
-        return None
-    end_bound_index = int(end_matches[-1])
+    simulation_end_date = (
+        params.get('simulation_end_date')
+        or params.get('price_end_date')
+        or params.get('backtest_end_date')
+    )
+    if simulation_end_date:
+        end_ts = pd.to_datetime(simulation_end_date)
+        end_matches = frame.index[frame['date'] <= end_ts]
+        if len(end_matches) == 0:
+            return None
+        end_bound_index = int(end_matches[-1])
+    else:
+        # start_date/end_date 用于筛选候选信号；交易退出按持有天数向后读取本地行情。
+        end_bound_index = len(frame) - 1
     if buy_index > end_bound_index:
         return None
 

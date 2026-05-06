@@ -48,8 +48,9 @@ logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from web.backend.services.sqlite_service import init_database
 
@@ -143,8 +144,32 @@ async def health_check():
     return {"status": "ok", "version": "2.0.0"}
 
 
+def mount_frontend(target_app: FastAPI, dist_dir: Path) -> None:
+    """挂载 Vue 构建产物，并让前端路由刷新时回退到 index.html。"""
+    if not dist_dir.exists():
+        return
+
+    assets_dir = dist_dir / "assets"
+    if assets_dir.exists():
+        target_app.mount(
+            "/assets",
+            StaticFiles(directory=str(assets_dir)),
+            name="frontend-assets",
+        )
+
+    @target_app.get("/{full_path:path}", include_in_schema=False)
+    async def frontend_fallback(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+
+        requested_file = dist_dir / full_path
+        if full_path and requested_file.is_file():
+            return FileResponse(str(requested_file))
+
+        return FileResponse(str(dist_dir / "index.html"))
+
+
 # 生产环境：挂载 Vue 构建产物
 frontend_dist = project_root / "web" / "frontend" / "dist"
-if frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+mount_frontend(app, frontend_dist)
 

@@ -343,6 +343,8 @@ class B2PatternMatchLibrary:
         stock_list: list,
         progress_callback=None,
         min_similarity: float = None,
+        max_workers=None,
+        recent_rows: int = 320,
     ) -> dict:
         """
         完整 B2 图形匹配流程：规则扫描 → 相似度评分 → 排序
@@ -372,7 +374,9 @@ class B2PatternMatchLibrary:
         b2_hits = rule_lib.scan_all(self.csv_manager.list_all_stocks()
                                     if stock_list is None else stock_list,
                                     self.csv_manager,
-                                    progress_callback)
+                                    progress_callback,
+                                    max_workers=max_workers,
+                                    recent_rows=recent_rows)
         stock_data_dict = getattr(rule_lib, "_stock_data_dict", {})
 
         if not b2_hits:

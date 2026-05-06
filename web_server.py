@@ -27,6 +27,10 @@ registry = get_registry("config/strategy_params.yaml")
 registry.auto_register_from_directory("strategy")
 
 
+def _format_date(value):
+    return value.strftime('%Y-%m-%d') if hasattr(value, 'strftime') else str(value)[:10]
+
+
 @app.route('/')
 def index():
     """主页"""
@@ -63,7 +67,7 @@ def get_stocks():
                     'code': code,
                     'name': stock_names.get(code, '未知'),
                     'latest_price': round(latest['close'], 2),
-                    'latest_date': latest['date'].strftime('%Y-%m-%d'),
+                    'latest_date': _format_date(latest['date']),
                     'market_cap': round(latest.get('market_cap', 0) / 1e8, 2),  # 总市值，单位：亿
                     'data_count': len(df)
                 })
@@ -96,7 +100,7 @@ def get_stock_detail(code):
         data = []
         for i, (_, row) in enumerate(df.head(100).iterrows()):  # 返回最近100条
             data.append({
-                'date': row['date'].strftime('%Y-%m-%d'),
+                'date': _format_date(row['date']),
                 'open': round(row['open'], 2),
                 'high': round(row['high'], 2),
                 'low': round(row['low'], 2),
@@ -182,7 +186,7 @@ def get_stats():
             if not df.empty:
                 dates.append(df.iloc[0]['date'])
         
-        latest_date = max(dates).strftime('%Y-%m-%d') if dates else '-'
+        latest_date = _format_date(max(dates)) if dates else '-'
         
         return jsonify({
             'success': True,

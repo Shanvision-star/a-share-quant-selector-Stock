@@ -14,3 +14,4 @@ uvicorn[standard]>=0.24.0
 sse-starlette>=1.8.0
 python-multipart>=0.0.6
 baostock>=0.8.8
+pytest>=8.0.0

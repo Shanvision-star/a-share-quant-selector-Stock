@@ -38,7 +38,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from strategy.base_strategy import BaseStrategy
 from utils.technical import (
     MA, EMA, LLV, HHV, REF, EXIST,
-    KDJ, calculate_zhixing_state
+    KDJ, calculate_zhixing_state, calculate_zhixing_position_state,
+    has_cached_kdj, has_cached_zhixing
 )
 
 
@@ -73,25 +74,36 @@ class BowlReboundStrategy(BaseStrategy):
         result = df.copy()
         result = result.loc[:, ~result.columns.duplicated()].copy()
 
-        # 1. 统一计算知行双线和位置状态，避免策略与B1定义分叉
-        zhixing_df = calculate_zhixing_state(
-            result, 
-            m1=self.params['M1'],
-            m2=self.params['M2'],
-            m3=self.params['M3'],
-            m4=self.params['M4'],
-            duokong_pct=self.params['duokong_pct'],
-            short_pct=self.params['short_pct']
-        )
+        # 1. 统一计算知行双线和位置状态，若上游已算过基础双线则只重算阈值相关状态。
+        zhixing_params = (self.params['M1'], self.params['M2'], self.params['M3'], self.params['M4'])
+        if has_cached_zhixing(result, zhixing_params):
+            zhixing_df = calculate_zhixing_position_state(
+                result,
+                result['short_term_trend'],
+                result['bull_bear_line'],
+                duokong_pct=self.params['duokong_pct'],
+                short_pct=self.params['short_pct'],
+            )
+        else:
+            zhixing_df = calculate_zhixing_state(
+                result,
+                m1=self.params['M1'],
+                m2=self.params['M2'],
+                m3=self.params['M3'],
+                m4=self.params['M4'],
+                duokong_pct=self.params['duokong_pct'],
+                short_pct=self.params['short_pct']
+            )
         for column in zhixing_df.columns:
             result[column] = zhixing_df[column]
         
         # 4. KDJ指标
-        from utils.technical import KDJ
-        kdj_df = KDJ(result, n=9, m1=3, m2=3)
-        result['K'] = kdj_df['K']
-        result['D'] = kdj_df['D']
-        result['J'] = kdj_df['J']
+        if not has_cached_kdj(result, (9, 3, 3)):
+            from utils.technical import KDJ
+            kdj_df = KDJ(result, n=9, m1=3, m2=3)
+            result['K'] = kdj_df['K']
+            result['D'] = kdj_df['D']
+            result['J'] = kdj_df['J']
         
         # 5. 放量阳线条件
         # 成交量 >= 前一日 * N

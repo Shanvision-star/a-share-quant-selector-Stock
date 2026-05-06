@@ -17,6 +17,7 @@ sys.path.insert(0, str(project_root))
 
 from strategy.strategy_registry import get_registry
 from utils.csv_manager import CSVManager
+from utils.technical import prepare_shared_indicators
 from utils.trading_calendar import previous_a_share_trading_day
 from web.backend.services import strategy_result_repository as repo
 from web.backend.services.config_service import get_config_with_revision, save_config, update_config_with_revision
@@ -24,7 +25,9 @@ from web.backend.services.config_service import get_config_with_revision, save_c
 csv_manager = CSVManager(str(project_root / "data"))
 WEB_STRATEGY_RESULTS_FILE = project_root / "data" / "web_strategy_results.json"
 WEB_STRATEGY_SCHEMA_VERSION = 1
+DEFAULT_STRATEGY_SCAN_ROWS = 320
 
+_PROCESS_STARTED_AT = datetime.now()
 _STRATEGY_CACHE = {}
 _STRATEGY_CACHE_LOCK = threading.Lock()
 _STRATEGY_CACHE_TTL_SECONDS = 300
@@ -187,6 +190,37 @@ def _get_expected_strategy_filters() -> list:
 def _get_rebuild_state() -> dict:
     with _STRATEGY_REBUILD_STATE_LOCK:
         return dict(_STRATEGY_REBUILD_STATE)
+
+
+def _parse_repo_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _running_run_started_before_process(run: dict | None) -> bool:
+    started_at = _parse_repo_datetime((run or {}).get('started_at'))
+    return bool(started_at and started_at < _PROCESS_STARTED_AT)
+
+
+def _mark_stale_running_run_interrupted(run: dict) -> dict:
+    """后端重启后，数据库里遗留的 running 作业已经不可能继续执行。"""
+    message = '后端进程已重启，旧运行任务已中断；已改用现有策略缓存。'
+    updated = dict(run)
+    updated.update({
+        'status': 'error',
+        'completed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'message': message,
+    })
+    try:
+        repo.finish_run(run['run_id'], 'error', message)
+        repo.insert_event(run['run_id'], 'error', message=message)
+    except Exception:
+        pass
+    return updated
 
 
 def _begin_rebuild_state(strategy_filter: str, target_date: str, total: int) -> tuple[bool, dict]:
@@ -488,20 +522,33 @@ def _prepare_stock_context(code: str, stock_names: dict, as_of_date: str = None)
     if name.startswith('ST') or name.startswith('*ST'):
         return 'invalid', name, None, f'{name} 为ST股票'
 
-    df = csv_manager.read_stock(code)
+    df = csv_manager.read_stock(code, nrows=DEFAULT_STRATEGY_SCAN_ROWS)
     df = _trim_price_frame_as_of(df, as_of_date)
+    if (df is None or df.empty) and as_of_date:
+        full_df = csv_manager.read_stock(code)
+        df = _trim_price_frame_as_of(full_df, as_of_date)
     if df.empty or len(df) < 60:
         return 'skip', name, None, '数据不足'
 
     return 'ok', name, df, None
 
 
-def _analyze_stock_multi_strategy(code: str, name: str, df, strategy_items: list) -> dict:
+def _resolve_common_zhixing_params(strategy_items: list):
+    params_set = set()
+    for _, _, strategy in strategy_items:
+        params = getattr(strategy, 'params', {}) or {}
+        if all(key in params for key in ('M1', 'M2', 'M3', 'M4')):
+            params_set.add((params['M1'], params['M2'], params['M3'], params['M4']))
+    return next(iter(params_set)) if len(params_set) == 1 else None
+
+
+def _analyze_stock_multi_strategy(code: str, name: str, df, strategy_items: list, shared_zhixing_params=None) -> dict:
     """单只股票复用多策略分析。返回 hits dict，key 为 strategy_filter。"""
     hits = {}
+    shared_df = prepare_shared_indicators(df, zhixing_params=shared_zhixing_params)
     for sf, strategy_name, strategy in strategy_items:
         try:
-            result = strategy.analyze_stock(code, name, df)
+            result = strategy.analyze_stock(code, name, shared_df.copy())
             if result and result.get('signals'):
                 hits[sf] = {
                     'strategy_name': strategy_name,
@@ -543,12 +590,12 @@ def _finalize_grouped_results(group_buffers: dict, scanned_total: int) -> dict:
     return group_buffers
 
 
-def _process_one_stock(code: str, stock_names: dict, strategy_items: list, as_of_date: str = None) -> dict:
+def _process_one_stock(code: str, stock_names: dict, strategy_items: list, as_of_date: str = None, shared_zhixing_params=None) -> dict:
     """线程池任务：读取单只股票并在内存中复用多策略分析。"""
     status, name, df, reason = _prepare_stock_context(code, stock_names, as_of_date)
     if status != 'ok':
         return {'code': code, 'name': name, 'status': status, 'reason': reason, 'hits': {}}
-    hits = _analyze_stock_multi_strategy(code, name, df, strategy_items)
+    hits = _analyze_stock_multi_strategy(code, name, df, strategy_items, shared_zhixing_params)
     return {'code': code, 'name': name, 'status': 'ok', 'reason': None, 'hits': hits}
 
 
@@ -578,7 +625,8 @@ def scan_one_stock_with_df(code: str, df, stock_names: dict, selected_items: lis
     if status != 'ok':
         return []
 
-    hits = _analyze_stock_multi_strategy(code, name, validated_df, selected_items)
+    shared_zhixing_params = _resolve_common_zhixing_params(selected_items)
+    hits = _analyze_stock_multi_strategy(code, name, validated_df, selected_items, shared_zhixing_params)
     if not hits:
         return []
 
@@ -765,9 +813,10 @@ def build_strategy_result_snapshot(
 
     # 并发遍历股票, 每只股票只 read_stock 一次
     worker_count = max(1, min(8, total_stocks))
+    shared_zhixing_params = _resolve_common_zhixing_params(selected_items)
     with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {
-            executor.submit(_process_one_stock, code, stock_names, selected_items, effective_date): code
+            executor.submit(_process_one_stock, code, stock_names, selected_items, effective_date, shared_zhixing_params): code
             for code in all_stocks
         }
 
@@ -949,6 +998,16 @@ def get_strategy_cache_status(strategy_filter: str = 'all', target_date: str = N
         sqlite_summary = repo.get_result_summary_for_date(effective_date)
     except Exception:
         pass
+
+    if (
+        not rebuild_state.get('is_running')
+        and running_run
+        and _running_run_started_before_process(running_run)
+    ):
+        interrupted_run = _mark_stale_running_run_interrupted(running_run)
+        if last_run and last_run.get('run_id') == interrupted_run.get('run_id'):
+            last_run = interrupted_run
+        running_run = None
 
     if not rebuild_state.get('is_running') and running_run:
         latest_event = None

@@ -740,7 +740,7 @@ class AKShareFetcher:
                     continue
             
             if stocks:
-                print(f"  ✓ 通过腾讯接口获取: {len(stocks)} 只股票")
+                print(f"  [OK] 通过腾讯接口获取: {len(stocks)} 只股票")
                 return stocks
             
             # 如果获取失败，使用默认列表
@@ -773,7 +773,7 @@ class AKShareFetcher:
                         filtered[code] = name
                     
                     if filtered:
-                        print(f"✓ HTTP获取成功: {len(filtered)} 只A股股票")
+                        print(f"[OK] HTTP获取成功: {len(filtered)} 只A股股票")
                         self._save_stock_names(filtered)
                         return filtered
             except Exception as e:
@@ -799,7 +799,7 @@ class AKShareFetcher:
                     all_stocks = all_stocks[~all_stocks['名称'].str.contains(keyword, na=False)]
                 
                 stock_dict = dict(zip(all_stocks['代码'], all_stocks['名称']))
-                print(f"✓ akshare获取成功: {len(stock_dict)} 只A股股票")
+                print(f"[OK] akshare获取成功: {len(stock_dict)} 只A股股票")
                 self._save_stock_names(stock_dict)
                 return stock_dict
                 
@@ -811,11 +811,11 @@ class AKShareFetcher:
         print("\n网络连接失败，尝试加载本地缓存...")
         local_stocks = self._load_local_stock_names()
         if local_stocks:
-            print(f"✓ 从本地缓存加载: {len(local_stocks)} 只股票")
+            print(f"[OK] 从本地缓存加载: {len(local_stocks)} 只股票")
             return local_stocks
         
         print("\n使用内置默认股票列表...")
-        print(f"✓ 加载默认列表: {len(DEFAULT_STOCK_LIST)} 只股票")
+        print(f"[OK] 加载默认列表: {len(DEFAULT_STOCK_LIST)} 只股票")
         return DEFAULT_STOCK_LIST.copy()
     
     def _fetch_stock_history_http(self, stock_code, years=6):
@@ -1520,7 +1520,7 @@ class AKShareFetcher:
                     else:
                         cap = int(cap)
                     market_cap_map[code] = cap
-            print(f"  ✓ akshare接口成功: {len(market_cap_map)} 只股票市值")
+            print(f"  [OK] akshare接口成功: {len(market_cap_map)} 只股票市值")
             # 写入内存缓存，供 _get_realtime_market_cap 使用。
             _today = datetime.now().strftime('%Y-%m-%d')
             with _market_cap_cache_lock:
@@ -1533,7 +1533,7 @@ class AKShareFetcher:
             # 方法2: 使用腾讯接口备选
             market_cap_map = self._fetch_market_cap_tencent(stock_codes)
             if market_cap_map:
-                print(f"  ✓ 腾讯接口成功: {len(market_cap_map)} 只股票市值")
+                print(f"  [OK] 腾讯接口成功: {len(market_cap_map)} 只股票市值")
                 _today = datetime.now().strftime('%Y-%m-%d')
                 with _market_cap_cache_lock:
                     self._market_cap_cache.update(market_cap_map)
@@ -1568,12 +1568,12 @@ class AKShareFetcher:
                 # 数据校验 - 检查是否有有效价格数据
                 valid_data = True
                 if len(df) < 10:  # 数据太少，可能是新股或数据异常
-                    print(f"⚠ 数据太少({len(df)}条)")
+                    print(f"[WARN] 数据太少({len(df)}条)")
                     valid_data = False
                     failed_list.append(code)
                     failed_set.add(code)
                 elif df['close'].mean() <= 0:  # 价格异常
-                    print(f"⚠ 价格异常")
+                    print("[WARN] 价格异常")
                     valid_data = False
                     failed_list.append(code)
                     failed_set.add(code)
@@ -1582,10 +1582,10 @@ class AKShareFetcher:
                     if code in market_cap_map:
                         df['market_cap'] = market_cap_map[code]
                     self.csv_manager.write_stock(code, df)
-                    print(f"✓ ({len(df)}条)")
+                    print(f"[OK] ({len(df)}条)")
                     success += 1
             else:
-                print("✗ 失败")
+                print("[FAIL] 失败")
                 failed_list.append(code)
                 failed_set.add(code)
 
@@ -1687,18 +1687,35 @@ class AKShareFetcher:
         today = now.date()
         from datetime import time as dt_time
         is_after_close = now.time() >= dt_time(15, 0)
+        latest_completed_trade_date = previous_a_share_trading_day(
+            today if is_after_close else today - timedelta(days=1)
+        )
+        requested_target_date = None
 
         if date is None:
             target_date = today if (is_after_close or allow_intraday_fast) else today - timedelta(days=1)
             target_date = previous_a_share_trading_day(target_date)
             if not is_after_close and allow_intraday_fast and not max_stocks:
-                print(f"⚠️ 盘中手动快路径已开启，本次尝试更新当日数据 {target_date.strftime('%Y-%m-%d')}")
+                print(f"[WARN] 盘中手动快路径已开启，本次尝试更新当日数据 {target_date.strftime('%Y-%m-%d')}")
             elif not is_after_close and not max_stocks:
-                print(f"⚠️ 未收盘，仍然检查是否缺失最近交易日数据 {target_date.strftime('%Y-%m-%d')}")
+                print(f"[WARN] 未收盘，仍然检查是否缺失最近交易日数据 {target_date.strftime('%Y-%m-%d')}")
         else:
-            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+            requested_target_date = datetime.strptime(date, "%Y-%m-%d").date()
+            target_date = requested_target_date
+            if requested_target_date == today and not is_after_close and not allow_intraday_fast:
+                target_date = previous_a_share_trading_day(today - timedelta(days=1))
+                print(
+                    "[WARN] 选择了当日但当前尚未收盘，且未开启盘中快路径；"
+                    f"已自动回退到最近已完成交易日 {target_date.strftime('%Y-%m-%d')}"
+                )
 
-        can_use_spot_fast_path = (is_after_close or allow_intraday_fast) and target_date == today
+        # 快路径使用“可确认归属到目标交易日的全市场快照”。
+        # 收盘后：今天就是最近已完成交易日；次日凌晨/开盘前：昨天才是最近已完成交易日。
+        # 盘中快路径只有用户明确允许时才写入今天的未收盘快照。
+        can_use_spot_fast_path = (
+            target_date == latest_completed_trade_date
+            or (allow_intraday_fast and target_date == today)
+        )
 
         target_date_str = target_date.strftime('%Y-%m-%d')
         scan_total = len(existing_stocks)
@@ -1786,6 +1803,66 @@ class AKShareFetcher:
                 'slow_path_reasons': dict(slow_path_reason_counts),
             }
 
+        def recalc_stocks_to_update():
+            stocks_to_update.clear()
+            for code in existing_stocks:
+                try:
+                    _ld = latest_date_map.get(code)
+                    if _ld is None or _ld < target_date:
+                        stocks_to_update.append(code)
+                except Exception:
+                    stocks_to_update.append(code)
+
+        def finalize_no_update(message):
+            update_cache['last_update_date'] = target_date_str
+            with open(update_cache_file, 'w') as f:
+                json.dump(update_cache, f)
+            nonlocal cache_written
+            cache_written = True
+            emit_progress(100, message, phase='complete')
+            return build_summary('done', message)
+
+        def fallback_same_day_target(reason, snapshot_count=0, requested_count=0):
+            nonlocal target_date, target_date_str, can_use_spot_fast_path
+            nonlocal fast_path_total, fast_path_success, fast_path_failed, slow_path_total
+            if target_date != today:
+                return False
+
+            fallback_target = previous_a_share_trading_day(today - timedelta(days=1))
+            if fallback_target >= target_date:
+                return False
+
+            previous_target_str = target_date_str
+            target_date = fallback_target
+            target_date_str = target_date.strftime('%Y-%m-%d')
+            can_use_spot_fast_path = False
+            spot_data_map.clear()
+            fast_path_total = 0
+            fast_path_success = 0
+            fast_path_failed = 0
+            slow_path_total = 0
+            for key in slow_path_reason_counts:
+                slow_path_reason_counts[key] = 0
+            recalc_stocks_to_update()
+
+            detail = (
+                f"{reason}（当日快照 {snapshot_count}/{requested_count} 只）"
+                if requested_count
+                else reason
+            )
+            emit_progress(
+                35,
+                f"当日目标 {previous_target_str} 的快照尚未就绪，已自动回退到最近已完成交易日 {target_date_str}；{detail}",
+                phase='scan_complete',
+                target_date_adjusted_from=previous_target_str,
+                target_date_adjust_reason=reason,
+            )
+            print(
+                f"[WARN] 当日目标 {previous_target_str} 的快照尚未就绪，"
+                f"已自动回退到最近已完成交易日 {target_date_str}（{detail}）"
+            )
+            return True
+
         if not existing_stocks:
             print("没有找到已有数据，请先执行 init")
             return build_summary('error', '没有找到已有数据，请先执行 init')
@@ -1802,7 +1879,7 @@ class AKShareFetcher:
 
         if update_cache.get('last_update_date') == target_date_str and not max_stocks:
             cache_hit = True
-            print("✓ 今日已更新")
+            print("[OK] 今日已更新")
             message = f"{target_date_str} 数据已是最新，跳过更新（缓存命中）"
             emit_progress(100, message, phase='complete')
             return build_summary('done', message)
@@ -1839,14 +1916,9 @@ class AKShareFetcher:
                 )
 
         if not stocks_to_update:
-            print(f"✓ 所有股票已是最新数据 ({target_date_str})")
-            update_cache['last_update_date'] = target_date_str
-            with open(update_cache_file, 'w') as f:
-                json.dump(update_cache, f)
-            cache_written = True
+            print(f"[OK] 所有股票已是最新数据 ({target_date_str})")
             message = f"所有股票已是最新数据 ({target_date_str})"
-            emit_progress(100, message, phase='complete')
-            return build_summary('done', message)
+            return finalize_no_update(message)
 
         print(f"  需要更新：{len(stocks_to_update)} 只")
         emit_progress(
@@ -2016,7 +2088,7 @@ class AKShareFetcher:
         if can_use_spot_fast_path and not spot_data_map:
             emit_progress(
                 35,
-                "加载当日行情快照（用于快路径）...",
+                f"加载 {target_date_str} 行情快照（用于快路径）...",
                 phase='market_cap_refresh' if _need_cap_refresh else 'market_cap_cached',
             )
             _spot_snapshot = self._fetch_spot_snapshot_map(
@@ -2025,9 +2097,22 @@ class AKShareFetcher:
             )
             if _spot_snapshot:
                 spot_data_map.update(_spot_snapshot)
+            _spot_count = len(spot_data_map)
+            _spot_coverage_ratio = _spot_count / max(len(stocks_to_update), 1)
+            _spot_globally_unready = _spot_count == 0 or (
+                len(stocks_to_update) >= 100 and _spot_coverage_ratio < 0.2
+            )
+            if _spot_globally_unready and fallback_same_day_target(
+                reason='快照覆盖率不足，避免误入全市场慢路径',
+                snapshot_count=_spot_count,
+                requested_count=len(stocks_to_update),
+            ):
+                if not stocks_to_update:
+                    print(f"[OK] 回退后所有股票已是最新数据 ({target_date_str})")
+                    return finalize_no_update(f"当日快照未就绪，已回退到最近已完成交易日 {target_date_str}")
             emit_progress(
                 36,
-                f"当日行情快照就绪：{len(spot_data_map)} 只，可进入快路径分流",
+                f"{target_date_str} 行情快照就绪：{len(spot_data_map)} 只，可进入快路径分流",
                 phase='market_cap_refresh' if _need_cap_refresh else 'market_cap_cached',
             )
 
@@ -2035,7 +2120,7 @@ class AKShareFetcher:
         # P2: 直接查 latest_date_map（扫描阶段已缓存），不再重新读文件
         # 快路径条件（全部满足才走快路径）：
         #   1. 仅缺失1个交易日（防止多日缺失用快照后丢失历史行）
-        #   2. can_use_spot_fast_path == True（仅允许当日收盘后使用实时快照）
+        #   2. can_use_spot_fast_path == True（最近已完成交易日或显式盘中快照）
         #   3. spot_data_map 中存在该股
         #   4. spot_data_map[code]['close'] > 0（停牌过滤）
         fast_path_stocks: list = []
@@ -2305,7 +2390,7 @@ class AKShareFetcher:
             )
 
         print("=" * 70)
-        print(f"✅ 并发更新完成！总计：{total_to_update_all} 只 | 成功：{updated} 只 | 失败：{failed} 只")
+        print(f"[OK] 并发更新完成！总计：{total_to_update_all} 只 | 成功：{updated} 只 | 失败：{failed} 只")
 
         # ── 等待后台市值刷新线程（最多30秒），完成后推送市值更新事件 ────
         if not _bg_done.is_set():

@@ -8,7 +8,7 @@ DB_PATH = project_root / "data" / "web_strategy_cache.db"
 
 _local = threading.local()
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def get_connection() -> sqlite3.Connection:
@@ -143,6 +143,29 @@ def init_database():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_intraday_code_date_period
         ON intraday_klines(code, date, period)
     """)
+
+    # 表 7: manual_selections - 人工复选后的目标股票池（按日期分类）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS manual_selections (
+            selection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            selection_date TEXT NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT,
+            strategy_name TEXT,
+            source_trade_date TEXT,
+            source_signal_date TEXT,
+            source_payload_json TEXT,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_selection_date_code
+        ON manual_selections(selection_date, code)
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_manual_selection_date ON manual_selections(selection_date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_manual_selection_code ON manual_selections(code)")
 
     # 记录 schema version
     cursor.execute(

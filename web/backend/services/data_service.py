@@ -404,9 +404,26 @@ async def run_data_update(
         yield pipeline_queue.get_nowait()
 
     update_summary = update_summary or {}
+    actual_update_date = update_summary.get('target_date') or effective_date
+    actual_update_date = str(actual_update_date)[:10] if actual_update_date else effective_date
+    if actual_update_date != effective_date:
+        requested_effective_date = effective_date
+        effective_date = actual_update_date
+        try:
+            repo.update_run(run_id, trade_date=effective_date)
+            repo.insert_event(
+                run_id,
+                'target_date_adjusted',
+                message=f'更新目标日期从 {requested_effective_date} 调整为 {effective_date}',
+            )
+        except Exception:
+            pass
+    update_summary['target_date'] = effective_date
+
     update_metrics = {
         key: update_summary.get(key)
         for key in (
+            'target_date',
             'scan_total',
             'checked',
             'to_update',

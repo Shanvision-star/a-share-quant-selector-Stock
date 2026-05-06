@@ -23,8 +23,12 @@ class CSVManager:
         subdir.mkdir(exist_ok=True)
         return subdir / f"{stock_code}.csv"
     
-    def read_stock(self, stock_code):
-        """读取股票数据"""
+    def read_stock(self, stock_code, parse_dates=False, nrows=None, usecols=None):
+        """读取股票数据。
+
+        策略扫描默认不在读文件时解析日期，避免全市场小 CSV 批量读取时把
+        日期转换成本放大；需要日期运算的调用方再局部 pd.to_datetime。
+        """
         path = self.get_stock_path(stock_code)
         if not path.exists():
             return pd.DataFrame()
@@ -34,7 +38,14 @@ class CSVManager:
             return pd.DataFrame()
         
         try:
-            df = pd.read_csv(path, parse_dates=['date'])
+            read_kwargs = {}
+            if parse_dates:
+                read_kwargs['parse_dates'] = ['date']
+            if nrows is not None:
+                read_kwargs['nrows'] = int(nrows)
+            if usecols is not None:
+                read_kwargs['usecols'] = usecols
+            df = pd.read_csv(path, **read_kwargs)
             return df
         except Exception as e:
             print(f"  读取 {stock_code} 数据失败: {e}")

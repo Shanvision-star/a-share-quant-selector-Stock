@@ -19,7 +19,13 @@ from copy import deepcopy
 import pandas as pd
 
 from strategy.base_strategy import BaseStrategy
-from utils.technical import KDJ, calculate_zhixing_state
+from utils.technical import (
+    KDJ,
+    calculate_zhixing_state,
+    calculate_zhixing_position_state,
+    has_cached_kdj,
+    has_cached_zhixing,
+)
 
 
 ZHANGYUE_B1_ANALYSIS_CONFIG = {
@@ -86,16 +92,30 @@ class B1CaseStrategy(BaseStrategy):
         result['date'] = pd.to_datetime(result['date'])
         result = result.sort_values('date').reset_index(drop=True)
 
-        kdj_df = KDJ(result, n=9, m1=3, m2=3)
-        zhixing_df = calculate_zhixing_state(
-            result,
-            m1=self.config['M1'],
-            m2=self.config['M2'],
-            m3=self.config['M3'],
-            m4=self.config['M4'],
-            duokong_pct=self.config['duokong_pct'],
-            short_pct=self.config['short_pct'],
-        )
+        if has_cached_kdj(result, (9, 3, 3)):
+            kdj_df = result[['K', 'D', 'J']]
+        else:
+            kdj_df = KDJ(result, n=9, m1=3, m2=3)
+
+        zhixing_params = (self.config['M1'], self.config['M2'], self.config['M3'], self.config['M4'])
+        if has_cached_zhixing(result, zhixing_params):
+            zhixing_df = calculate_zhixing_position_state(
+                result,
+                result['short_term_trend'],
+                result['bull_bear_line'],
+                duokong_pct=self.config['duokong_pct'],
+                short_pct=self.config['short_pct'],
+            )
+        else:
+            zhixing_df = calculate_zhixing_state(
+                result,
+                m1=self.config['M1'],
+                m2=self.config['M2'],
+                m3=self.config['M3'],
+                m4=self.config['M4'],
+                duokong_pct=self.config['duokong_pct'],
+                short_pct=self.config['short_pct'],
+            )
 
         # 覆盖写入指标列而不是 concat，确保列名唯一。
         for col in ['K', 'D', 'J']:

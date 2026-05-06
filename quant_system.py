@@ -4,6 +4,7 @@ A股量化选股系统 - 核心业务模块
 """
 import os
 import logging
+import sys
 import time
 from pathlib import Path
 from datetime import datetime, time as dt_time, timedelta
@@ -16,9 +17,22 @@ from utils.dingtalk_notifier import DingTalkNotifier
 from strategy.strategy_registry import get_registry
 
 logger = logging.getLogger(__name__)
+
+
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, 'reconfigure'):
+        try:
+            _stream.reconfigure(errors='replace')
+        except Exception:
+            pass
+
 from utils.kline_chart import generate_kline_chart
 from utils.tdx_exporter import export_strategy_tdx, export_total_tdx, export_b1_match_tdx
+from utils.technical import prepare_shared_indicators
 from strategy.b2_strategy import B2CaseAnalyzer, B2PatternLibrary
+
+
+DEFAULT_STRATEGY_SCAN_ROWS = 320
 
 
 class QuantSystem:
@@ -290,6 +304,25 @@ class QuantSystem:
 
         return {code: f"股票{code}" for code in stock_data.keys()}
 
+    def _get_strategy_scan_rows(self):
+        """解析策略扫描窗口行数；默认只读最新窗口以控制全市场扫描耗时。"""
+        raw_value = self.config.get('strategy_scan_rows', DEFAULT_STRATEGY_SCAN_ROWS)
+        try:
+            rows = int(raw_value)
+        except (TypeError, ValueError):
+            rows = DEFAULT_STRATEGY_SCAN_ROWS
+        return max(160, rows)
+
+    @staticmethod
+    def _resolve_common_zhixing_params(strategy_items):
+        """若已加载策略使用相同知行均线周期，则预计算一次基础双线。"""
+        params_set = set()
+        for _, strategy in strategy_items:
+            params = getattr(strategy, 'params', {}) or {}
+            if all(key in params for key in ('M1', 'M2', 'M3', 'M4')):
+                params_set.add((params['M1'], params['M2'], params['M3'], params['M4']))
+        return next(iter(params_set)) if len(params_set) == 1 else None
+
     # ===================== 数据抓取模块 =====================
     def init_data(self, max_stocks=None):
         """首次全量初始化：抓取6年历史数据"""
@@ -413,6 +446,8 @@ class QuantSystem:
         total_codes = []
         selection_started_at = time.time()
         strategy_items = list(self.registry.strategies.items())
+        strategy_scan_rows = self._get_strategy_scan_rows()
+        shared_zhixing_params = self._resolve_common_zhixing_params(strategy_items)
         results = {strategy_name: [] for strategy_name, _ in strategy_items}
         selected_codes = set()
         max_workers = self._resolve_worker_count(max_workers, len(process_codes), default_cap=8, label="默认选股")
@@ -425,7 +460,7 @@ class QuantSystem:
         last_progress_at = 0.0
 
         def _process_stock(code):
-            df = self.csv_manager.read_stock(code)
+            df = self.csv_manager.read_stock(code, nrows=strategy_scan_rows)
             name = stock_names.get(code, '未知')
             invalid_keywords = ['退', '未知', '退市', '已退']
             if any(kw in name for kw in invalid_keywords):
@@ -435,10 +470,11 @@ class QuantSystem:
             if df.empty or len(df) < 60:
                 return 'skip', code, None, None
 
+            shared_df = prepare_shared_indicators(df, zhixing_params=shared_zhixing_params)
             strategy_hits = []
             for strategy_name, strategy in strategy_items:
                 try:
-                    df_with_indicators = strategy.calculate_indicators(df.copy())
+                    df_with_indicators = strategy.calculate_indicators(shared_df.copy())
                     signal_list = strategy.select_stocks(df_with_indicators, name)
                     if signal_list:
                         strategy_hits.append((strategy_name, signal_list, df_with_indicators))
@@ -446,8 +482,8 @@ class QuantSystem:
                     continue
 
             if not strategy_hits:
-                return 'no_signal', code, name, df
-            return 'ok', code, name, strategy_hits, df
+                return 'no_signal', code, name, shared_df
+            return 'ok', code, name, strategy_hits, shared_df
 
         from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
         future_to_code = {}
@@ -635,7 +671,8 @@ class QuantSystem:
         max_workers = self._resolve_worker_count(None, len(process_codes), default_cap=16, label="3天回溯扫描")
 
         def _process_code(code):
-            df = self.csv_manager.read_stock(code)
+            scan_rows = max(260, lookback_days + 140)
+            df = self.csv_manager.read_stock(code, nrows=scan_rows)
             name = stock_names.get(code, '未知')
 
             invalid_keywords = ['退', '未知', '退市', '已退']
@@ -1144,7 +1181,13 @@ class QuantSystem:
             except Exception:
                 pass
 
-        results = b2_library.scan_all(stock_list, self.csv_manager, progress_callback=_progress)
+        results = b2_library.scan_all(
+            stock_list,
+            self.csv_manager,
+            progress_callback=_progress,
+            max_workers=max_workers,
+            recent_rows=self._get_strategy_scan_rows(),
+        )
         print(flush=True)
         print(f"\n[B2] 扫描完成，共命中 {len(results)} 只")
 
@@ -1218,7 +1261,13 @@ class QuantSystem:
             except Exception:
                 pass
 
-        all_results = b2_library.scan_all(stock_list, self.csv_manager, progress_callback=_progress)
+        all_results = b2_library.scan_all(
+            stock_list,
+            self.csv_manager,
+            progress_callback=_progress,
+            max_workers=max_workers,
+            recent_rows=self._get_strategy_scan_rows(),
+        )
         print(flush=True)
 
         # 5. 过滤：仅保留 B2突破日 == 今日 的结果
@@ -1362,6 +1411,8 @@ class QuantSystem:
             stock_list=stock_list,
             progress_callback=_progress,
             min_similarity=min_similarity,
+            max_workers=max_workers,
+            recent_rows=self._get_strategy_scan_rows(),
         )
         print(flush=True)
 

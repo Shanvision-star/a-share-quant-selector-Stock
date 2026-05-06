@@ -4,6 +4,29 @@ from web.backend.models.schemas import ConfigUpdateRequest
 
 router = APIRouter(prefix="/api", tags=["配置管理"])
 
+_FORBIDDEN_CONFIG_KEYS = {
+    "data_dir",
+    "dingtalk",
+    "dingtalk.secret",
+    "dingtalk.webhook_url",
+}
+
+
+def _normalize_config_key(key: str) -> str:
+    return str(key).strip().lower()
+
+
+def _assert_safe_config_update(req: ConfigUpdateRequest) -> None:
+    blocked_keys = []
+    for key in req.params:
+        normalized_key = _normalize_config_key(key)
+        if normalized_key in _FORBIDDEN_CONFIG_KEYS or normalized_key.startswith("dingtalk."):
+            blocked_keys.append(str(key))
+
+    if blocked_keys:
+        blocked_text = ", ".join(sorted(blocked_keys))
+        raise HTTPException(status_code=422, detail=f"禁止写入配置项: {blocked_text}")
+
 
 @router.get("/config")
 async def get_config():
@@ -15,6 +38,7 @@ async def get_config():
 @router.post("/config")
 async def update_config(req: ConfigUpdateRequest):
     """更新策略配置"""
+    _assert_safe_config_update(req)
     from web.backend.services.strategy_service import ConfigRefreshError, update_strategy_config
     try:
         success, revision = update_strategy_config(req.strategy_name, req.params, req.expected_revision)

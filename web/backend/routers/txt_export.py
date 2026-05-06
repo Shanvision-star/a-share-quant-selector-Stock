@@ -54,6 +54,8 @@ STRATEGY_LABEL = {
     "bowl": "碗底反弹",
 }
 
+CLASSIFIED_STRATEGIES = ("b1", "b2", "bowl")
+
 
 @router.get("/txt/files")
 async def list_txt_files(date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
@@ -109,21 +111,14 @@ async def list_txt_dates():
     return {"success": True, "data": dates}
 
 
-@router.post("/txt/generate")
-async def generate_txt_file(
-    strategy: str = Query("all", pattern="^(all|b1|b2|bowl)$"),
-    date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
-):
-    """从策略结果数据库生成通达信 TXT 文件"""
-    from web.backend.services import strategy_result_repository as repo
+def _resolve_export_date(repo, strategy: str, date: str | None) -> str | None:
+    if date:
+        return date
+    dates = repo.get_available_trade_dates(1, strategy_filter=strategy)
+    return dates[0] if dates else None
 
-    if not date:
-        dates = repo.get_available_trade_dates(1)
-        if not dates:
-            return {"success": False, "error": "暂无策略结果数据，请先执行选股"}
-        date = dates[0]
 
-    # 查询统计摘要（信号条数 + 去重股票数）
+def _build_strategy_export_summary(repo, strategy: str, date: str) -> dict:
     summary = repo.query_results(
         strategy_filter=strategy,
         start_date=date,
@@ -133,9 +128,42 @@ async def generate_txt_file(
     )
     total_signals = int(summary.get("total", 0))
     unique_code_total = int(summary.get("unique_code_total", 0))
+    return {
+        "strategy": strategy,
+        "strategy_label": STRATEGY_LABEL.get(strategy, strategy),
+        "signal_total": total_signals,
+        "unique_code_total": unique_code_total,
+        "overlap_signal_count": max(0, total_signals - unique_code_total),
+    }
+
+
+def _build_txt_summary(repo, date: str) -> dict:
+    strategies = [
+        _build_strategy_export_summary(repo, strategy, date)
+        for strategy in CLASSIFIED_STRATEGIES
+    ]
+    all_summary = _build_strategy_export_summary(repo, "all", date)
+    sum_strategy_unique = sum(item["unique_code_total"] for item in strategies)
+    return {
+        "date": date,
+        "signal_total": all_summary["signal_total"],
+        "unique_code_total": all_summary["unique_code_total"],
+        "overlap_signal_count": all_summary["overlap_signal_count"],
+        "cross_strategy_overlap_count": max(0, sum_strategy_unique - all_summary["unique_code_total"]),
+        "strategies": strategies,
+    }
+
+
+def _write_txt_file(repo, strategy: str, date: str) -> dict:
+    export_summary = _build_strategy_export_summary(repo, strategy, date)
+    total_signals = export_summary["signal_total"]
+    unique_code_total = export_summary["unique_code_total"]
 
     if total_signals <= 0:
-        return {"success": False, "error": f"日期 {date} 暂无「{STRATEGY_LABEL.get(strategy, strategy)}」选股结果"}
+        return {
+            "success": False,
+            "error": f"日期 {date} 暂无「{STRATEGY_LABEL.get(strategy, strategy)}」选股结果",
+        }
 
     # 直接查询去重后的完整代码列表，避免分页截断导致漏导出。
     codes = repo.query_unique_codes(
@@ -152,16 +180,76 @@ async def generate_txt_file(
     filepath.write_text("\n".join(lines), encoding="utf-8")
 
     return {
+        "filename": filename,
+        "count": len(lines),
+        "unique_code_total": unique_code_total,
+        "signal_total": total_signals,
+        "overlap_signal_count": max(0, total_signals - len(lines)),
+        "date": date,
+        "strategy": strategy,
+        "strategy_label": STRATEGY_LABEL.get(strategy, strategy),
+    }
+
+
+@router.get("/txt/summary")
+async def get_txt_summary(
+    date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+):
+    """返回指定日期的策略 TXT 导出统计摘要"""
+    from web.backend.services import strategy_result_repository as repo
+
+    resolved_date = _resolve_export_date(repo, "all", date)
+    if not resolved_date:
+        return {"success": False, "error": "暂无策略结果数据，请先执行选股"}
+    return {"success": True, "data": _build_txt_summary(repo, resolved_date)}
+
+
+@router.post("/txt/generate")
+async def generate_txt_file(
+    strategy: str = Query("all", pattern="^(all|b1|b2|bowl)$"),
+    date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+):
+    """从策略结果数据库生成通达信 TXT 文件"""
+    from web.backend.services import strategy_result_repository as repo
+
+    resolved_date = _resolve_export_date(repo, strategy, date)
+    if not resolved_date:
+        return {"success": False, "error": "暂无策略结果数据，请先执行选股"}
+
+    payload = _write_txt_file(repo, strategy, resolved_date)
+    if payload.get("success") is False:
+        return payload
+
+    return {"success": True, "data": payload}
+
+
+@router.post("/txt/generate-batch")
+async def generate_txt_file_batch(
+    date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+):
+    """按 B1 / B2 / 碗底 / 全部去重批量生成通达信 TXT 文件"""
+    from web.backend.services import strategy_result_repository as repo
+
+    resolved_date = _resolve_export_date(repo, "all", date)
+    if not resolved_date:
+        return {"success": False, "error": "暂无策略结果数据，请先执行选股"}
+
+    files = []
+    for strategy in (*CLASSIFIED_STRATEGIES, "all"):
+        payload = _write_txt_file(repo, strategy, resolved_date)
+        if payload.get("success") is False:
+            continue
+        files.append(payload)
+
+    if not files:
+        return {"success": False, "error": f"日期 {resolved_date} 暂无可导出的策略结果"}
+
+    return {
         "success": True,
         "data": {
-            "filename": filename,
-            "count": len(lines),
-            "unique_code_total": unique_code_total,
-            "signal_total": total_signals,
-            "overlap_signal_count": max(0, total_signals - len(lines)),
-            "date": date,
-            "strategy": strategy,
-            "strategy_label": STRATEGY_LABEL.get(strategy, strategy),
+            "date": resolved_date,
+            "files": files,
+            "summary": _build_txt_summary(repo, resolved_date),
         },
     }
 

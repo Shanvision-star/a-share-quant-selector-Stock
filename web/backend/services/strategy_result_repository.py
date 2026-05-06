@@ -215,6 +215,7 @@ def _build_result_filters(
     conditions = []
     params = []
     prefix = f"{table_alias}."
+    signal_or_trade_date = f"COALESCE(NULLIF({prefix}signal_date, ''), {prefix}trade_date)"
 
     if trade_date:
         conditions.append(f"{prefix}trade_date = ?")
@@ -241,10 +242,10 @@ def _build_result_filters(
         conditions.append(f"{prefix}similarity_score <= ?")
         params.append(max_similarity)
     if start_date:
-        conditions.append(f"{prefix}trade_date >= ?")
+        conditions.append(f"{signal_or_trade_date} >= ?")
         params.append(start_date)
     if end_date:
-        conditions.append(f"{prefix}trade_date <= ?")
+        conditions.append(f"{signal_or_trade_date} <= ?")
         params.append(end_date)
 
     return conditions, params
@@ -540,11 +541,22 @@ def get_latest_snapshot(trade_date: str = None, strategy_filter: str = None) -> 
     return item
 
 
-def get_available_trade_dates(limit: int = 30) -> list[str]:
-    """获取有结果的交易日期列表"""
+def get_available_trade_dates(limit: int = 30, strategy_filter: str = None) -> list[str]:
+    """获取有结果的日期列表，优先使用信号日期，缺失时回退到缓存交易日"""
     conn = get_connection()
+    date_expr = "COALESCE(NULLIF(signal_date, ''), trade_date)"
+    conditions = [f"{date_expr} IS NOT NULL", f"{date_expr} != ''"]
+    params = []
+    if strategy_filter and strategy_filter != 'all':
+        conditions.append("strategy_filter = ?")
+        params.append(strategy_filter)
+    where = " WHERE " + " AND ".join(conditions)
     rows = conn.execute(
-        "SELECT DISTINCT trade_date FROM strategy_results ORDER BY trade_date DESC LIMIT ?",
-        (limit,),
+        f"""SELECT DISTINCT {date_expr} AS result_date
+            FROM strategy_results
+            {where}
+            ORDER BY result_date DESC
+            LIMIT ?""",
+        params + [limit],
     ).fetchall()
-    return [r['trade_date'] for r in rows]
+    return [r['result_date'] for r in rows]

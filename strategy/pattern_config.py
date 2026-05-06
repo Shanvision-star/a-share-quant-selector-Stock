@@ -357,7 +357,7 @@ B2_DEFAULT_PARAMS = {
     "vol_multiplier":        _b2_yaml_config.get("vol_multiplier", 1.5),
     "b2_min_pct":           _b2_yaml_config.get("b2_min_pct", 4.0),
     "b2_hold_days":         _b2_yaml_config.get("b2_hold_days", 3),
-    "b2_must_follow_b1_days": _b2_yaml_config.get("b2_must_follow_b1_days", 1),
+    "b2_must_follow_b1_days": _b2_yaml_config.get("b2_must_follow_b1_days", 5),
     "damage_lookback_days": _b2_yaml_config.get("damage_lookback_days", 50),
     "damage_min_drop_pct":  _b2_yaml_config.get("damage_min_drop_pct", 18.0),
     "reversal_min_pct":     _b2_yaml_config.get("reversal_min_pct", 6.0),

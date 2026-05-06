@@ -1,16 +1,66 @@
-"""回测接口（预留）"""
+"""回测接口。"""
+from typing import Literal, Optional
+
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from web.backend.services.backtest_service import run_backtest as run_backtest_service
 
 router = APIRouter(prefix="/api", tags=["回测"])
 
+DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
+
+
+class BacktestCandidate(BaseModel):
+    code: str = Field(..., pattern=r"^\d{6}$")
+    name: str = ''
+    strategy_name: str = ''
+    trade_date: Optional[str] = Field(default=None, pattern=DATE_PATTERN)
+    signal_date: Optional[str] = Field(default=None, pattern=DATE_PATTERN)
+
+
+class BacktestRequest(BaseModel):
+    start_date: str = Field(..., pattern=DATE_PATTERN)
+    end_date: str = Field(..., pattern=DATE_PATTERN)
+    source: Literal['manual', 'strategy', 'codes'] = 'strategy'
+    strategy: Literal['all', 'b1', 'b2', 'bowl'] = 'all'
+    selected_codes: list[str] = Field(default_factory=list)
+    selected_candidates: list[BacktestCandidate] = Field(default_factory=list)
+    input_codes: list[str] = Field(default_factory=list)
+    holding_days: int = Field(default=5, ge=1, le=120)
+    buy_offset_days: int = Field(default=1, ge=0, le=20)
+    buy_price: Literal['open', 'close'] = 'open'
+    sell_price: Literal['open', 'close'] = 'close'
+    fee_rate: float = Field(default=0.0003, ge=0, le=0.02)
+    slippage_rate: float = Field(default=0.0005, ge=0, le=0.02)
+    take_profit_pct: Optional[float] = Field(default=0, ge=0, le=200)
+    stop_loss_pct: Optional[float] = Field(default=0, ge=0, le=100)
+    max_positions_per_day: int = Field(default=10, ge=0, le=500)
+    codes_fallback_to_start_date: bool = False
+    profit_run_enabled: bool = True
+    profit_trigger_pct: float = Field(default=5, ge=0, le=200)
+    profit_step_pct: float = Field(default=10, ge=0, le=200)
+    profit_sell_pct: float = Field(default=25, ge=0, le=100)
+    hold_above_short_trend_after_trigger: bool = True
+    enable_no_gain_exit: bool = True
+    no_gain_days: int = Field(default=3, ge=1, le=30)
+    exit_on_bull_bear_break: bool = True
+    exit_on_short_trend_break: bool = True
+    short_trend_break_days: int = Field(default=2, ge=1, le=20)
+    exit_on_short_trend_drawdown: bool = True
+    short_trend_drawdown_pct: float = Field(default=5, ge=0, le=50)
+
 
 @router.post("/backtest")
-async def run_backtest():
-    """回测接口 — 预留，返回 501"""
-    raise HTTPException(status_code=501, detail="回测功能即将上线")
+async def run_backtest(payload: BacktestRequest):
+    """同步回测：返回摘要、交易明细和资金曲线。"""
+    if payload.start_date > payload.end_date:
+        raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
+    result = run_backtest_service(payload.dict())
+    return {"success": True, "data": result}
 
 
 @router.get("/backtest/{task_id}")
 async def get_backtest_result(task_id: str):
-    """查询回测任务 — 预留，返回 501"""
-    raise HTTPException(status_code=501, detail="回测功能即将上线")
+    """当前版本为同步回测，暂不提供异步任务查询。"""
+    raise HTTPException(status_code=404, detail=f"回测任务不存在或已过期: {task_id}")

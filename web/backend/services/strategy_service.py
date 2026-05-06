@@ -7,8 +7,10 @@ import queue
 import sys
 import threading
 import time
-from datetime import datetime, time as dt_time, timedelta
+from datetime import date as date_cls, datetime, time as dt_time, timedelta
 from pathlib import Path
+
+import pandas as pd
 
 project_root = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(project_root))
@@ -114,6 +116,28 @@ _PARAM_META = {
         'b2_hold_days': {'label': '站稳确认天数', 'min': 1, 'max': 7, 'step': 1, 'desc': 'B2突破后需连续站稳多空线的天数（后验质量门槛）'},
     },
 }
+
+# SSE 2026 market holidays. Weekends are still filtered separately.
+_A_SHARE_CLOSED_DATES = {
+    date_cls(2026, 1, 1), date_cls(2026, 1, 2), date_cls(2026, 1, 3),
+    *{date_cls(2026, 2, day) for day in range(15, 24)},
+    date_cls(2026, 4, 4), date_cls(2026, 4, 5), date_cls(2026, 4, 6),
+    *{date_cls(2026, 5, day) for day in range(1, 6)},
+    date_cls(2026, 6, 19), date_cls(2026, 6, 20), date_cls(2026, 6, 21),
+    date_cls(2026, 9, 25), date_cls(2026, 9, 26), date_cls(2026, 9, 27),
+    *{date_cls(2026, 10, day) for day in range(1, 8)},
+}
+
+
+def _is_a_share_trading_day(day: date_cls) -> bool:
+    return day.weekday() < 5 and day not in _A_SHARE_CLOSED_DATES
+
+
+def _previous_a_share_trading_day(day: date_cls) -> date_cls:
+    cursor = day
+    while not _is_a_share_trading_day(cursor):
+        cursor -= timedelta(days=1)
+    return cursor
 
 
 def _load_stock_names() -> dict:
@@ -229,10 +253,20 @@ def get_latest_trade_date() -> str:
     else:
         target = now.date() - timedelta(days=1)
 
-    while target.weekday() >= 5:
-        target -= timedelta(days=1)
+    return _previous_a_share_trading_day(target).strftime('%Y-%m-%d')
 
-    return target.strftime('%Y-%m-%d')
+
+def _trim_price_frame_as_of(df, as_of_date: str = None):
+    if df is None or getattr(df, 'empty', True) or not as_of_date or 'date' not in df.columns:
+        return df
+
+    target = pd.to_datetime(as_of_date, errors='coerce')
+    if pd.isna(target):
+        return df
+
+    dates = pd.to_datetime(df['date'], errors='coerce')
+    trimmed = df.loc[dates <= target].copy()
+    return trimmed.reset_index(drop=True)
 
 
 def _extract_signal_items(strategy_name: str, stock_result: dict) -> list:
@@ -364,13 +398,6 @@ def _analyze_stock_for_strategy(strategy, code: str, stock_names: dict):
         return None
 
     try:
-        if hasattr(strategy, 'calculate_indicators') and hasattr(strategy, 'select_stocks'):
-            df_with_indicators = strategy.calculate_indicators(df.copy())
-            signal_list = strategy.select_stocks(df_with_indicators, name)
-            if signal_list:
-                return {'code': code, 'name': name, 'signals': signal_list}
-            return None
-
         result = strategy.analyze_stock(code, name, df)
         if result and result.get('signals'):
             return {
@@ -469,7 +496,7 @@ def _init_group_buffers(
     return buffers
 
 
-def _prepare_stock_context(code: str, stock_names: dict):
+def _prepare_stock_context(code: str, stock_names: dict, as_of_date: str = None):
     """单只股票读取与预校验。返回 (status, name, df, reason)。"""
     name = stock_names.get(code, '未知')
     invalid_keywords = ('退', '未知', '退市', '已退')
@@ -479,6 +506,7 @@ def _prepare_stock_context(code: str, stock_names: dict):
         return 'invalid', name, None, f'{name} 为ST股票'
 
     df = csv_manager.read_stock(code)
+    df = _trim_price_frame_as_of(df, as_of_date)
     if df.empty or len(df) < 60:
         return 'skip', name, None, '数据不足'
 
@@ -490,16 +518,6 @@ def _analyze_stock_multi_strategy(code: str, name: str, df, strategy_items: list
     hits = {}
     for sf, strategy_name, strategy in strategy_items:
         try:
-            if hasattr(strategy, 'calculate_indicators') and hasattr(strategy, 'select_stocks'):
-                df_with_indicators = strategy.calculate_indicators(df.copy())
-                signal_list = strategy.select_stocks(df_with_indicators, name)
-                if signal_list:
-                    hits[sf] = {
-                        'strategy_name': strategy_name,
-                        'stock_result': {'code': code, 'name': name, 'signals': signal_list},
-                    }
-                continue
-
             result = strategy.analyze_stock(code, name, df)
             if result and result.get('signals'):
                 hits[sf] = {
@@ -542,9 +560,9 @@ def _finalize_grouped_results(group_buffers: dict, scanned_total: int) -> dict:
     return group_buffers
 
 
-def _process_one_stock(code: str, stock_names: dict, strategy_items: list) -> dict:
+def _process_one_stock(code: str, stock_names: dict, strategy_items: list, as_of_date: str = None) -> dict:
     """线程池任务：读取单只股票并在内存中复用多策略分析。"""
-    status, name, df, reason = _prepare_stock_context(code, stock_names)
+    status, name, df, reason = _prepare_stock_context(code, stock_names, as_of_date)
     if status != 'ok':
         return {'code': code, 'name': name, 'status': status, 'reason': reason, 'hits': {}}
     hits = _analyze_stock_multi_strategy(code, name, df, strategy_items)
@@ -766,7 +784,7 @@ def build_strategy_result_snapshot(
     worker_count = max(1, min(8, total_stocks))
     with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {
-            executor.submit(_process_one_stock, code, stock_names, selected_items): code
+            executor.submit(_process_one_stock, code, stock_names, selected_items, effective_date): code
             for code in all_stocks
         }
 

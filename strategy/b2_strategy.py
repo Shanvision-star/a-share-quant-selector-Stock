@@ -242,7 +242,7 @@ class B2CaseAnalyzer:
         "b2_hold_days":          3,   # 突破后需连续站稳多空线的天数
                                       # 3 天是"短期趋势确认"的最小周期，
                                       # 少于 3 天则可能是单日脉冲，无持续性
-        "b2_must_follow_b1_days": 1,  # B2 与 B1 的交易日间隔，默认要求前一日即 B1
+        "b2_must_follow_b1_days": 5,  # B2 与 B1 的最大交易日间隔，兼容多类 B2 形态
 
         # ── 灾后重建型参数 ─────────────────────────────────────────────────
         "damage_lookback_days":  50,  # 在 B1 前回看多少天寻找前期破坏段
@@ -356,6 +356,7 @@ class B2CaseAnalyzer:
 
         return {
             "high": float(window["high"].max()),
+            "breakout_level": float(window["close"].max()),
             "low": float(window["low"].min()),
             "start": str(window.iloc[0]["date"])[:10],
             "end": str(window.iloc[-1]["date"])[:10],
@@ -609,7 +610,7 @@ class B2CaseAnalyzer:
         if b1_result is None:
             return None
 
-        big_up_result = self._check_big_up_candles(working_df, b1_result["idx"])
+        big_up_result = self._check_big_up_candles(working_df, b1_result["idx"], case_cfg)
         if big_up_result is None:
             return None
 
@@ -993,7 +994,12 @@ class B2CaseAnalyzer:
 
     # ──────────────── 步骤2：大阳线验证 ──────────────────────────────────────
 
-    def _check_big_up_candles(self, working_df: pd.DataFrame, b1_idx: int) -> Optional[dict]:
+    def _check_big_up_candles(
+        self,
+        working_df: pd.DataFrame,
+        b1_idx: int,
+        case_cfg: Optional[dict] = None,
+    ) -> Optional[dict]:
         """
         步骤2：验证 B1 触发日之前的攻击波大阳线质量。
 
@@ -1022,7 +1028,10 @@ class B2CaseAnalyzer:
 
         TODO：增加"阳线柱高 > 阴线柱高 25%"对比验证，过滤跳空假阳线
         """
-        lookback     = self.params["b1_pre_lookback"]       # 默认 20 个交易日
+        lookback     = max(
+            int(self.params["b1_pre_lookback"]),
+            int((case_cfg or {}).get("lookback_days", 0) or 0),
+        )
         big_up_pct   = self.params["b1_big_up_pct"]         # 默认 5.0%
         min_days     = self.params["b1_big_up_days_min"]    # 默认 3根
         max_days     = self.params["b1_big_up_days_max"]    # 默认 5根
@@ -1039,8 +1048,8 @@ class B2CaseAnalyzer:
         big_up_rows = window[pct_col >= big_up_pct]
         count       = len(big_up_rows)
 
-        # 大阳线数量须在合理范围内：太少说明攻击力不足，太多说明已过热
-        if not (min_days <= count <= max_days):
+        # 大阳线数量须至少达到下限；超过上限时继续寻找一个合格攻击波簇。
+        if count < min_days:
             return None
 
         # 换手率总和检查：低换手意味着主力用少量筹码推高，控盘质量好
@@ -1049,13 +1058,23 @@ class B2CaseAnalyzer:
 
         # 若 turnover_sum 为 0（无换手率数据），不强制拒绝（容错）
         # 若有数据且超过上限，则认为是游资爆炒，不符合主力控盘特征
-        if not np.isnan(turnover_sum) and turnover_sum > turnover_cap and turnover_sum > 0:
-            return None
+        if count <= max_days and (np.isnan(turnover_sum) or turnover_sum <= turnover_cap or turnover_sum == 0):
+            return {
+                "count":        count,
+                "turnover_sum": round(turnover_sum, 2),
+            }
 
-        return {
-            "count":        count,                    # 大阳线根数（3~5）
-            "turnover_sum": round(turnover_sum, 2),   # 换手率总和（%）
-        }
+        for cluster_size in range(min(max_days, count), min_days - 1, -1):
+            for start in range(0, count - cluster_size + 1):
+                cluster = big_up_rows.iloc[start:start + cluster_size]
+                cluster_turnover = float(cluster["turnover"].apply(_safe_float).dropna().sum())
+                if np.isnan(cluster_turnover) or cluster_turnover <= turnover_cap or cluster_turnover == 0:
+                    return {
+                        "count":        cluster_size,
+                        "turnover_sum": round(cluster_turnover, 2),
+                    }
+
+        return None
 
     # ──────────────── 步骤3：整理区间识别 ────────────────────────────────────
 
@@ -1132,13 +1151,15 @@ class B2CaseAnalyzer:
             # 区间最高价 = B2 突破的关口压力位
             # 区间最低价 = 盘整期支撑位（用于评估后续回撤风险）
             high_val = float(window["high"].max())
+            close_high_val = float(window["close"].max())
             low_val  = float(window["low"].min())
 
             return {
-                "high":  high_val,
-                "low":   low_val,
-                "start": str(start_dt)[:10],   # 标准化为 YYYY-MM-DD
-                "end":   str(end_dt)[:10],
+                "high":           high_val,
+                "breakout_level": close_high_val,
+                "low":            low_val,
+                "start":          str(start_dt)[:10],   # 标准化为 YYYY-MM-DD
+                "end":            str(end_dt)[:10],
             }
         except Exception as e:
             logger.warning("[B2] 整理区间识别失败: %s", e)
@@ -1183,7 +1204,7 @@ class B2CaseAnalyzer:
         b2_min_pct  = self.params["b2_min_pct"]     # 突破日最小涨幅，默认 4%
         vol_days    = self.params["vol_mean_days"]   # 均量计算天数，默认 10
         vol_mult    = self.params["vol_multiplier"]  # 放量系数，默认 1.5
-        high_level  = consolidation["high"]           # 盖板压力位（突破关口）
+        high_level  = consolidation.get("breakout_level", consolidation["high"])  # 盖板压力位（突破关口）
 
         # 从 B1 日后一根 K 线开始扫描（B1 日本身不算突破日）
         scan_start = b1_idx + 1

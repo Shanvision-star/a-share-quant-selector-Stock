@@ -74,14 +74,15 @@ B2Strategy:
   b1_turnover_sum_pct: 35.0
   b2_hold_days: 3
   b2_min_pct: 4.0
+  b2_must_follow_b1_days: 5
   damage_lookback_days: 50
   damage_min_drop_pct: 18.0
   export_txt_dir: data/txt/B2-match
   parallel_big_up_max_count: 4
   parallel_big_up_min_count: 2
   parallel_big_up_pct: 4.0
-  parallel_close_band_pct: 2.0
-  parallel_lookback_days: 25
+  parallel_close_band_pct: 5.0
+  parallel_lookback_days: 30
   rebuild_window_days: 12
   red_fat_green_vol_ratio: 0.65
   reversal_min_pct: 6.0

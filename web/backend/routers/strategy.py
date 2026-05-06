@@ -6,6 +6,8 @@ from sse_starlette.sse import EventSourceResponse
 
 router = APIRouter(prefix="/api", tags=["策略选股"])
 
+_STOCK_CODE_RE = r"^\d{6}$"
+
 
 @router.get("/strategy/results")
 async def get_strategy_results(
@@ -27,7 +29,7 @@ async def get_strategy_results_history(
     strategy: str = Query("all", pattern="^(all|b1|b2|bowl)$"),
     start_date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     end_date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
-    code: str = Query(None),
+    code: str | None = Query(None, pattern=_STOCK_CODE_RE),
     keyword: str = Query(None),
     min_j_value: float = Query(None),
     max_j_value: float = Query(None),
@@ -60,10 +62,13 @@ async def get_strategy_results_history(
 
 
 @router.get("/strategy/results/dates")
-async def get_available_dates(limit: int = Query(30, ge=1, le=100)):
-    """获取有结果的交易日期列表"""
+async def get_available_dates(
+    limit: int = Query(30, ge=1, le=100),
+    strategy: str = Query("all", pattern="^(all|b1|b2|bowl)$"),
+):
+    """获取有结果的日期列表（按信号日期优先）"""
     from web.backend.services import strategy_result_repository as repo
-    dates = repo.get_available_trade_dates(limit)
+    dates = repo.get_available_trade_dates(limit, strategy_filter=strategy)
     return {"success": True, "data": dates}
 
 

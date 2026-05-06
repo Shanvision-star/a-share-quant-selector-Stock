@@ -3,8 +3,16 @@ import api, {
   clearKlineCache,
   getKline,
   getKlineCacheKey,
+  getKlinePrefetchQueueState,
   prefetchKline,
+  prefetchKlineBatch,
 } from '@/api'
+
+async function flushAsyncQueue() {
+  await Promise.resolve()
+  await Promise.resolve()
+  await new Promise(resolve => setTimeout(resolve, 0))
+}
 
 describe('getKline', () => {
   afterEach(() => {
@@ -50,5 +58,64 @@ describe('getKline', () => {
     expect(cached).toBe(response)
     expect(getKlineCacheKey('000001', { period: 'daily', limit: 500, adjust: 'qfq' })).toBe('000001|daily|qfq|500')
     expect(getSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('queues strategy-day kline prefetches with bounded concurrency and deduped codes', async () => {
+    const pending: Array<() => void> = []
+    const getSpy = vi.spyOn(api, 'get').mockImplementation(() => new Promise((resolve) => {
+      pending.push(() => resolve({ data: { data: { bars: [] } } }))
+    }))
+
+    prefetchKlineBatch(
+      ['000001', '000002', '000001', '000003'],
+      { period: 'daily', limit: 500, adjust: 'qfq' },
+      { maxConcurrent: 2 },
+    )
+
+    expect(getSpy).toHaveBeenCalledTimes(2)
+    expect(getKlinePrefetchQueueState()).toMatchObject({ active: 2, queued: 1 })
+
+    pending.shift()?.()
+    await flushAsyncQueue()
+
+    expect(getSpy).toHaveBeenCalledTimes(3)
+    expect(getSpy.mock.calls.map(call => call[0])).toEqual([
+      '/kline/000001',
+      '/kline/000002',
+      '/kline/000003',
+    ])
+
+    pending.shift()?.()
+    pending.shift()?.()
+    await flushAsyncQueue()
+  })
+
+  it('lets high-priority prefetch jobs jump ahead of the strategy-day queue', async () => {
+    const pending: Array<() => void> = []
+    const getSpy = vi.spyOn(api, 'get').mockImplementation(() => new Promise((resolve) => {
+      pending.push(() => resolve({ data: { data: { bars: [] } } }))
+    }))
+
+    prefetchKlineBatch(
+      ['000001', '000002'],
+      { period: 'daily', limit: 500, adjust: 'qfq' },
+      { maxConcurrent: 1 },
+    )
+    prefetchKlineBatch(
+      ['000003'],
+      { period: 'daily', limit: 500, adjust: 'qfq' },
+      { priority: 'high', maxConcurrent: 1 },
+    )
+
+    expect(getSpy.mock.calls.map(call => call[0])).toEqual(['/kline/000001'])
+
+    pending.shift()?.()
+    await flushAsyncQueue()
+
+    expect(getSpy.mock.calls.map(call => call[0])).toEqual(['/kline/000001', '/kline/000003'])
+
+    pending.shift()?.()
+    pending.shift()?.()
+    await flushAsyncQueue()
   })
 })

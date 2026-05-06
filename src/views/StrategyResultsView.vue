@@ -7,6 +7,8 @@ import {
   getStrategyResultsHistory,
   getStrategyRuns,
   getStrategyRunEvents,
+  prefetchKline,
+  prefetchKlineBatch,
 } from '@/api'
 import { useStrategyListStore } from '@/stores/strategyList'
 import { useUpdateJobStore } from '@/stores/updateJob'
@@ -18,6 +20,7 @@ import {
   fetchAllStrategyResultItems,
   formatSimilarityPercent,
 } from '@/utils/strategyResults'
+import { buildStrategyDayPrefetchCodes } from '@/components/klineRequest'
 
 const route = useRoute()
 const router = useRouter()
@@ -89,6 +92,8 @@ const drawerLoading = ref(false)
 const txtSectionRef = ref<HTMLElement | null>(null)
 
 let rebuildController: AbortController | null = null
+let fullResultPrefetchKey = ''
+let fullResultPrefetchSeq = 0
 
 const tabs = [
   { key: 'all', label: '全部' },
@@ -96,6 +101,8 @@ const tabs = [
   { key: 'b2', label: 'B2突破' },
   { key: 'bowl', label: '碗底反弹' },
 ]
+const KLINE_PREFETCH_LIMIT = 500
+const KLINE_PREFETCH_DAY_LIMIT = 240
 
 const strategyLabel = computed(() => tabs.find(t => t.key === activeStrategy.value)?.label || activeStrategy.value)
 const requestedTradeDate = computed(() => {
@@ -225,6 +232,7 @@ async function loadResults() {
     results.value = data.items || []
     resultsTotal.value = data.total || 0
     resultsUniqueTotal.value = data.unique_code_total || 0
+    void prefetchFullResultKlines()
   } catch (e) {
     if (!isAbortError(e)) {
       console.error('加载策略结果失败', e)
@@ -407,6 +415,7 @@ function mergeRealtimeItemsIntoResults(items: any[]) {
   results.value = Array.from(map.values()).sort(sortResults)
   resultsTotal.value = results.value.length
   resultsUniqueTotal.value = new Set(results.value.map((row: any) => row.code)).size
+  prefetchResultKlines(results.value.map((row: any) => row.code))
 }
 
 function handleEvent(eventName: string, data: any) {
@@ -471,12 +480,54 @@ async function hydrateFullStrategyListForDetail() {
       activeStrategy.value,
       requestedTradeDate.value || (filterDateRange.value?.[0] ?? ''),
     )
+    prefetchResultKlines(allItems.map((item: any) => item.code))
   } catch (error) {
     console.error('[StrategyResultsView] 预加载完整策略列表失败', error)
   }
 }
 
+function getKlinePrefetchParams() {
+  return { period: 'daily', limit: KLINE_PREFETCH_LIMIT, adjust: 'qfq' as const }
+}
+
+function prefetchResultStock(code: string) {
+  if (!code) return
+  void prefetchKline(code, getKlinePrefetchParams())
+}
+
+function prefetchResultKlines(codes: string[], focusCode = '') {
+  const targets = buildStrategyDayPrefetchCodes(codes, focusCode, KLINE_PREFETCH_DAY_LIMIT)
+  prefetchKlineBatch(targets, getKlinePrefetchParams())
+}
+
+async function prefetchFullResultKlines(focusCode = '') {
+  prefetchResultKlines(results.value.map((row: any) => row.code), focusCode)
+
+  const params = buildResultsQueryParams()
+  const prefetchKey = JSON.stringify(params)
+  if (fullResultPrefetchKey === prefetchKey) return
+  fullResultPrefetchKey = prefetchKey
+  const seq = ++fullResultPrefetchSeq
+
+  try {
+    const allItems = await fetchAllStrategyResultItems(
+      async (requestParams) => {
+        const res = await getStrategyResultsHistory(requestParams as any)
+        return res.data.data || {}
+      },
+      params,
+      { pageSize: 200 },
+    )
+    if (seq !== fullResultPrefetchSeq) return
+    prefetchResultKlines(allItems.map((item: any) => item.code), focusCode)
+  } catch (error) {
+    console.warn('[StrategyResultsView] 预热策略股K线失败', error)
+  }
+}
+
 function goToStock(code: string) {
+  prefetchResultStock(code)
+  void prefetchFullResultKlines(code)
   // 先使用当前页结果快速回填，再异步补全完整分页结果，避免右侧列表被 50 条截断。
   strategyListStore.setList(
     results.value as any[],
@@ -572,7 +623,7 @@ function formatDuration(start: string, end?: string) {
       <el-table :data="liveSignals" size="small" max-height="260" stripe>
         <el-table-column prop="code" label="代码" width="90">
           <template #default="{ row }">
-            <el-link type="primary" @click="goToStock(row.code)">{{ row.code }}</el-link>
+            <el-link type="primary" @mouseenter="prefetchResultStock(row.code)" @click="goToStock(row.code)">{{ row.code }}</el-link>
           </template>
         </el-table-column>
         <el-table-column prop="name" label="名称" width="100" />
@@ -641,6 +692,7 @@ function formatDuration(start: string, end?: string) {
             stripe
             size="small"
             style="width: 100%"
+            @cell-mouse-enter="(row: any) => prefetchResultStock(row.code)"
             @row-click="(row: any) => goToStock(row.code)"
           >
             <el-table-column prop="code" label="代码" width="90">
@@ -672,6 +724,7 @@ function formatDuration(start: string, end?: string) {
         stripe
         style="width: 100%"
         :default-sort="{ prop: sortBy, order: sortOrder }"
+        @cell-mouse-enter="(row: any) => prefetchResultStock(row.code)"
         @sort-change="onSortChange"
         @row-click="(row: any) => goToStock(row.code)"
       >

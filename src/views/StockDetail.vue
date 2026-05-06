@@ -4,8 +4,8 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import KlineChart from '@/components/KlineChart.vue'
 import StockInfoPanel from '@/components/StockInfoPanel.vue'
-import { getStockPrice, getStrategyResultsHistory, getStockInfo, prefetchKline } from '@/api'
-import { getNeighborCodes } from '@/components/klineRequest'
+import { getStockPrice, getStrategyResultsHistory, getStockInfo, prefetchKline, prefetchKlineBatch } from '@/api'
+import { buildStrategyDayPrefetchCodes, getNeighborCodes } from '@/components/klineRequest'
 import { useStrategyListStore } from '@/stores/strategyList'
 import { useManualSelectionStore } from '@/stores/manualSelection'
 import {
@@ -22,6 +22,7 @@ const manualSelectionStore = useManualSelectionStore()
 const KLINE_LIMIT_10Y = 2600
 const KLINE_PREFETCH_LIMIT = 500
 const KLINE_PREFETCH_RADIUS = 5
+const KLINE_PREFETCH_DAY_LIMIT = 240
 
 const period = ref('daily')
 const adjust = ref<'qfq' | 'hfq' | 'nfq'>('qfq')
@@ -121,6 +122,7 @@ const sidebarLoadingList = computed(() => strategyListStore.isLoadingList)
 
 function goToStockFromList(targetCode: string) {
   prefetchKlineCode(targetCode)
+  prefetchAroundCode(targetCode)
   router.push(`/stocks/${targetCode}`)
 }
 
@@ -133,35 +135,56 @@ function prefetchKlineCode(targetCode: string) {
   })
 }
 
-function scheduleKlinePrefetch(codes: string[]) {
+function scheduleKlinePrefetch(codes: string[], priority: 'normal' | 'high' = 'normal') {
   const targets = Array
     .from(new Set(codes.filter(code => code && code !== props.code)))
-    .slice(0, KLINE_PREFETCH_RADIUS * 2)
+    .slice(0, priority === 'high' ? KLINE_PREFETCH_RADIUS * 2 : KLINE_PREFETCH_DAY_LIMIT)
 
-  if (!targets.length || typeof window === 'undefined') return
+  if (!targets.length) return
 
   const run = () => {
-    for (const targetCode of targets) {
-      prefetchKlineCode(targetCode)
-    }
+    prefetchKlineBatch(
+      targets,
+      {
+        period: period.value,
+        limit: KLINE_PREFETCH_LIMIT,
+        adjust: adjust.value,
+      },
+      { priority },
+    )
+  }
+
+  if (priority === 'high' || typeof window === 'undefined') {
+    run()
+    return
   }
 
   const requestIdleCallback = (window as any).requestIdleCallback
   if (typeof requestIdleCallback === 'function') {
-    requestIdleCallback(run, { timeout: 1200 })
+    requestIdleCallback(run, { timeout: 350 })
   } else {
-    window.setTimeout(run, 120)
+    window.setTimeout(run, 50)
   }
 }
 
 function prefetchAroundCode(centerCode: string) {
   const codes = strategyListItems.value.map(item => item.code)
-  scheduleKlinePrefetch(getNeighborCodes(codes, centerCode, KLINE_PREFETCH_RADIUS))
+  scheduleKlinePrefetch(getNeighborCodes(codes, centerCode, KLINE_PREFETCH_RADIUS), 'high')
+}
+
+function prefetchStrategyDayKlines() {
+  const codes = buildStrategyDayPrefetchCodes(
+    strategyListItems.value.map(item => item.code),
+    props.code,
+    KLINE_PREFETCH_DAY_LIMIT,
+  )
+  scheduleKlinePrefetch(codes)
 }
 
 function prefetchStrategyItem(item: { code?: string }) {
   if (item?.code) {
-    scheduleKlinePrefetch([item.code])
+    prefetchKlineCode(item.code)
+    prefetchAroundCode(item.code)
   }
 }
 
@@ -232,6 +255,7 @@ watch(
     adjust.value,
   ],
   () => {
+    prefetchStrategyDayKlines()
     prefetchAroundCode(props.code)
   },
   { flush: 'post' },

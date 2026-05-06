@@ -1,5 +1,6 @@
 const MAIN_KLINE_REQUEST_KEY = 'kline:render'
 const DEFAULT_FAST_KLINE_LIMIT = 500
+const DEFAULT_PREFETCH_COUNT_LIMIT = 240
 
 export function buildMainKlineRequestKey(_code: string, _period: string, _adjust: string): string {
   return MAIN_KLINE_REQUEST_KEY
@@ -25,4 +26,15 @@ export function getNeighborCodes(codes: string[], currentCode: string, radius: n
   const start = Math.max(0, centerIndex - radius)
   const end = Math.min(uniqueCodes.length, centerIndex + radius + 1)
   return uniqueCodes.slice(start, end).filter(code => code !== currentCode)
+}
+
+export function buildStrategyDayPrefetchCodes(
+  codes: string[],
+  currentCode: string,
+  maxCount = DEFAULT_PREFETCH_COUNT_LIMIT,
+): string[] {
+  const uniqueCodes = Array.from(new Set(codes.filter(Boolean)))
+  const current = uniqueCodes.includes(currentCode) ? [currentCode] : []
+  const rest = uniqueCodes.filter(code => code !== currentCode)
+  return current.concat(rest).slice(0, Math.max(0, maxCount))
 }

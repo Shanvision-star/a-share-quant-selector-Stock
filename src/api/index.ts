@@ -33,6 +33,25 @@ const DEFAULT_KLINE_LIMIT = 2600
 const DEFAULT_KLINE_ADJUST: KlineAdjust = 'qfq'
 const klineResponseCache = new Map<string, any>()
 const klinePendingRequests = new Map<string, Promise<any>>()
+const DEFAULT_KLINE_PREFETCH_CONCURRENCY = 4
+type KlinePrefetchPriority = 'normal' | 'high'
+
+interface KlinePrefetchJob {
+  code: string
+  params: Required<KlineRequestParams>
+  cacheKey: string
+  priority: KlinePrefetchPriority
+}
+
+interface KlinePrefetchOptions {
+  priority?: KlinePrefetchPriority
+  maxConcurrent?: number
+}
+
+const klinePrefetchQueue: KlinePrefetchJob[] = []
+const klinePrefetchQueuedKeys = new Set<string>()
+let klinePrefetchActive = 0
+let klinePrefetchMaxConcurrent = DEFAULT_KLINE_PREFETCH_CONCURRENCY
 
 function normalizeKlineParams(params?: KlineRequestParams): Required<KlineRequestParams> {
   const limit = typeof params?.limit === 'number' && Number.isFinite(params.limit) && params.limit > 0
@@ -54,6 +73,10 @@ export function getKlineCacheKey(code: string, params?: KlineRequestParams): str
 export function clearKlineCache() {
   klineResponseCache.clear()
   klinePendingRequests.clear()
+  klinePrefetchQueue.splice(0, klinePrefetchQueue.length)
+  klinePrefetchQueuedKeys.clear()
+  klinePrefetchActive = 0
+  klinePrefetchMaxConcurrent = DEFAULT_KLINE_PREFETCH_CONCURRENCY
 }
 
 export function getCachedKlineResponse(code: string, params?: KlineRequestParams) {
@@ -94,6 +117,78 @@ export const prefetchKline = (
   code: string,
   params?: KlineRequestParams,
 ) => getKline(code, params).catch(() => null)
+
+function normalizePrefetchConcurrency(maxConcurrent?: number): number {
+  if (typeof maxConcurrent !== 'number' || !Number.isFinite(maxConcurrent)) {
+    return DEFAULT_KLINE_PREFETCH_CONCURRENCY
+  }
+  return Math.max(1, Math.floor(maxConcurrent))
+}
+
+function runKlinePrefetchQueue() {
+  while (klinePrefetchActive < klinePrefetchMaxConcurrent && klinePrefetchQueue.length) {
+    const job = klinePrefetchQueue.shift()
+    if (!job) return
+    klinePrefetchQueuedKeys.delete(job.cacheKey)
+
+    if (klineResponseCache.has(job.cacheKey) || klinePendingRequests.has(job.cacheKey)) {
+      continue
+    }
+
+    klinePrefetchActive += 1
+    void getKline(job.code, job.params)
+      .catch(() => null)
+      .finally(() => {
+        klinePrefetchActive = Math.max(0, klinePrefetchActive - 1)
+        runKlinePrefetchQueue()
+      })
+  }
+}
+
+export function prefetchKlineBatch(
+  codes: string[],
+  params?: KlineRequestParams,
+  options: KlinePrefetchOptions = {},
+) {
+  const uniqueCodes = Array.from(new Set(codes.filter(Boolean)))
+  if (!uniqueCodes.length) return
+
+  const priority = options.priority || 'normal'
+  klinePrefetchMaxConcurrent = normalizePrefetchConcurrency(options.maxConcurrent)
+  const jobs = uniqueCodes
+    .map((code) => {
+      const normalizedParams = normalizeKlineParams(params)
+      const cacheKey = getKlineCacheKey(code, normalizedParams)
+      return { code, params: normalizedParams, cacheKey, priority }
+    })
+    .filter(job =>
+      !klineResponseCache.has(job.cacheKey)
+      && !klinePendingRequests.has(job.cacheKey)
+      && !klinePrefetchQueuedKeys.has(job.cacheKey),
+    )
+
+  if (!jobs.length) return
+
+  for (const job of jobs) {
+    klinePrefetchQueuedKeys.add(job.cacheKey)
+  }
+
+  if (priority === 'high') {
+    klinePrefetchQueue.unshift(...jobs)
+  } else {
+    klinePrefetchQueue.push(...jobs)
+  }
+
+  runKlinePrefetchQueue()
+}
+
+export function getKlinePrefetchQueueState() {
+  return {
+    active: klinePrefetchActive,
+    queued: klinePrefetchQueue.length,
+    keys: klinePrefetchQueue.map(job => job.cacheKey),
+  }
+}
 
 // 股票价格面板
 export const getStockPrice = (code: string) =>

@@ -11,6 +11,7 @@ sys.path.insert(0, str(project_root))
 
 from utils.csv_manager import CSVManager
 from utils.technical import KDJ, MA, EMA, calculate_zhixing_trend
+from strategy.brick_pattern import calculate_brick_indicators
 
 csv_manager = CSVManager(str(project_root / "data"))
 _stock_names = None
@@ -305,6 +306,7 @@ def _build_kline_result(df, code: str, period: str, limit: int, adjust: str) -> 
     dif = ema12 - ema26
     dea = EMA(dif, 9)
     macd_bar = (dif - dea) * 2
+    brick_df = calculate_brick_indicators(df_slice)
 
     # 前端图表要求时间正序，因此 bars 和 indicators 都要统一翻转。
     # 构建结果（翻转为升序）
@@ -357,6 +359,8 @@ def _build_kline_result(df, code: str, period: str, limit: int, adjust: str) -> 
         'DIF': _reverse(dif),
         'DEA': _reverse(dea),
         'MACD': _reverse(macd_bar),
+        'brick_value': _reverse(brick_df['brick_value']),
+        'brick_turn_up': [bool(brick_df['brick_turn_up'].iloc[i]) for i in range(n - 1, -1, -1)],
     }
 
     return {

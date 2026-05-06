@@ -1,6 +1,8 @@
 """
 CSV 数据管理工具
 """
+import csv
+from io import StringIO
 import os
 import pandas as pd
 from pathlib import Path
@@ -90,24 +92,31 @@ class CSVManager:
         if close_val <= 0 or volume_val <= 0:
             return False
 
-        # 边界值3: 幂等检测 —— 读首行1条，对比日期
-        try:
-            header_df = pd.read_csv(path, nrows=1, parse_dates=['date'])
-            if not header_df.empty:
-                existing_first_date = str(header_df.iloc[0]['date'])[:10]
-                new_date = str(row_dict.get('date', ''))[:10]
-                if existing_first_date == new_date:
-                    return False  # 已是最新，无需写入
-        except Exception:
-            pass  # 读取失败则跳过幂等检测，继续尝试写入
-
-        # 边界值4: 读取 header 以确定列顺序
+        # 边界值3/4: 一次读入文件，完成 header、首行日期和插入位置判断。
         try:
             with open(path, 'r', encoding='utf-8') as f:
-                header_line = f.readline().strip()
-            columns = header_line.split(',')
+                content = f.read()
+            first_newline = content.find('\n')
+            if first_newline < 0:
+                raise ValueError("missing header newline")
+            header_line = content[:first_newline].strip()
+            columns = next(csv.reader([header_line]))
             if not columns or columns == ['']:
                 raise ValueError("empty header")
+
+            first_data_start = first_newline + 1
+            first_data_end = content.find('\n', first_data_start)
+            if first_data_end < 0:
+                first_data_end = len(content)
+            first_data_line = content[first_data_start:first_data_end].strip()
+            if first_data_line and 'date' in columns:
+                first_values = next(csv.reader([first_data_line]))
+                date_index = columns.index('date')
+                if date_index < len(first_values):
+                    existing_first_date = str(first_values[date_index])[:10]
+                    new_date = str(row_dict.get('date', ''))[:10]
+                    if existing_first_date == new_date:
+                        return False  # 已是最新，无需写入
         except Exception:
             # fallback: 退化为全量 write_stock
             try:
@@ -120,17 +129,13 @@ class CSVManager:
                 return False
 
         # 正常路径: 构建新行 CSV 字符串，列顺序严格匹配 header
-        new_row_parts = []
-        for col in columns:
-            val = row_dict.get(col, '')
-            new_row_parts.append(str(val) if val is not None else '')
-        new_row_line = ','.join(new_row_parts)
+        output = StringIO()
+        writer = csv.writer(output, lineterminator='')
+        writer.writerow([row_dict.get(col, '') if row_dict.get(col, '') is not None else '' for col in columns])
+        new_row_line = output.getvalue()
 
         # 原子插入: header 行之后、旧数据之前
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            first_newline = content.index('\n')
             new_content = (
                 content[:first_newline + 1]
                 + new_row_line + '\n'

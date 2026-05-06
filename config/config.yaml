@@ -17,6 +17,7 @@ update:
   lookback_days: 10
   skip_failed: true
   intraday_fast_default: false
+  fast_path_workers: 24
   slow_path_buffer_days: 3
   slow_path_min_fetch_days: 10
   slow_path_max_fetch_days: 60

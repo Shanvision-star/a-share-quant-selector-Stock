@@ -7,7 +7,7 @@ import queue
 import sys
 import threading
 import time
-from datetime import date as date_cls, datetime, time as dt_time, timedelta
+from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +17,7 @@ sys.path.insert(0, str(project_root))
 
 from strategy.strategy_registry import get_registry
 from utils.csv_manager import CSVManager
+from utils.trading_calendar import previous_a_share_trading_day
 from web.backend.services import strategy_result_repository as repo
 from web.backend.services.config_service import get_config_with_revision, save_config, update_config_with_revision
 
@@ -79,6 +80,7 @@ _STRATEGY_NAME_MAP = {
     'b1': ('B1CaseStrategy', 'B1CaseAnalyzer'),
     'b2': ('B2Strategy',),
     'bowl': ('BowlReboundStrategy',),
+    'brick': ('BrickPatternStrategy',),
 }
 
 _B1_PARAM_META = {
@@ -115,30 +117,11 @@ _PARAM_META = {
         'b2_must_follow_b1_days': {'label': 'B2距B1最大天数', 'min': 1, 'max': 10, 'step': 1, 'desc': 'B2突破距B1触发最多N个交易日（上限约束）'},
         'b2_hold_days': {'label': '站稳确认天数', 'min': 1, 'max': 7, 'step': 1, 'desc': 'B2突破后需连续站稳多空线的天数（后验质量门槛）'},
     },
+    'BrickPatternStrategy': {
+        'rebound_strength_ratio': {'label': '回升力度比例', 'min': 0.5, 'max': 1.5, 'step': 0.05, 'desc': '当日砖型图回升幅度 / 前一段回落幅度'},
+        'upper_shadow_max': {'label': '上影线占比上限', 'min': 0.05, 'max': 0.6, 'step': 0.05, 'desc': '上影线 / 当日振幅，默认不超过25%'},
+    },
 }
-
-# SSE 2026 market holidays. Weekends are still filtered separately.
-_A_SHARE_CLOSED_DATES = {
-    date_cls(2026, 1, 1), date_cls(2026, 1, 2), date_cls(2026, 1, 3),
-    *{date_cls(2026, 2, day) for day in range(15, 24)},
-    date_cls(2026, 4, 4), date_cls(2026, 4, 5), date_cls(2026, 4, 6),
-    *{date_cls(2026, 5, day) for day in range(1, 6)},
-    date_cls(2026, 6, 19), date_cls(2026, 6, 20), date_cls(2026, 6, 21),
-    date_cls(2026, 9, 25), date_cls(2026, 9, 26), date_cls(2026, 9, 27),
-    *{date_cls(2026, 10, day) for day in range(1, 8)},
-}
-
-
-def _is_a_share_trading_day(day: date_cls) -> bool:
-    return day.weekday() < 5 and day not in _A_SHARE_CLOSED_DATES
-
-
-def _previous_a_share_trading_day(day: date_cls) -> date_cls:
-    cursor = day
-    while not _is_a_share_trading_day(cursor):
-        cursor -= timedelta(days=1)
-    return cursor
-
 
 def _load_stock_names() -> dict:
     names_file = project_root / "data" / "stock_names.json"
@@ -192,7 +175,7 @@ def _get_case_examples_for_strategy(strategy_name: str) -> list:
 
 def _normalize_strategy_filter(strategy_filter: str = None) -> str:
     normalized = (strategy_filter or 'all').lower()
-    if normalized not in {'all', 'b1', 'b2', 'bowl'}:
+    if normalized not in {'all', 'b1', 'b2', 'bowl', 'brick'}:
         raise ValueError(f'不支持的策略筛选条件: {strategy_filter}')
     return normalized
 
@@ -253,7 +236,7 @@ def get_latest_trade_date() -> str:
     else:
         target = now.date() - timedelta(days=1)
 
-    return _previous_a_share_trading_day(target).strftime('%Y-%m-%d')
+    return previous_a_share_trading_day(target).strftime('%Y-%m-%d')
 
 
 def _trim_price_frame_as_of(df, as_of_date: str = None):

@@ -52,9 +52,10 @@ STRATEGY_LABEL = {
     "b1": "B1形态",
     "b2": "B2突破",
     "bowl": "碗底反弹",
+    "brick": "砖型图",
 }
 
-CLASSIFIED_STRATEGIES = ("b1", "b2", "bowl")
+CLASSIFIED_STRATEGIES = ("b1", "b2", "bowl", "brick")
 
 
 @router.get("/txt/files")
@@ -206,7 +207,7 @@ async def get_txt_summary(
 
 @router.post("/txt/generate")
 async def generate_txt_file(
-    strategy: str = Query("all", pattern="^(all|b1|b2|bowl)$"),
+    strategy: str = Query("all", pattern="^(all|b1|b2|bowl|brick)$"),
     date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     """从策略结果数据库生成通达信 TXT 文件"""
@@ -227,7 +228,7 @@ async def generate_txt_file(
 async def generate_txt_file_batch(
     date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
-    """按 B1 / B2 / 碗底 / 全部去重批量生成通达信 TXT 文件"""
+    """按 B1 / B2 / 碗底 / 砖型图 / 全部去重批量生成通达信 TXT 文件"""
     from web.backend.services import strategy_result_repository as repo
 
     resolved_date = _resolve_export_date(repo, "all", date)

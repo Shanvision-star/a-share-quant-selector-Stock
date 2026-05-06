@@ -13,6 +13,7 @@ sys.path.insert(0, str(project_root))
 
 from utils.csv_manager import CSVManager
 from utils.akshare_fetcher import AKShareFetcher
+from utils.trading_calendar import previous_a_share_trading_day
 from web.backend.services import strategy_result_repository as repo
 
 csv_manager = CSVManager(str(project_root / "data"))
@@ -103,11 +104,13 @@ async def run_data_update(
     pipeline: bool = False,
     allow_intraday_fast: bool = False,
     init_if_empty: bool = True,
+    strategies: list = None,
 ):
     """
     异步执行数据更新，通过 yield 返回进度消息（SSE）
     auto_rebuild=True 时，更新完成后自动执行策略缓存重建
     pipeline=True 时，每只股票更新后立即用内存 df 执行策略扫描，命中结果通过 signal 事件实时推送
+    strategies 为 None 或 ['all'] 时跑全部策略；否则只对所选策略增量重建缓存
     """
     from web.backend.services.strategy_service import (
         get_latest_trade_date,
@@ -116,7 +119,12 @@ async def run_data_update(
 
     run_id = repo.generate_run_id()
     run_type = 'update_and_rebuild' if auto_rebuild else 'update_only'
-    effective_date = target_date or get_latest_trade_date()
+    if target_date:
+        effective_date = target_date
+    elif allow_intraday_fast:
+        effective_date = previous_a_share_trading_day(datetime.now().date()).strftime('%Y-%m-%d')
+    else:
+        effective_date = get_latest_trade_date()
 
     try:
         repo.create_run(run_id, run_type, effective_date, 'all')
@@ -509,15 +517,40 @@ async def run_data_update(
 
     try:
         rebuild_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        snapshot_future = loop.run_in_executor(
-            rebuild_pool,
-            lambda: build_strategy_result_snapshot(
-                target_date=effective_date,
-                strategy_filter='all',
-                progress_callback=rebuild_progress_callback,
-                run_id=run_id,
-            ),
-        )
+
+        # 解析待重建策略集
+        valid_filters = ['b1', 'b2', 'bowl', 'brick']
+        if not strategies or set(strategies) >= set(valid_filters):
+            target_filters = ['all']
+        else:
+            target_filters = [s for s in strategies if s in valid_filters] or ['all']
+
+        def _run_rebuild():
+            last_snapshot = None
+            for idx, sf in enumerate(target_filters):
+                # 多策略时按段映射进度，每个策略独占一段
+                segment_total = len(target_filters)
+                segment_index = idx
+
+                def _seg_callback(event_type, data, _seg=segment_index, _tot=segment_total):
+                    raw = data.get('progress', 0)
+                    seg_start = (raw / max(1, _tot))
+                    overall = seg_start + (100.0 / max(1, _tot)) * (_seg / max(1, _tot)) * 0  # placeholder
+                    # 直接简化：把每策略 0-100 映射到 (idx/tot) ~ ((idx+1)/tot)
+                    base = 100.0 * _seg / _tot
+                    overall = base + raw / _tot
+                    data['progress'] = int(overall)
+                    rebuild_progress_callback(event_type, data)
+
+                last_snapshot = build_strategy_result_snapshot(
+                    target_date=effective_date,
+                    strategy_filter=sf,
+                    progress_callback=_seg_callback if segment_total > 1 else rebuild_progress_callback,
+                    run_id=run_id,
+                )
+            return last_snapshot
+
+        snapshot_future = loop.run_in_executor(rebuild_pool, _run_rebuild)
 
         while not snapshot_future.done() or not event_queue.empty():
             try:

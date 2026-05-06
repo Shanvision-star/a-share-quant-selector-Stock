@@ -170,6 +170,14 @@ def test_txt_summary_reports_per_strategy_and_cross_strategy_overlap(monkeypatch
         signal_date='2026-04-30',
         code='000002',
     )
+    _insert_result(
+        conn,
+        run_id='run-brick',
+        trade_date='2026-05-06',
+        strategy_filter='brick',
+        signal_date='2026-04-30',
+        code='000003',
+    )
 
     response = TestClient(_build_test_app()).get(
         '/api/txt/summary',
@@ -179,8 +187,8 @@ def test_txt_summary_reports_per_strategy_and_cross_strategy_overlap(monkeypatch
     assert response.status_code == 200
     payload = response.json()['data']
     assert payload['date'] == '2026-04-30'
-    assert payload['signal_total'] == 4
-    assert payload['unique_code_total'] == 2
+    assert payload['signal_total'] == 5
+    assert payload['unique_code_total'] == 3
     assert payload['cross_strategy_overlap_count'] == 1
     assert payload['strategies'][0] == {
         'strategy': 'b1',
@@ -193,6 +201,9 @@ def test_txt_summary_reports_per_strategy_and_cross_strategy_overlap(monkeypatch
     assert payload['strategies'][1]['unique_code_total'] == 1
     assert payload['strategies'][2]['strategy'] == 'bowl'
     assert payload['strategies'][2]['unique_code_total'] == 1
+    assert payload['strategies'][3]['strategy'] == 'brick'
+    assert payload['strategies'][3]['strategy_label'] == '砖型图'
+    assert payload['strategies'][3]['unique_code_total'] == 1
 
 
 def test_txt_generate_batch_creates_each_strategy_and_deduped_all_file(monkeypatch, tmp_path):
@@ -223,6 +234,14 @@ def test_txt_generate_batch_creates_each_strategy_and_deduped_all_file(monkeypat
         signal_date='2026-04-30',
         code='000002',
     )
+    _insert_result(
+        conn,
+        run_id='run-brick',
+        trade_date='2026-05-06',
+        strategy_filter='brick',
+        signal_date='2026-04-30',
+        code='000003',
+    )
 
     response = TestClient(_build_test_app()).post(
         '/api/txt/generate-batch',
@@ -231,10 +250,11 @@ def test_txt_generate_batch_creates_each_strategy_and_deduped_all_file(monkeypat
 
     assert response.status_code == 200
     payload = response.json()['data']
-    assert [item['strategy'] for item in payload['files']] == ['b1', 'b2', 'bowl', 'all']
-    assert payload['summary']['unique_code_total'] == 2
+    assert [item['strategy'] for item in payload['files']] == ['b1', 'b2', 'bowl', 'brick', 'all']
+    assert payload['summary']['unique_code_total'] == 3
     assert payload['summary']['cross_strategy_overlap_count'] == 1
     assert (tmp_path / 'tdx_web_b1_20260430.txt').read_text(encoding='utf-8') == 'SZ000001'
     assert (tmp_path / 'tdx_web_b2_20260430.txt').read_text(encoding='utf-8') == 'SZ000001'
     assert (tmp_path / 'tdx_web_bowl_20260430.txt').read_text(encoding='utf-8') == 'SZ000002'
-    assert (tmp_path / 'tdx_web_all_20260430.txt').read_text(encoding='utf-8') == 'SZ000001\nSZ000002'
+    assert (tmp_path / 'tdx_web_brick_20260430.txt').read_text(encoding='utf-8') == 'SZ000003'
+    assert (tmp_path / 'tdx_web_all_20260430.txt').read_text(encoding='utf-8') == 'SZ000001\nSZ000002\nSZ000003'

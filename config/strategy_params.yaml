@@ -100,3 +100,6 @@ BowlReboundStrategy:
   N: 2
   duokong_pct: 0.87
   short_pct: 2.9
+BrickPatternStrategy:
+  rebound_strength_ratio: 0.8
+  upper_shadow_max: 0.25

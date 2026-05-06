@@ -24,8 +24,9 @@ schedule:
 update:
   lookback_days: 10
   skip_failed: true
-  # 盘中快路径默认开关（建议默认 false，仅在前端手动勾选时开启）
+  # 盘中快路径默认开关（收盘后会自动走快路径；盘中建议保持 false）
   intraday_fast_default: false
+  fast_path_workers: 24
   # 慢路径按缺口动态抓取时的窗口参数
   slow_path_buffer_days: 3
   slow_path_min_fetch_days: 10

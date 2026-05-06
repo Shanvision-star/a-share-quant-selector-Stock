@@ -33,10 +33,12 @@ _INTRADAY_FAST_DEFAULT = False
 _SLOW_PATH_BUFFER_DAYS = 3
 _SLOW_PATH_MIN_FETCH_DAYS = 10
 _SLOW_PATH_MAX_FETCH_DAYS = 60
+_FAST_PATH_WORKERS = 24
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.csv_manager import CSVManager
+from utils.trading_calendar import count_a_share_trading_days, previous_a_share_trading_day
 
 # 设置请求会话
 session = requests.Session()
@@ -142,6 +144,7 @@ class AKShareFetcher:
         self._slow_path_buffer_days = _SLOW_PATH_BUFFER_DAYS
         self._slow_path_min_fetch_days = _SLOW_PATH_MIN_FETCH_DAYS
         self._slow_path_max_fetch_days = _SLOW_PATH_MAX_FETCH_DAYS
+        self._fast_path_workers = _FAST_PATH_WORKERS
         self._load_runtime_tuning_config()
         self._load_market_cap_weekly_cache()
     
@@ -227,6 +230,7 @@ class AKShareFetcher:
         slow_path_buffer_days = _SLOW_PATH_BUFFER_DAYS
         slow_path_min_fetch_days = _SLOW_PATH_MIN_FETCH_DAYS
         slow_path_max_fetch_days = _SLOW_PATH_MAX_FETCH_DAYS
+        fast_path_workers = _FAST_PATH_WORKERS
 
         try:
             if self.runtime_config_file.exists():
@@ -262,11 +266,16 @@ class AKShareFetcher:
                     update_cfg.get('slow_path_max_fetch_days'),
                     slow_path_max_fetch_days,
                 )
+                fast_path_workers = self._as_positive_int(
+                    update_cfg.get('fast_path_workers'),
+                    fast_path_workers,
+                )
         except Exception as e:
             logger.warning("读取运行时调优配置失败，使用默认值: %s", e)
 
         if slow_path_max_fetch_days < slow_path_min_fetch_days:
             slow_path_max_fetch_days = slow_path_min_fetch_days
+        fast_path_workers = min(max(fast_path_workers, 1), 64)
 
         with self._baostock_circuit_lock:
             self._baostock_failure_threshold = failure_threshold
@@ -276,6 +285,7 @@ class AKShareFetcher:
             self._slow_path_buffer_days = slow_path_buffer_days
             self._slow_path_min_fetch_days = slow_path_min_fetch_days
             self._slow_path_max_fetch_days = slow_path_max_fetch_days
+            self._fast_path_workers = fast_path_workers
 
     def _get_baostock_cooldown_status(self):
         """返回 (是否冷却中, 剩余秒数, 最近错误)。"""
@@ -368,10 +378,109 @@ class AKShareFetcher:
         
         return market_cap_map
 
+    def _fetch_spot_snapshot_tencent_map(self, target_date_str, stock_codes=None):
+        """Use Tencent batched quotes for same-day OHLCV snapshots."""
+        if not stock_codes:
+            return {}
+
+        code_filter = [str(code).zfill(6) for code in stock_codes]
+        spot_data_map = {}
+        lock = threading.Lock()
+
+        def _as_float(parts, index, default=0.0):
+            try:
+                return float(parts[index] or default)
+            except (ValueError, IndexError, TypeError):
+                return default
+
+        def _parse_line(line):
+            if '="' not in line or '~' not in line:
+                return None
+            try:
+                parts = line.split('"', 2)[1].split('~')
+            except IndexError:
+                return None
+            if len(parts) < 45:
+                return None
+
+            code = str(parts[2]).zfill(6)
+            quote_ts = parts[30] if len(parts) > 30 else ''
+            quote_date = ''
+            if len(quote_ts) >= 8 and quote_ts[:8].isdigit():
+                quote_date = f"{quote_ts[:4]}-{quote_ts[4:6]}-{quote_ts[6:8]}"
+            if quote_date and quote_date != target_date_str:
+                return None
+
+            close_val = _as_float(parts, 3)
+            volume_val = int(_as_float(parts, 36, _as_float(parts, 6)))
+            if close_val <= 0 or volume_val <= 0:
+                return None
+
+            amount_val = _as_float(parts, 57) * 10000
+            if amount_val <= 0:
+                amount_val = _as_float(parts, 37) * 10000
+
+            return code, {
+                'date': target_date_str,
+                'open': _as_float(parts, 5),
+                'close': close_val,
+                'high': _as_float(parts, 33),
+                'low': _as_float(parts, 34),
+                'volume': volume_val,
+                'amount': amount_val,
+                'turnover': _as_float(parts, 38),
+                'market_cap': int(_as_float(parts, 44) * 1e8) if _as_float(parts, 44) > 0 else 0,
+            }
+
+        def _fetch_batch(batch):
+            query_codes_list = []
+            for code in batch:
+                if code.startswith(('6', '8')):
+                    query_codes_list.append(f"sh{code}")
+                elif code.startswith(('0', '3')):
+                    query_codes_list.append(f"sz{code}")
+            if not query_codes_list:
+                return
+
+            try:
+                resp = session.get(
+                    "https://qt.gtimg.cn/q=" + ",".join(query_codes_list),
+                    timeout=(4, 12),
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Referer': 'https://gu.qq.com/',
+                    },
+                )
+                resp.raise_for_status()
+                resp.encoding = resp.encoding or 'gbk'
+                parsed = {}
+                for line in resp.text.strip().split(';'):
+                    item = _parse_line(line)
+                    if item:
+                        parsed[item[0]] = item[1]
+                if parsed:
+                    with lock:
+                        spot_data_map.update(parsed)
+            except Exception as exc:
+                logger.debug("腾讯快照批次失败: %s", exc)
+
+        batch_size = 500
+        batches = [code_filter[i:i + batch_size] for i in range(0, len(code_filter), batch_size)]
+        workers = min(8, max(1, len(batches)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_fetch_batch, batch) for batch in batches]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception:
+                    pass
+
+        return spot_data_map
+
     def _fetch_spot_snapshot_map(self, target_date_str, stock_codes=None):
         """拉取当日行情快照供快路径使用，不改变市值30天刷新策略。"""
         spot_data_map = {}
-        code_filter = set(stock_codes) if stock_codes else None
+        code_filter = {str(code).zfill(6) for code in stock_codes} if stock_codes else None
 
         def _put_snapshot(code, open_v, close_v, high_v, low_v, volume_v, amount_v, turnover_v, market_cap_v):
             if not code:
@@ -400,7 +509,16 @@ class AKShareFetcher:
             except Exception:
                 return
 
-        # 优先使用 akshare 一次性快照。
+        # 日更时已有本地股票列表，优先走腾讯批量报价：请求少、无代理依赖、当天快照延迟最低。
+        if stock_codes:
+            try:
+                spot_data_map.update(self._fetch_spot_snapshot_tencent_map(target_date_str, stock_codes))
+                if spot_data_map:
+                    return spot_data_map
+            except Exception as exc:
+                logger.debug("腾讯快照快路径失败，继续尝试 akshare/EastMoney: %s", exc)
+
+        # 腾讯不可用时使用 akshare 一次性快照。
         try:
             _spot_df = ak.stock_zh_a_spot_em()
             if not _spot_df.empty:
@@ -1556,7 +1674,8 @@ class AKShareFetcher:
             f"盘中快路径默认={'开启' if self._intraday_fast_default else '关闭'}，"
             f"本次盘中快路径={'开启' if allow_intraday_fast else '关闭'}，"
             f"慢路径抓取天数区间={self._slow_path_min_fetch_days}-{self._slow_path_max_fetch_days}"
-            f"(buffer={self._slow_path_buffer_days})"
+            f"(buffer={self._slow_path_buffer_days})，"
+            f"快路径写入并发={self._fast_path_workers}"
         )
 
         existing_stocks = self.csv_manager.list_all_stocks()
@@ -1571,8 +1690,7 @@ class AKShareFetcher:
 
         if date is None:
             target_date = today if (is_after_close or allow_intraday_fast) else today - timedelta(days=1)
-            while target_date.weekday() >= 5:
-                target_date -= timedelta(days=1)
+            target_date = previous_a_share_trading_day(target_date)
             if not is_after_close and allow_intraday_fast and not max_stocks:
                 print(f"⚠️ 盘中手动快路径已开启，本次尝试更新当日数据 {target_date.strftime('%Y-%m-%d')}")
             elif not is_after_close and not max_stocks:
@@ -1800,7 +1918,7 @@ class AKShareFetcher:
                             'fid': 'f3', 'fs': _fs,
                             'fields': 'f12,f17,f2,f15,f16,f5,f6,f8,f20',
                         }
-                        _resp = requests.get(_url, params=_params, timeout=20, headers={
+                        _resp = session.get(_url, params=_params, timeout=(4, 20), headers={
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                             'Referer': 'https://quote.eastmoney.com/',
                         })
@@ -1933,12 +2051,7 @@ class AKShareFetcher:
             if last_date in gap_cache:
                 return gap_cache[last_date]
 
-            day_cursor = last_date + timedelta(days=1)
-            gap = 0
-            while day_cursor <= target_date:
-                if day_cursor.weekday() < 5:
-                    gap += 1
-                day_cursor += timedelta(days=1)
+            gap = count_a_share_trading_days(last_date + timedelta(days=1), target_date)
             gap_cache[last_date] = gap
             return gap
 
@@ -1986,31 +2099,45 @@ class AKShareFetcher:
         if fast_path_stocks:
             emit_progress(
                 36,
-                f"快路径写入 {len(fast_path_stocks)} 只单日缺失股票...",
+                f"快路径并发写入 {len(fast_path_stocks)} 只单日缺失股票...",
                 phase='fast_update',
             )
             _lock_fa = threading.Lock()
             fast_emit_step = 1 if fast_total <= 20 else 10
-            for fast_index, _code in enumerate(fast_path_stocks, start=1):
-                _ok = self.csv_manager.prepend_row(_code, spot_data_map[_code])
-                with _lock_fa:
-                    completed += 1
-                    if _ok:
-                        updated += 1
-                        fast_path_success += 1
-                    else:
-                        failed += 1
-                        fast_path_failed += 1
-                    if fast_index == 1 or fast_index % fast_emit_step == 0 or fast_index == fast_total:
-                        emit_progress(
-                            36 + int(fast_index / max(fast_total, 1) * 3),
-                            (
-                                f"快路径更新中：{fast_index}/{fast_total}，"
-                                f"总完成 {completed}/{len(stocks_to_update)}，成功 {updated}，失败 {failed}"
-                            ),
-                            phase='fast_update',
-                            current_code=_code,
-                        )
+            fast_workers = min(self._fast_path_workers, max(1, fast_total))
+
+            def _write_fast_stock(_code):
+                return _code, self.csv_manager.prepend_row(_code, spot_data_map[_code])
+
+            with ThreadPoolExecutor(max_workers=fast_workers) as fast_executor:
+                futures = {
+                    fast_executor.submit(_write_fast_stock, _code): _code
+                    for _code in fast_path_stocks
+                }
+                for fast_index, future in enumerate(as_completed(futures), start=1):
+                    _code = futures[future]
+                    try:
+                        _code, _ok = future.result()
+                    except Exception:
+                        _ok = False
+                    with _lock_fa:
+                        completed += 1
+                        if _ok:
+                            updated += 1
+                            fast_path_success += 1
+                        else:
+                            failed += 1
+                            fast_path_failed += 1
+                        if fast_index == 1 or fast_index % fast_emit_step == 0 or fast_index == fast_total:
+                            emit_progress(
+                                36 + int(fast_index / max(fast_total, 1) * 3),
+                                (
+                                    f"快路径更新中：{fast_index}/{fast_total}，"
+                                    f"总完成 {completed}/{len(stocks_to_update)}，成功 {updated}，失败 {failed}"
+                                ),
+                                phase='fast_update',
+                                current_code=_code,
+                            )
             emit_progress(
                 39,
                 (

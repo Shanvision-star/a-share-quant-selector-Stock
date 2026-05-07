@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getManualSelections,
   getStrategyResultsHistory,
-  runBacktest,
+  getBacktestTask,
+  startBacktestTask,
   type BacktestRequestPayload,
+  type BacktestTask,
+  type BacktestTaskStatus,
 } from '@/api'
 import { fetchAllStrategyResultItems, formatSimilarityPercent } from '@/utils/strategyResults'
 
@@ -57,6 +60,10 @@ const loading = ref(false)
 const result = ref<any>(null)
 const route = useRoute()
 const manualSelectionMode = ref<'none' | 'single' | 'batch'>('none')
+const activeTaskId = ref('')
+const taskStatus = ref<BacktestTaskStatus | ''>('')
+const taskMessage = ref('')
+let backtestPollTimer: number | null = null
 
 const params = reactive<BacktestRequestPayload>({
   start_date: dateRange.value[0],
@@ -315,17 +322,81 @@ async function handleRunBacktest() {
     ElMessage.warning('请先勾选人工选股，或从人工选股池点击单只回测')
     return
   }
+  clearBacktestPoll()
+  result.value = null
   loading.value = true
+  activeTaskId.value = ''
+  taskStatus.value = ''
+  taskMessage.value = ''
   try {
-    const res = await runBacktest(payload)
-    result.value = res.data.data
-    ElMessage.success(`回测完成：${result.value?.summary?.trade_count || 0} 笔交易`)
+    const res = await startBacktestTask(payload)
+    const task = res.data.data as BacktestTask
+    activeTaskId.value = task.task_id
+    taskStatus.value = task.status
+    taskMessage.value = `任务已提交：${task.task_id}`
+    scheduleBacktestPoll(task.task_id, 300)
   } catch (error: any) {
     console.error('回测失败', error)
     ElMessage.error(error?.response?.data?.detail || '回测失败，请确认后端已重启到最新代码')
-  } finally {
     loading.value = false
+  } finally {
+    // 异步任务会在轮询结束时关闭 loading。
   }
+}
+
+function clearBacktestPoll() {
+  if (backtestPollTimer !== null) {
+    window.clearTimeout(backtestPollTimer)
+    backtestPollTimer = null
+  }
+}
+
+function scheduleBacktestPoll(taskId: string, delay = 1000) {
+  clearBacktestPoll()
+  backtestPollTimer = window.setTimeout(() => {
+    void pollBacktestTask(taskId)
+  }, delay)
+}
+
+async function pollBacktestTask(taskId: string) {
+  try {
+    const res = await getBacktestTask(taskId)
+    const task = res.data.data as BacktestTask
+    taskStatus.value = task.status
+    taskMessage.value = task.finished_at
+      ? `任务 ${task.task_id} 已结束：${task.finished_at}`
+      : `任务 ${task.task_id} ${formatTaskStatus(task.status)}`
+
+    if (task.status === 'done') {
+      result.value = task.result
+      loading.value = false
+      clearBacktestPoll()
+      ElMessage.success(`回测完成：${result.value?.summary?.trade_count || 0} 笔交易`)
+      return
+    }
+
+    if (task.status === 'failed') {
+      loading.value = false
+      clearBacktestPoll()
+      ElMessage.error(task.error || '回测任务失败')
+      return
+    }
+
+    scheduleBacktestPoll(taskId)
+  } catch (error: any) {
+    console.error('查询回测任务失败', error)
+    loading.value = false
+    clearBacktestPoll()
+    ElMessage.error(error?.response?.data?.detail || '查询回测任务失败')
+  }
+}
+
+function formatTaskStatus(status: BacktestTaskStatus | ''): string {
+  if (status === 'queued') return '排队中'
+  if (status === 'running') return '运行中'
+  if (status === 'done') return '已完成'
+  if (status === 'failed') return '失败'
+  return ''
 }
 
 function metricClass(value: unknown) {
@@ -379,6 +450,10 @@ watch(() => params.source, (next) => {
     loadManualSelections()
   }
 })
+
+onBeforeUnmount(() => {
+  clearBacktestPoll()
+})
 </script>
 
 <template>
@@ -390,7 +465,7 @@ watch(() => params.source, (next) => {
       </div>
       <div class="toolbar-actions">
         <el-button :loading="candidateLoading" @click="handleLoadCandidates">{{ params.source === 'manual' ? '加载人工选股' : '加载策略候选' }}</el-button>
-        <el-button type="primary" :loading="loading" @click="handleRunBacktest">开始回测</el-button>
+        <el-button type="primary" :loading="loading" :disabled="loading" @click="handleRunBacktest">{{ loading ? '回测运行中' : '开始回测' }}</el-button>
       </div>
     </div>
 
@@ -540,7 +615,7 @@ watch(() => params.source, (next) => {
         </el-form>
       </section>
 
-      <main class="result-panel" v-loading="loading">
+      <main class="result-panel">
         <section class="candidate-panel">
           <div class="section-head">
             <strong>策略候选列表</strong>
@@ -572,7 +647,17 @@ watch(() => params.source, (next) => {
           </div>
         </div>
 
-        <el-empty v-else description="加载候选或输入个股后点击开始回测" />
+        <el-alert
+          v-if="activeTaskId"
+          :title="taskMessage || `任务 ${activeTaskId} ${formatTaskStatus(taskStatus)}`"
+          :type="taskStatus === 'failed' ? 'error' : taskStatus === 'done' ? 'success' : 'info'"
+          show-icon
+          :closable="false"
+          class="task-alert"
+        />
+
+        <el-empty v-if="!summary && !loading" description="加载候选或输入个股后点击开始回测" />
+        <el-empty v-else-if="!summary && loading" description="回测任务运行中，结果完成后自动刷新" />
 
         <div v-if="summary" class="result-section">
           <el-alert
@@ -649,5 +734,6 @@ watch(() => params.source, (next) => {
 .section-title { font-size: 13px; font-weight: 600; color: #303133; margin-bottom: 8px; }
 .runtime-alert { margin-bottom: 8px; }
 .runtime-meta { margin-bottom: 10px; font-size: 12px; color: #606266; }
+.task-alert { margin-bottom: 12px; }
 @media (max-width: 1180px) { .backtest-layout { grid-template-columns: 1fr; overflow: auto; } .metric-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); } }
 </style>

@@ -385,7 +385,26 @@ export interface BacktestRequestPayload {
   allow_st_buy?: boolean
 }
 
+export type BacktestTaskStatus = 'queued' | 'running' | 'done' | 'failed'
+
+export interface BacktestTask {
+  task_id: string
+  status: BacktestTaskStatus
+  created_at?: string
+  started_at?: string | null
+  finished_at?: string | null
+  error?: string
+  result?: any
+  params?: Record<string, any>
+}
+
 export const runBacktest = (payload: BacktestRequestPayload) =>
   api.post('/backtest', payload)
+
+export const startBacktestTask = (payload: BacktestRequestPayload) =>
+  api.post('/backtest/tasks', payload)
+
+export const getBacktestTask = (taskId: string) =>
+  api.get(`/backtest/tasks/${encodeURIComponent(taskId)}`)
 
 export default api

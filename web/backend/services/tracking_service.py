@@ -409,46 +409,120 @@ class TrackingService:
 
     def _evaluate_holding(self, item: dict, eval_row) -> dict:
         eval_date = eval_row["date"].strftime("%Y-%m-%d")
+        if item.get("last_eval_date") == eval_date:
+            return item
+
         close_price = _safe_float(eval_row.get("close"), 0.0)
         entry_price = _safe_float(item.get("entry_price"), 0.0)
         return_pct = (close_price / entry_price - 1) * 100 if entry_price > 0 and close_price > 0 else 0.0
-        params = item.get("params") or {}
+        params = dict(item.get("params") or {})
         trigger_pct = _safe_float(params.get("profit_trigger_pct"), 5.0)
+        step_pct = max(0.0, _safe_float(params.get("profit_step_pct"), 10.0))
         sell_pct = max(0.0, min(100.0, _safe_float(params.get("profit_sell_pct"), 25.0)))
         keep_pct = max(0.0, min(100.0, _safe_float(params.get("profit_keep_pct"), 0.0)))
         remaining_pct = _safe_float(item.get("remaining_pct"), 100.0)
 
-        if bool(params.get("profit_run_enabled", True)) and return_pct >= trigger_pct and remaining_pct > keep_pct:
-            portion = min(sell_pct, max(0.0, remaining_pct - keep_pct))
-            next_remaining = round(max(0.0, remaining_pct - portion), 2)
-            intent = OrderIntent.from_candidate(
-                self._candidate(item),
-                side="SELL",
-                planned_at=eval_row["date"],
-                price_type="close",
-                target_price=close_price,
-                quantity=_round_lot_quantity(int(_safe_int(item.get("quantity"), 0) * (portion / 100)), 100),
-            ).to_mapping()
-            self._update_item(
-                item["tracking_id"],
-                status="partial_sold" if next_remaining > 0 else "closed",
-                remaining_pct=next_remaining,
-                last_eval_date=eval_date,
-                last_close=close_price,
-                latest_return_pct=round(return_pct, 2),
-                next_action="SELL_PARTIAL",
-                latest_intent=intent,
-                closed_at=eval_date if next_remaining <= 0 else None,
-            )
-            self.add_event(
-                item["tracking_id"],
-                "profit_take",
-                eval_date,
-                "SELL_PARTIAL",
-                "达到放飞阈值，生成部分卖出建议",
-                {"intent": intent, "sell_pct": portion, "remaining_pct": next_remaining},
-            )
-            return self.get_item(item["tracking_id"])
+        if bool(params.get("profit_run_enabled", True)) and trigger_pct > 0:
+            runner_triggered = bool(params.get("runner_triggered", False))
+            if return_pct >= trigger_pct and not runner_triggered:
+                runner_triggered = True
+                params["runner_triggered"] = True
+                params["next_profit_ladder_pct"] = round(trigger_pct + step_pct, 2)
+
+            if runner_triggered and step_pct > 0 and sell_pct > 0:
+                next_ladder_pct = _safe_float(params.get("next_profit_ladder_pct"), trigger_pct + step_pct)
+                sell_total_pct = 0.0
+                actions = []
+                while (
+                    remaining_pct - sell_total_pct > keep_pct
+                    and return_pct >= next_ladder_pct
+                ):
+                    portion = min(sell_pct, max(0.0, remaining_pct - sell_total_pct - keep_pct))
+                    if portion <= 0:
+                        break
+                    sell_total_pct += portion
+                    actions.append(
+                        {
+                            "action": "sell_partial",
+                            "profit_pct": round(next_ladder_pct, 2),
+                            "sell_pct": round(portion, 2),
+                        }
+                    )
+                    next_ladder_pct += step_pct
+
+                if sell_total_pct > 0:
+                    next_remaining = round(max(0.0, remaining_pct - sell_total_pct), 2)
+                    params["next_profit_ladder_pct"] = round(next_ladder_pct, 2)
+                    if next_remaining <= keep_pct and not params.get("hold_core_recorded"):
+                        params["hold_core_recorded"] = True
+                        actions.append(
+                            {
+                                "action": "hold_core",
+                                "profit_pct": round(return_pct, 2),
+                                "remaining_pct": next_remaining,
+                                "keep_pct": keep_pct,
+                            }
+                        )
+                    intent = OrderIntent.from_candidate(
+                        self._candidate(item),
+                        side="SELL",
+                        planned_at=eval_row["date"],
+                        price_type="close",
+                        target_price=close_price,
+                        quantity=_round_lot_quantity(int(_safe_int(item.get("quantity"), 0) * (sell_total_pct / 100)), 100),
+                    ).to_mapping()
+                    self._update_item(
+                        item["tracking_id"],
+                        status="partial_sold" if next_remaining > 0 else "closed",
+                        remaining_pct=next_remaining,
+                        last_eval_date=eval_date,
+                        last_close=close_price,
+                        latest_return_pct=round(return_pct, 2),
+                        next_action="SELL_PARTIAL",
+                        latest_intent=intent,
+                        params=params,
+                        closed_at=eval_date if next_remaining <= 0 else None,
+                    )
+                    self.add_event(
+                        item["tracking_id"],
+                        "profit_take",
+                        eval_date,
+                        "SELL_PARTIAL",
+                        "达到放飞阶梯，生成部分卖出建议",
+                        {
+                            "intent": intent,
+                            "sell_pct": round(sell_total_pct, 2),
+                            "remaining_pct": next_remaining,
+                            "actions": actions,
+                        },
+                    )
+                    return self.get_item(item["tracking_id"])
+
+            if runner_triggered:
+                next_action = "HOLD_CORE" if remaining_pct <= keep_pct else "HOLD_RUNNER"
+                message = "已进入放飞跟踪，等待下一阶梯" if next_action == "HOLD_RUNNER" else "底仓已保留，继续持有"
+                self._update_item(
+                    item["tracking_id"],
+                    last_eval_date=eval_date,
+                    last_close=close_price,
+                    latest_return_pct=round(return_pct, 2),
+                    next_action=next_action,
+                    latest_intent=None,
+                    params=params,
+                )
+                self.add_event(
+                    item["tracking_id"],
+                    "profit_runner",
+                    eval_date,
+                    next_action,
+                    message,
+                    {
+                        "return_pct": round(return_pct, 2),
+                        "remaining_pct": remaining_pct,
+                        "next_profit_ladder_pct": params.get("next_profit_ladder_pct"),
+                    },
+                )
+                return self.get_item(item["tracking_id"])
 
         self._update_item(
             item["tracking_id"],

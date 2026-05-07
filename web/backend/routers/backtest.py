@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from web.backend.services.backtest_job_service import backtest_job_manager
 from web.backend.services.backtest_service import run_backtest as run_backtest_service
 
 router = APIRouter(prefix="/api", tags=["回测"])
@@ -65,16 +66,43 @@ class BacktestRequest(BaseModel):
     allow_st_buy: bool = False
 
 
+def _payload_to_dict(payload: BacktestRequest) -> dict:
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump()
+    return payload.dict()
+
+
 @router.post("/backtest")
 async def run_backtest(payload: BacktestRequest):
     """同步回测：返回摘要、交易明细和资金曲线。"""
     if payload.start_date > payload.end_date:
         raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
-    result = await run_in_threadpool(run_backtest_service, payload.dict())
+    result = await run_in_threadpool(run_backtest_service, _payload_to_dict(payload))
     return {"success": True, "data": result}
+
+
+@router.post("/backtest/tasks")
+async def submit_backtest_task(payload: BacktestRequest):
+    """异步回测：立即返回 task_id，前端用查询接口轮询结果。"""
+    if payload.start_date > payload.end_date:
+        raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
+    task = backtest_job_manager.submit(_payload_to_dict(payload))
+    return {"success": True, "data": task}
+
+
+@router.get("/backtest/tasks/{task_id}")
+async def get_backtest_task(task_id: str):
+    """查询异步回测任务状态。"""
+    task = backtest_job_manager.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"回测任务不存在或已过期: {task_id}")
+    return {"success": True, "data": task}
 
 
 @router.get("/backtest/{task_id}")
 async def get_backtest_result(task_id: str):
-    """当前版本为同步回测，暂不提供异步任务查询。"""
-    raise HTTPException(status_code=404, detail=f"回测任务不存在或已过期: {task_id}")
+    """兼容旧路径的异步任务查询。"""
+    task = backtest_job_manager.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"回测任务不存在或已过期: {task_id}")
+    return {"success": True, "data": task}

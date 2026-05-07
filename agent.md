@@ -10,7 +10,7 @@
 2. 基于本地 CSV 运行 B1、B2、碗形等策略。
 3. 将策略结果写入 JSON/TXT 缓存并推送通知。
 4. 前端展示策略列表、K 线、回测结果，并支持 txt 导出。
-5. 后续扩展回测模块与银河 QMT / miniQMT 实盘执行，但策略、回测和券商下单必须分层。
+5. 后续扩展回测模块与实盘执行接口。银河 QMT 当前按 300 万权限门槛预留，不作为 20 万资金主线。
 
 做任何修改时，优先保护两件事：数据完整性和策略日期一致性。
 
@@ -41,25 +41,26 @@
 | `web/frontend/src/views/UpdateView.vue` | 更新页面 | 用户选择日期、策略范围、盘中快路径 |
 | `web/frontend/src/views/StrategyResultsView.vue` | 策略结果页 | 分类展示、txt 导出、结果去重 |
 | `web/frontend/src/views/StockDetail.vue` | K 线详情页 | K 线缓存、预热、请求竞态保护 |
-| `docs/QMT/qmt_backtest_live_execution_plan.md` | QMT 落地计划 | 银河 QMT / miniQMT、回测、分时买点和实盘风控路线 |
+| `docs/QMT/qmt_backtest_live_execution_plan.md` | QMT 预留计划 | 20 万资金执行方案、QMT / miniQMT 预留接口、回测和分时买点路线 |
 
 ## QMT 回测与实盘执行约定
 
-银河证券账户已开通 QMT；若实际可用客户端为 miniQMT，只要能使用 `xtquant`，项目仍统一走 QMT 适配层。后续接入时必须按“信号、回测、风控、券商适配”分层，不允许策略代码直接调用 QMT 下单。
+银河证券反馈 QMT 量化权限约需 300 万额度；当前计划资金约 20 万，因此项目主线不依赖 QMT 实盘下单。QMT / miniQMT 只作为预留适配层，后续资金或券商权限满足时再启用。后续接入时必须按“信号、回测、风控、券商适配”分层，不允许策略代码直接调用券商下单。
 
 核心术语：
 
 - **Signal**：策略信号，只描述 `code`、`signal_date`、`strategy`、`score`、`reason`，不代表一定买入。
 - **MinuteBar**：分时行情，包含分钟级 OHLCV，用于盘中买点确认。
 - **OrderIntent**：下单意图，表示通过分时规则和风控后的候选订单，还不是券商委托。
-- **BrokerAdapter**：券商适配器接口。`SimBrokerAdapter` 用于模拟盘，`QmtBrokerAdapter` 用于银河 QMT / miniQMT。
-- **execution_mode**：执行模式，必须支持 `readonly`、`paper`、`confirm`、`auto`。默认只能是 `readonly` 或 `paper`。
+- **BrokerAdapter**：券商适配器接口。当前优先 `SimBrokerAdapter` 和人工确认流程，`QmtBrokerAdapter` 仅保留接口。
+- **execution_mode**：执行模式，必须支持 `readonly`、`paper`、`confirm_manual`、`confirm_broker`、`auto`。当前默认只能是 `paper` 或 `confirm_manual`。
 
 强制规则：
 
 - 实时交易循环不能调用大模型。大模型只做总结、复盘、文档和参数解释。
-- QMT 账户号、客户端路径、资金限制等写本地配置，不提交真实账户信息。
-- 实盘前先完成 QMT 只读模式，确认账户、持仓、行情、委托查询都正常。
+- 当前 20 万资金阶段不做 QMT 自动下单，不绕过券商权限门槛。
+- QMT 账户号、客户端路径、资金限制等只写本地配置，不提交真实账户信息。
+- 如未来启用 QMT，必须先完成只读模式，确认账户、持仓、行情、委托查询都正常。
 - 自动交易必须有硬风控：单票最大金额、单日最大买入金额、最大持仓数、涨跌停/停牌/ST 禁买、一键停止。
 - 回测、模拟盘、实盘应共用同一套买卖规则，避免回测逻辑和实盘逻辑分叉。
 
@@ -67,8 +68,8 @@
 
 1. 拆出 `backtest_engine`：`DataPortal`、`SignalSource`、`ExecutionEngine`、`Portfolio`、`Analyzer`。
 2. 增加分时 `MinuteDataPortal` 和 `intraday_entry` 买点确认。
-3. 先写 `SimBrokerAdapter`，再写 `QmtBrokerAdapter`。
-4. QMT 先只读，再人工确认下单，最后才允许小资金自动模式。
+3. 先写 `SimBrokerAdapter` 和人工成交流水导入，再保留 `QmtBrokerAdapter` 空实现。
+4. 当前执行方式优先为 `paper` 或 `confirm_manual`；QMT 满足权限后再从只读模式开始。
 
 ## 1. Think Before Coding
 

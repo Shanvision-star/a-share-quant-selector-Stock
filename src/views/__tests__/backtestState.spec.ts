@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isBacktestTaskCancelable } from '@/views/backtestState'
+import { formatTrackingAction, formatTrackingIntentSummary, isBacktestTaskCancelable } from '@/views/backtestState'
 import type { BacktestCapabilities, BacktestTask } from '@/api'
 
 const runningTask: BacktestTask = {
@@ -18,5 +18,17 @@ describe('backtestState', () => {
 
     expect(isBacktestTaskCancelable({ ...runningTask, status: 'done' }, capabilities)).toBe(false)
     expect(isBacktestTaskCancelable({ ...runningTask, status: 'failed' }, capabilities)).toBe(false)
+  })
+
+  it('formats tracking actions and latest order intent for drawer display', () => {
+    expect(formatTrackingAction('SELL_PARTIAL')).toBe('部分卖出')
+    expect(formatTrackingAction('HOLD_RUNNER')).toBe('放飞持有')
+    expect(formatTrackingIntentSummary({
+      side: 'SELL',
+      quantity: 200,
+      price_type: 'close',
+      target_price: 11.6,
+    })).toBe('卖出 200 股，close 11.6')
+    expect(formatTrackingIntentSummary(null)).toBe('暂无下单意图')
   })
 })

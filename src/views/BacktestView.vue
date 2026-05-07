@@ -12,6 +12,7 @@ import {
   getBacktestTaskEvents,
   getStrategyResultsHistory,
   getBacktestTask,
+  getTrackingEvents,
   listTrackingItems,
   listBacktestTasks,
   startBacktestTaskCompatible,
@@ -20,10 +21,11 @@ import {
   type BacktestTask,
   type BacktestTaskEvent,
   type BacktestTaskStatus,
+  type TrackingEvent,
   type TrackingItem,
 } from '@/api'
 import { fetchAllStrategyResultItems, formatSimilarityPercent } from '@/utils/strategyResults'
-import { isBacktestTaskCancelable } from '@/views/backtestState'
+import { formatTrackingAction, formatTrackingIntentSummary, isBacktestTaskCancelable } from '@/views/backtestState'
 
 interface StrategyCandidate {
   code: string
@@ -84,6 +86,10 @@ const backtestCapabilities = ref<BacktestCapabilities | null>(null)
 const capabilityLoading = ref(false)
 const trackingItems = ref<TrackingItem[]>([])
 const trackingLoading = ref(false)
+const trackingDrawerVisible = ref(false)
+const currentTracking = ref<TrackingItem | null>(null)
+const trackingEvents = ref<TrackingEvent[]>([])
+const trackingDetailLoading = ref(false)
 let backtestPollTimer: number | null = null
 
 const params = reactive<BacktestRequestPayload>({
@@ -541,11 +547,34 @@ async function loadTrackingItems() {
   try {
     const res = await listTrackingItems({ status: 'all', limit: 50 })
     trackingItems.value = (res.data.data?.items || []) as TrackingItem[]
+    if (currentTracking.value) {
+      const refreshed = trackingItems.value.find(item => item.tracking_id === currentTracking.value?.tracking_id)
+      if (refreshed) currentTracking.value = refreshed
+    }
   } catch (error) {
     console.warn('加载单股跟踪失败', error)
   } finally {
     trackingLoading.value = false
   }
+}
+
+async function loadTrackingEvents(trackingId: string) {
+  trackingDetailLoading.value = true
+  try {
+    const res = await getTrackingEvents(trackingId, 200)
+    trackingEvents.value = (res.data.data?.items || []) as TrackingEvent[]
+  } catch (error) {
+    console.warn('加载跟踪事件失败', error)
+    trackingEvents.value = []
+  } finally {
+    trackingDetailLoading.value = false
+  }
+}
+
+async function openTrackingDetail(row: TrackingItem) {
+  currentTracking.value = row
+  trackingDrawerVisible.value = true
+  await loadTrackingEvents(row.tracking_id)
 }
 
 async function addCandidateToTracking(row: StrategyCandidate) {
@@ -587,7 +616,11 @@ async function addTradeToTracking(row: Record<string, any>) {
 async function evaluateTracking(row: TrackingItem) {
   trackingLoading.value = true
   try {
-    await evaluateTrackingItem(row.tracking_id, params.end_date)
+    const res = await evaluateTrackingItem(row.tracking_id, params.end_date)
+    if (currentTracking.value?.tracking_id === row.tracking_id) {
+      currentTracking.value = res.data.data as TrackingItem
+      await loadTrackingEvents(row.tracking_id)
+    }
     ElMessage.success(`${row.code} 跟踪评估完成`)
     await loadTrackingItems()
   } catch (error: any) {
@@ -1053,15 +1086,18 @@ onBeforeUnmount(() => {
             <el-table-column prop="code" label="代码" width="90" />
             <el-table-column prop="name" label="名称" min-width="100" />
             <el-table-column prop="status" label="状态" width="96" />
-            <el-table-column prop="next_action" label="建议" width="110" />
+            <el-table-column prop="next_action" label="建议" width="110">
+              <template #default="{ row }">{{ formatTrackingAction(row.next_action) }}</template>
+            </el-table-column>
             <el-table-column prop="entry_price" label="买入价" width="90" />
             <el-table-column prop="latest_return_pct" label="收益%" width="90">
               <template #default="{ row }"><span :class="metricClass(row.latest_return_pct)">{{ row.latest_return_pct ?? 0 }}%</span></template>
             </el-table-column>
             <el-table-column prop="remaining_pct" label="剩余%" width="90" />
             <el-table-column prop="last_eval_date" label="评估日" width="110" />
-            <el-table-column label="操作" width="86" align="center">
+            <el-table-column label="操作" width="126" align="center">
               <template #default="{ row }">
+                <el-button size="small" type="primary" link @click="openTrackingDetail(row)">详情</el-button>
                 <el-button size="small" type="primary" link :loading="trackingLoading" @click="evaluateTracking(row)">评估</el-button>
               </template>
             </el-table-column>
@@ -1206,6 +1242,59 @@ onBeforeUnmount(() => {
         </el-table>
       </div>
     </el-drawer>
+
+    <el-drawer
+      v-model="trackingDrawerVisible"
+      title="单股跟踪详情"
+      size="560px"
+      destroy-on-close
+    >
+      <div v-if="currentTracking" class="task-drawer" v-loading="trackingDetailLoading">
+        <div class="drawer-task-head">
+          <el-tag>{{ currentTracking.code }}</el-tag>
+          <strong>{{ currentTracking.name || '-' }}</strong>
+          <span class="drawer-task-id">{{ currentTracking.tracking_id }}</span>
+        </div>
+
+        <div class="detail-grid">
+          <div>
+            <span>状态</span>
+            <strong>{{ currentTracking.status }}</strong>
+          </div>
+          <div>
+            <span>下一建议</span>
+            <strong>{{ formatTrackingAction(currentTracking.next_action) }}</strong>
+          </div>
+          <div>
+            <span>买入日/价</span>
+            <strong>{{ currentTracking.entry_date || '-' }} / {{ currentTracking.entry_price ?? '-' }}</strong>
+          </div>
+          <div>
+            <span>收益/剩余</span>
+            <strong :class="metricClass(currentTracking.latest_return_pct)">
+              {{ currentTracking.latest_return_pct ?? 0 }}% / {{ currentTracking.remaining_pct ?? 100 }}%
+            </strong>
+          </div>
+        </div>
+
+        <el-divider content-position="left">最新意图</el-divider>
+        <div class="intent-summary">{{ formatTrackingIntentSummary(currentTracking.latest_intent) }}</div>
+        <pre class="json-block">{{ formatJson(currentTracking.latest_intent) }}</pre>
+
+        <el-divider content-position="left">跟踪参数</el-divider>
+        <pre class="json-block">{{ formatJson(currentTracking.params) }}</pre>
+
+        <el-divider content-position="left">事件流</el-divider>
+        <el-table :data="trackingEvents" size="small" height="260" border empty-text="暂无事件">
+          <el-table-column prop="created_at" label="时间" width="145" />
+          <el-table-column prop="event_date" label="评估日" width="105" />
+          <el-table-column prop="action" label="动作" width="100">
+            <template #default="{ row }">{{ formatTrackingAction(row.action) }}</template>
+          </el-table-column>
+          <el-table-column prop="message" label="说明" min-width="170" show-overflow-tooltip />
+        </el-table>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -1250,6 +1339,7 @@ onBeforeUnmount(() => {
 .detail-grid strong, .drawer-summary strong { color: #303133; font-size: 13px; overflow-wrap: anywhere; }
 .drawer-actions { display: flex; justify-content: flex-end; }
 .drawer-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.intent-summary { padding: 8px 10px; border: 1px solid #ebeef5; border-radius: 6px; background: #fafafa; color: #303133; font-size: 13px; }
 .json-block { max-height: 220px; overflow: auto; margin: 0; padding: 10px; border: 1px solid #ebeef5; border-radius: 6px; background: #f8fafc; color: #606266; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 @media (max-width: 1180px) { .backtest-layout { grid-template-columns: 1fr; overflow: auto; } .metric-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); } }
 </style>

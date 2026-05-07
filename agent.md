@@ -20,6 +20,15 @@
 - 后续功能开发、问题修复、文档同步、回测模块、QMT / miniQMT 接入计划，默认都以 `web` 分支为准。
 - `master`、`codex/website_change` 和旧 `feature/*` 分支只作为历史参考；除非用户明确要求，不要从这些分支继续开发或反向覆盖 `web`。
 - 开始任务前先执行 `git status --short --branch`，确认当前分支是 `web`，并确认没有误带其他分支的未提交改动。
+- **分支隔离规则**：代码和 Markdown 文档改动都不能直接在 `web` 上长期推进。开始实现前先从 `web` 新建 `codex/*` 或明确的 `feature/*` 分支，完成验证和提交后再合并回 `web`。
+- 如果已经误在 `web` 上产生未提交改动，必须立即切出新分支承接这些改动，不能直接在 `web` 提交。
+
+## 当前开发优先级记忆
+
+- **第一优先级：完成回测模块**。先把 `DataPortal / SignalSource / Execution / Portfolio / Analyzer` 做成可复用、可验证、可持久化的回测引擎。
+- **第二优先级：模拟盘与人工确认**。先用 `OrderIntent`、模拟成交和人工成交流水闭环验证买卖规则。
+- **第三优先级：量化实盘执行预留**。QMT / miniQMT、自动买卖、券商适配器只做接口预留；当前 20 万资金阶段不作为主线。
+- 后续读成熟开源回测方案时，优先吸收 Backtrader 的编排层、Zipline 的交易日历和 DataPortal、VectorBT 的信号批量分析、Qlib 的研究流水线；不要照搬完整框架。
 
 ## 主要模块
 

@@ -363,6 +363,9 @@ export interface BacktestRequestPayload {
   take_profit_pct?: number
   stop_loss_pct?: number
   max_positions_per_day: number
+  max_candidates?: number
+  max_signals_per_code?: number
+  max_runtime_seconds?: number
   codes_fallback_to_start_date?: boolean
   profit_run_enabled?: boolean
   profit_trigger_pct?: number

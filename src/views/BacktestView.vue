@@ -75,6 +75,9 @@ const params = reactive<BacktestRequestPayload>({
   take_profit_pct: 0,
   stop_loss_pct: 0,
   max_positions_per_day: 20,
+  max_candidates: 800,
+  max_signals_per_code: 80,
+  max_runtime_seconds: 20,
   codes_fallback_to_start_date: false,
   profit_run_enabled: true,
   profit_trigger_pct: 5,
@@ -98,6 +101,8 @@ const parsedInputCodes = computed(() => parseCodes(codeInput.value))
 const summary = computed(() => result.value?.summary || null)
 const trades = computed(() => result.value?.trades || [])
 const equityCurve = computed(() => result.value?.equity_curve || [])
+const runtime = computed(() => result.value?.runtime || {})
+const runtimeWarnings = computed(() => runtime.value?.warnings || [])
 const selectedCandidateCodes = computed(() => {
   const selected = new Set<string>()
   for (const row of candidateRows.value) {
@@ -455,6 +460,22 @@ watch(() => params.source, (next) => {
             </el-form-item>
           </div>
 
+          <el-divider content-position="left">运行保护</el-divider>
+          <div class="param-grid">
+            <el-form-item label="总候选上限">
+              <el-input-number v-model="params.max_candidates" :min="0" :max="100000" :step="100" controls-position="right" />
+              <div class="hint">0 表示不限制；默认限制可避免长区间一次性跑太久。</div>
+            </el-form-item>
+            <el-form-item label="单股信号上限">
+              <el-input-number v-model="params.max_signals_per_code" :min="0" :max="10000" :step="20" controls-position="right" />
+              <div class="hint">解决单只股票多次策略命中导致重复回测拖慢。</div>
+            </el-form-item>
+            <el-form-item label="运行预算(秒)">
+              <el-input-number v-model="params.max_runtime_seconds" :min="0" :max="600" :step="5" controls-position="right" />
+              <div class="hint">超过预算会停止处理剩余候选，并在结果中提示。</div>
+            </el-form-item>
+          </div>
+
           <div class="param-grid two">
             <el-form-item label="买入价">
               <el-select v-model="params.buy_price"><el-option label="开盘价" value="open" /><el-option label="收盘价" value="close" /></el-select>
@@ -554,6 +575,21 @@ watch(() => params.source, (next) => {
         <el-empty v-else description="加载候选或输入个股后点击开始回测" />
 
         <div v-if="summary" class="result-section">
+          <el-alert
+            v-for="message in runtimeWarnings"
+            :key="message"
+            :title="message"
+            type="warning"
+            show-icon
+            :closable="false"
+            class="runtime-alert"
+          />
+          <div class="runtime-meta">
+            原始候选 {{ summary.raw_candidate_count ?? summary.candidate_count }} 条，
+            实际执行 {{ summary.candidate_count }} 条，
+            已处理 {{ summary.runtime_processed_count ?? summary.candidate_count }} 条，
+            用时 {{ summary.runtime_elapsed_seconds ?? 0 }} 秒
+          </div>
           <div class="section-title">交易明细</div>
           <el-table :data="trades" size="small" height="360" border>
             <el-table-column prop="buy_date" label="买入日" width="100" />
@@ -611,5 +647,7 @@ watch(() => params.source, (next) => {
 .negative { color: #67c23a !important; }
 .result-section { margin-top: 12px; }
 .section-title { font-size: 13px; font-weight: 600; color: #303133; margin-bottom: 8px; }
+.runtime-alert { margin-bottom: 8px; }
+.runtime-meta { margin-bottom: 10px; font-size: 12px; color: #606266; }
 @media (max-width: 1180px) { .backtest-layout { grid-template-columns: 1fr; overflow: auto; } .metric-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); } }
 </style>

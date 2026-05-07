@@ -243,3 +243,79 @@ def test_profit_runner_keeps_core_position_and_records_hold_action():
     ladder_exits = [item for item in trade["exits"] if item["reason"].startswith("profit_ladder")]
     assert [item["portion_pct"] for item in ladder_exits] == [25.0, 25.0]
     assert any(action["action"] == "hold_core" for action in trade["profit_actions"])
+
+
+def test_engine_limits_single_code_signals_before_execution():
+    """单只股票长区间命中太多时，应先截断信号，避免单股策略回测拖慢接口。"""
+    candidates = [
+        SignalCandidate(
+            code="000001",
+            name="平安银行",
+            strategy_name="manual",
+            trade_date=f"2026-04-{24 + index:02d}",
+            signal_date=f"2026-04-{24 + index:02d}",
+            source="manual",
+        )
+        for index in range(5)
+    ]
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-27"), "open": 10.1, "high": 10.3, "low": 10.0, "close": 10.2, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-28"), "open": 10.2, "high": 10.5, "low": 10.1, "close": 10.4, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-29"), "open": 10.4, "high": 10.6, "low": 10.2, "close": 10.5, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-30"), "open": 10.5, "high": 10.8, "low": 10.4, "close": 10.7, "volume": 1000},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource(candidates),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(_default_params(max_positions_per_day=0, max_signals_per_code=2))
+
+    assert result["summary"]["raw_candidate_count"] == 5
+    assert result["summary"]["candidate_count"] == 2
+    assert result["runtime"]["candidate_limit_applied"] is True
+    assert any("单股信号上限" in message for message in result["runtime"]["warnings"])
+
+
+def test_daily_engine_stops_when_runtime_budget_is_exhausted():
+    """运行预算耗尽后停止继续处理候选，避免长任务拖住前端请求。"""
+    class SlowPortal:
+        def __init__(self):
+            self.frame = pd.DataFrame(
+                [
+                    {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+                    {"date": pd.Timestamp("2026-04-27"), "open": 10.1, "high": 10.3, "low": 10.0, "close": 10.2, "volume": 1000},
+                    {"date": pd.Timestamp("2026-04-28"), "open": 10.2, "high": 10.5, "low": 10.1, "close": 10.4, "volume": 1000},
+                ]
+            )
+
+        def get_daily_frame(self, code):
+            import time
+
+            time.sleep(0.003)
+            return self.frame.copy()
+
+    candidates = [
+        SignalCandidate(
+            code=f"00000{index}",
+            name=f"测试{index}",
+            strategy_name="manual",
+            trade_date="2026-04-24",
+            signal_date="2026-04-24",
+            source="manual",
+        )
+        for index in range(1, 6)
+    ]
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource(candidates),
+        daily_portal=SlowPortal(),
+    )
+
+    result = engine.run_daily(_default_params(max_runtime_seconds=0.001, max_positions_per_day=0))
+
+    assert result["runtime"]["stopped_early"] is True
+    assert result["summary"]["runtime_stopped_early"] is True
+    assert result["summary"]["runtime_processed_count"] < result["summary"]["candidate_count"]

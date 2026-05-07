@@ -7,12 +7,30 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import time
 from typing import Optional
 
 import pandas as pd
 
 from web.backend.backtest_engine.data_portal import DailyDataPortal, MinuteDataPortal
 from web.backend.backtest_engine.models import BacktestParams, MinuteBar, OrderIntent, SignalCandidate
+
+
+def _new_execution_runtime() -> dict:
+    return {
+        "processed_count": 0,
+        "elapsed_seconds": 0.0,
+        "stopped_early": False,
+        "warnings": [],
+    }
+
+
+def _runtime_budget_seconds(params: BacktestParams) -> float:
+    return max(0.0, _safe_float(params.get("max_runtime_seconds"), 0.0))
+
+
+def _budget_exhausted(started_at: float, budget_seconds: float, processed_count: int) -> bool:
+    return budget_seconds > 0 and processed_count > 0 and (time.perf_counter() - started_at) >= budget_seconds
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -165,11 +183,23 @@ class DailyExecutionSimulator:
         self,
         candidates: list[SignalCandidate],
         params: BacktestParams,
-    ) -> tuple[list[dict], int, list[OrderIntent]]:
+    ) -> tuple[list[dict], int, list[OrderIntent], dict]:
         trades: list[dict] = []
         intents: list[OrderIntent] = []
         skipped = 0
+        runtime = _new_execution_runtime()
+        started_at = time.perf_counter()
+        budget_seconds = _runtime_budget_seconds(params)
         for candidate in candidates:
+            if _budget_exhausted(started_at, budget_seconds, runtime["processed_count"]):
+                remaining_count = len(candidates) - runtime["processed_count"]
+                skipped += remaining_count
+                runtime["stopped_early"] = True
+                runtime["warnings"].append(
+                    f"回测运行预算 {budget_seconds:.2f} 秒已耗尽，剩余 {remaining_count} 个候选未处理"
+                )
+                break
+            runtime["processed_count"] += 1
             simulated = self.simulate_trade(candidate, params)
             if simulated:
                 trade, intent = simulated
@@ -177,7 +207,8 @@ class DailyExecutionSimulator:
                 intents.append(intent)
             else:
                 skipped += 1
-        return trades, skipped, intents
+        runtime["elapsed_seconds"] = round(time.perf_counter() - started_at, 4)
+        return trades, skipped, intents, runtime
 
     def simulate_trade(
         self,
@@ -431,11 +462,23 @@ class MinuteExecutionSimulator:
         self,
         candidates: list[SignalCandidate],
         params: BacktestParams,
-    ) -> tuple[list[dict], int, list[OrderIntent]]:
+    ) -> tuple[list[dict], int, list[OrderIntent], dict]:
         trades: list[dict] = []
         intents: list[OrderIntent] = []
         skipped = 0
+        runtime = _new_execution_runtime()
+        started_at = time.perf_counter()
+        budget_seconds = _runtime_budget_seconds(params)
         for candidate in candidates:
+            if _budget_exhausted(started_at, budget_seconds, runtime["processed_count"]):
+                remaining_count = len(candidates) - runtime["processed_count"]
+                skipped += remaining_count
+                runtime["stopped_early"] = True
+                runtime["warnings"].append(
+                    f"回测运行预算 {budget_seconds:.2f} 秒已耗尽，剩余 {remaining_count} 个候选未处理"
+                )
+                break
+            runtime["processed_count"] += 1
             simulated = self.simulate_trade(candidate, params)
             if simulated:
                 trade, trade_intents = simulated
@@ -443,7 +486,8 @@ class MinuteExecutionSimulator:
                 intents.extend(trade_intents)
             else:
                 skipped += 1
-        return trades, skipped, intents
+        runtime["elapsed_seconds"] = round(time.perf_counter() - started_at, 4)
+        return trades, skipped, intents, runtime
 
     def simulate_trade(
         self,

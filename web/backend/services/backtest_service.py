@@ -8,7 +8,7 @@ import pandas as pd
 
 from utils.csv_manager import CSVManager
 from utils.technical import calculate_zhixing_trend
-from web.backend.backtest_engine.data_portal import CsvMinuteDataPortal, FunctionDailyDataPortal
+from web.backend.backtest_engine.data_portal import CachingDailyDataPortal, CsvMinuteDataPortal, FunctionDailyDataPortal
 from web.backend.backtest_engine.engine import BacktestEngine
 from web.backend.backtest_engine.models import BacktestParams, SignalCandidate
 from web.backend.backtest_engine.signal_source import StaticSignalSource
@@ -195,7 +195,7 @@ def run_backtest(params: dict) -> dict:
     candidates = [SignalCandidate.from_mapping(item) for item in _fetch_candidates(params)]
     engine = BacktestEngine(
         signal_source=StaticSignalSource(candidates),
-        daily_portal=FunctionDailyDataPortal(_load_price_frame),
+        daily_portal=CachingDailyDataPortal(FunctionDailyDataPortal(_load_price_frame)),
         minute_portal=CsvMinuteDataPortal(project_root / "data" / "minute"),
     )
     return engine.run(BacktestParams.from_mapping(params))

@@ -13,8 +13,10 @@ def build_result(
     trades: list[dict],
     skipped: int,
     order_intents: list[OrderIntent],
+    runtime: dict | None = None,
 ) -> dict:
     """生成兼容旧 API 的回测响应结构，并附加 order_intents。"""
+    runtime = runtime or {}
     trades = sorted(trades, key=lambda item: (item["buy_date"], item["code"]))
     equity_curve, cumulative_return, max_drawdown = build_equity_curve(trades)
     win_count = sum(1 for trade in trades if trade["return_pct"] > 0)
@@ -22,21 +24,30 @@ def build_result(
     avg_return = sum(trade["return_pct"] for trade in trades) / trade_count if trade_count else 0.0
     avg_hold_days = sum(trade["hold_days"] for trade in trades) / trade_count if trade_count else 0.0
 
+    summary = {
+        "candidate_count": len(candidates),
+        "raw_candidate_count": int(runtime.get("raw_candidate_count", len(candidates))),
+        "candidate_limit_applied": bool(runtime.get("candidate_limit_applied", False)),
+        "runtime_stopped_early": bool(runtime.get("stopped_early", False)),
+        "runtime_processed_count": int(runtime.get("processed_count", len(candidates))),
+        "runtime_elapsed_seconds": runtime.get("elapsed_seconds", 0.0),
+        "runtime_warning_count": len(runtime.get("warnings") or []),
+        "trade_count": trade_count,
+        "skipped_count": skipped,
+        "win_rate_pct": round((win_count / trade_count * 100) if trade_count else 0.0, 2),
+        "avg_return_pct": round(avg_return, 2),
+        "cumulative_return_pct": round(cumulative_return, 2),
+        "max_drawdown_pct": round(max_drawdown, 2),
+        "avg_hold_days": round(avg_hold_days, 1),
+        "best_return_pct": round(max((trade["return_pct"] for trade in trades), default=0.0), 2),
+        "worst_return_pct": round(min((trade["return_pct"] for trade in trades), default=0.0), 2),
+    }
+
     return {
         "params": params.to_mapping(),
-        "summary": {
-            "candidate_count": len(candidates),
-            "trade_count": trade_count,
-            "skipped_count": skipped,
-            "win_rate_pct": round((win_count / trade_count * 100) if trade_count else 0.0, 2),
-            "avg_return_pct": round(avg_return, 2),
-            "cumulative_return_pct": round(cumulative_return, 2),
-            "max_drawdown_pct": round(max_drawdown, 2),
-            "avg_hold_days": round(avg_hold_days, 1),
-            "best_return_pct": round(max((trade["return_pct"] for trade in trades), default=0.0), 2),
-            "worst_return_pct": round(min((trade["return_pct"] for trade in trades), default=0.0), 2),
-        },
+        "summary": summary,
         "trades": trades,
         "equity_curve": equity_curve,
         "order_intents": [intent.to_mapping() for intent in order_intents],
+        "runtime": runtime,
     }

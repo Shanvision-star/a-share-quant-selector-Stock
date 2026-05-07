@@ -45,6 +45,19 @@ class FunctionDailyDataPortal:
         return self.loader(code)
 
 
+class CachingDailyDataPortal:
+    """按股票代码缓存日线行情，避免同一代码多信号重复读取 CSV 和计算指标。"""
+
+    def __init__(self, inner: DailyDataPortal):
+        self.inner = inner
+        self._cache: dict[str, pd.DataFrame] = {}
+
+    def get_daily_frame(self, code: str) -> pd.DataFrame:
+        if code not in self._cache:
+            self._cache[code] = self.inner.get_daily_frame(code).copy()
+        return self._cache[code].copy()
+
+
 class InMemoryDailyDataPortal:
     """测试用日线行情入口。"""
 

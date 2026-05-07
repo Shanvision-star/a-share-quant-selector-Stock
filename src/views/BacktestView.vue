@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  cancelBacktestTask,
   getManualSelections,
   getBacktestTaskEvents,
   getStrategyResultsHistory,
@@ -69,6 +70,8 @@ const taskMessage = ref('')
 const currentTask = ref<BacktestTask | null>(null)
 const taskHistory = ref<BacktestTask[]>([])
 const taskEvents = ref<BacktestTaskEvent[]>([])
+const taskDrawerVisible = ref(false)
+const taskActionLoading = ref(false)
 let backtestPollTimer: number | null = null
 
 const params = reactive<BacktestRequestPayload>({
@@ -117,6 +120,15 @@ const equityCurve = computed(() => result.value?.equity_curve || [])
 const runtime = computed(() => result.value?.runtime || {})
 const runtimeWarnings = computed(() => runtime.value?.warnings || [])
 const taskProgress = computed(() => Math.max(0, Math.min(100, Number(currentTask.value?.progress_pct || 0))))
+const drawerSummaryItems = computed(() => {
+  const data = currentTask.value?.result?.summary || {}
+  return [
+    { label: '候选', value: data.candidate_count ?? 0, suffix: '只' },
+    { label: '交易', value: data.trade_count ?? 0, suffix: '笔' },
+    { label: '胜率', value: data.win_rate_pct ?? 0, suffix: '%' },
+    { label: '收益', value: data.cumulative_return_pct ?? 0, suffix: '%' },
+  ]
+})
 const selectedCandidateCodes = computed(() => {
   const selected = new Set<string>()
   for (const row of candidateRows.value) {
@@ -383,6 +395,14 @@ async function pollBacktestTask(taskId: string) {
       return
     }
 
+    if (task.status === 'canceled') {
+      loading.value = false
+      clearBacktestPoll()
+      await loadBacktestTasks()
+      ElMessage.warning('回测任务已取消')
+      return
+    }
+
     if (task.status === 'failed') {
       loading.value = false
       clearBacktestPoll()
@@ -429,19 +449,105 @@ async function loadBacktestTaskEvents(taskId: string) {
 
 async function openBacktestTask(task: BacktestTask) {
   clearBacktestPoll()
-  applyBacktestTask(task)
-  await loadBacktestTaskEvents(task.task_id)
-  result.value = task.result || null
-  loading.value = task.status === 'queued' || task.status === 'running'
-  if (loading.value) scheduleBacktestPoll(task.task_id, 500)
+  taskDrawerVisible.value = true
+  try {
+    const res = await getBacktestTask(task.task_id)
+    const latestTask = res.data.data as BacktestTask
+    applyBacktestTask(latestTask)
+    await loadBacktestTaskEvents(latestTask.task_id)
+    result.value = latestTask.result || null
+    loading.value = isTaskActive(latestTask.status)
+    if (loading.value) scheduleBacktestPoll(latestTask.task_id, 500)
+  } catch (error: any) {
+    applyBacktestTask(task)
+    await loadBacktestTaskEvents(task.task_id)
+    result.value = task.result || null
+    loading.value = isTaskActive(task.status)
+    ElMessage.error(error?.response?.data?.detail || '加载任务详情失败')
+  }
+}
+
+async function cancelTask(task: BacktestTask | null) {
+  if (!isTaskCancelable(task)) return
+  try {
+    await ElMessageBox.confirm(
+      `确认取消回测任务 ${task.task_id}？`,
+      '取消任务',
+      { type: 'warning', confirmButtonText: '确认取消', cancelButtonText: '继续等待' },
+    )
+  } catch {
+    return
+  }
+  taskActionLoading.value = true
+  try {
+    const res = await cancelBacktestTask(task.task_id)
+    const updatedTask = res.data.data as BacktestTask
+    applyBacktestTask(updatedTask)
+    await loadBacktestTaskEvents(updatedTask.task_id)
+    await loadBacktestTasks()
+    loading.value = isTaskActive(updatedTask.status)
+    if (updatedTask.status === 'cancel_requested') {
+      scheduleBacktestPoll(updatedTask.task_id, 500)
+      ElMessage.warning('已发送取消请求，等待任务在进度边界停止')
+    } else {
+      clearBacktestPoll()
+      ElMessage.warning('回测任务已取消')
+    }
+  } catch (error: any) {
+    console.error('取消回测任务失败', error)
+    ElMessage.error(error?.response?.data?.detail || '取消回测任务失败')
+  } finally {
+    taskActionLoading.value = false
+  }
+}
+
+function isTaskActive(status: BacktestTaskStatus | ''): boolean {
+  return status === 'queued' || status === 'running' || status === 'cancel_requested'
+}
+
+function isTaskCancelable(task: BacktestTask | null | undefined): task is BacktestTask {
+  return task?.status === 'queued' || task?.status === 'running'
 }
 
 function formatTaskStatus(status: BacktestTaskStatus | ''): string {
   if (status === 'queued') return '排队中'
   if (status === 'running') return '运行中'
+  if (status === 'cancel_requested') return '取消中'
+  if (status === 'canceled') return '已取消'
   if (status === 'done') return '已完成'
   if (status === 'failed') return '失败'
   return ''
+}
+
+function taskAlertType(status: BacktestTaskStatus | '') {
+  if (status === 'failed') return 'error'
+  if (status === 'done') return 'success'
+  if (status === 'cancel_requested' || status === 'canceled') return 'warning'
+  return 'info'
+}
+
+function taskProgressStatus(status: BacktestTaskStatus | '') {
+  if (status === 'failed') return 'exception'
+  if (status === 'done') return 'success'
+  if (status === 'cancel_requested' || status === 'canceled') return 'warning'
+  return undefined
+}
+
+function taskTagType(status: BacktestTaskStatus | '') {
+  if (status === 'failed') return 'danger'
+  if (status === 'done') return 'success'
+  if (status === 'cancel_requested' || status === 'canceled') return 'warning'
+  if (status === 'running') return 'primary'
+  return 'info'
+}
+
+function formatJson(value: unknown): string {
+  if (value === undefined || value === null) return '{}'
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
 }
 
 function metricClass(value: unknown) {
@@ -689,18 +795,31 @@ onBeforeUnmount(() => {
         <section class="task-panel">
           <div class="section-head">
             <strong>回测任务</strong>
-            <span class="hint">{{ activeTaskId ? `当前 ${activeTaskId}` : '暂无运行中任务' }}</span>
+            <div class="task-head-actions">
+              <span class="hint">{{ activeTaskId ? `当前 ${activeTaskId}` : '暂无运行中任务' }}</span>
+              <el-button v-if="activeTaskId" size="small" link type="primary" @click="taskDrawerVisible = true">详情</el-button>
+              <el-button
+                v-if="isTaskCancelable(currentTask)"
+                size="small"
+                link
+                type="danger"
+                :loading="taskActionLoading"
+                @click="cancelTask(currentTask)"
+              >
+                取消任务
+              </el-button>
+            </div>
           </div>
           <el-alert
             v-if="activeTaskId"
             :title="taskMessage || `任务 ${activeTaskId} ${formatTaskStatus(taskStatus)}`"
-            :type="taskStatus === 'failed' ? 'error' : taskStatus === 'done' ? 'success' : 'info'"
+            :type="taskAlertType(taskStatus)"
             show-icon
             :closable="false"
             class="task-alert"
           />
           <div v-if="activeTaskId" class="task-progress">
-            <el-progress :percentage="taskProgress" :status="taskStatus === 'failed' ? 'exception' : taskStatus === 'done' ? 'success' : undefined" />
+            <el-progress :percentage="taskProgress" :status="taskProgressStatus(taskStatus)" />
             <div class="runtime-meta">
               已处理 {{ currentTask?.processed_count || 0 }}/{{ currentTask?.total_count || 0 }}，
               当前代码 {{ currentTask?.current_code || '-' }}，
@@ -716,9 +835,19 @@ onBeforeUnmount(() => {
               <template #default="{ row }">{{ row.progress_pct || 0 }}%</template>
             </el-table-column>
             <el-table-column prop="message" label="说明" min-width="150" show-overflow-tooltip />
-            <el-table-column label="操作" width="78" align="center">
+            <el-table-column label="操作" width="126" align="center">
               <template #default="{ row }">
-                <el-button size="small" type="primary" link @click="openBacktestTask(row)">查看</el-button>
+                <el-button size="small" type="primary" link @click="openBacktestTask(row)">详情</el-button>
+                <el-button
+                  v-if="isTaskCancelable(row)"
+                  size="small"
+                  type="danger"
+                  link
+                  :loading="taskActionLoading"
+                  @click.stop="cancelTask(row)"
+                >
+                  取消
+                </el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -781,6 +910,82 @@ onBeforeUnmount(() => {
         </div>
       </main>
     </div>
+
+    <el-drawer
+      v-model="taskDrawerVisible"
+      title="回测任务详情"
+      size="560px"
+      destroy-on-close
+    >
+      <div v-if="currentTask" class="task-drawer">
+        <div class="drawer-task-head">
+          <el-tag :type="taskTagType(currentTask.status)">{{ formatTaskStatus(currentTask.status) }}</el-tag>
+          <span class="drawer-task-id">{{ currentTask.task_id }}</span>
+        </div>
+
+        <el-progress :percentage="taskProgress" :status="taskProgressStatus(currentTask.status)" />
+        <div class="detail-grid">
+          <div>
+            <span>提交时间</span>
+            <strong>{{ currentTask.created_at || '-' }}</strong>
+          </div>
+          <div>
+            <span>开始时间</span>
+            <strong>{{ currentTask.started_at || '-' }}</strong>
+          </div>
+          <div>
+            <span>结束时间</span>
+            <strong>{{ currentTask.finished_at || '-' }}</strong>
+          </div>
+          <div>
+            <span>当前代码</span>
+            <strong>{{ currentTask.current_code || '-' }}</strong>
+          </div>
+        </div>
+
+        <el-alert
+          v-if="currentTask.error"
+          :title="currentTask.error"
+          type="error"
+          show-icon
+          :closable="false"
+          class="runtime-alert"
+        />
+
+        <div class="drawer-actions">
+          <el-button
+            v-if="isTaskCancelable(currentTask)"
+            type="danger"
+            :loading="taskActionLoading"
+            @click="cancelTask(currentTask)"
+          >
+            取消任务
+          </el-button>
+        </div>
+
+        <el-divider content-position="left">结果摘要</el-divider>
+        <div v-if="currentTask.result?.summary" class="drawer-summary">
+          <div v-for="item in drawerSummaryItems" :key="item.label">
+            <span>{{ item.label }}</span>
+            <strong :class="metricClass(item.value)">{{ item.value }}{{ item.suffix }}</strong>
+          </div>
+        </div>
+        <el-empty v-else description="任务尚未产生结果" />
+
+        <el-divider content-position="left">任务参数</el-divider>
+        <pre class="json-block">{{ formatJson(currentTask.params) }}</pre>
+
+        <el-divider content-position="left">事件流</el-divider>
+        <el-table :data="taskEvents" size="small" height="240" border empty-text="暂无事件">
+          <el-table-column prop="created_at" label="时间" width="145" />
+          <el-table-column prop="event_type" label="类型" width="120" />
+          <el-table-column prop="progress_pct" label="进度" width="70">
+            <template #default="{ row }">{{ row.progress_pct ?? '-' }}</template>
+          </el-table-column>
+          <el-table-column prop="message" label="说明" min-width="160" show-overflow-tooltip />
+        </el-table>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -802,6 +1007,7 @@ onBeforeUnmount(() => {
 .inline-slider { width: 210px; margin-left: 12px; }
 .candidate-panel, .task-panel { margin-bottom: 12px; }
 .section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.task-head-actions { display: flex; align-items: center; gap: 8px; }
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 8px; margin-bottom: 14px; }
 .metric-cell { padding: 10px 12px; border: 1px solid #ebeef5; border-radius: 6px; background: #fafafa; }
 .metric-cell span { display: block; color: #909399; font-size: 12px; margin-bottom: 6px; }
@@ -814,5 +1020,15 @@ onBeforeUnmount(() => {
 .runtime-meta { margin-bottom: 10px; font-size: 12px; color: #606266; }
 .task-alert { margin-bottom: 12px; }
 .task-progress { margin-bottom: 10px; }
+.task-drawer { display: flex; flex-direction: column; gap: 12px; }
+.drawer-task-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.drawer-task-id { color: #606266; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; overflow-wrap: anywhere; }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.detail-grid div, .drawer-summary div { padding: 8px 10px; border: 1px solid #ebeef5; border-radius: 6px; background: #fafafa; }
+.detail-grid span, .drawer-summary span { display: block; color: #909399; font-size: 12px; margin-bottom: 4px; }
+.detail-grid strong, .drawer-summary strong { color: #303133; font-size: 13px; overflow-wrap: anywhere; }
+.drawer-actions { display: flex; justify-content: flex-end; }
+.drawer-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.json-block { max-height: 220px; overflow: auto; margin: 0; padding: 10px; border: 1px solid #ebeef5; border-radius: 6px; background: #f8fafc; color: #606266; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 @media (max-width: 1180px) { .backtest-layout { grid-template-columns: 1fr; overflow: auto; } .metric-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); } }
 </style>

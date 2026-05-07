@@ -385,7 +385,7 @@ export interface BacktestRequestPayload {
   allow_st_buy?: boolean
 }
 
-export type BacktestTaskStatus = 'queued' | 'running' | 'done' | 'failed'
+export type BacktestTaskStatus = 'queued' | 'running' | 'cancel_requested' | 'canceled' | 'done' | 'failed'
 
 export interface BacktestTask {
   task_id: string
@@ -422,6 +422,9 @@ export const startBacktestTask = (payload: BacktestRequestPayload) =>
 
 export const getBacktestTask = (taskId: string) =>
   api.get(`/backtest/tasks/${encodeURIComponent(taskId)}`)
+
+export const cancelBacktestTask = (taskId: string) =>
+  api.post(`/backtest/tasks/${encodeURIComponent(taskId)}/cancel`)
 
 export const listBacktestTasks = (limit = 20) =>
   api.get('/backtest/tasks', { params: { limit } })

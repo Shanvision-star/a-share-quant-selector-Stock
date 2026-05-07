@@ -414,11 +414,53 @@ export interface BacktestTaskEvent {
   created_at?: string
 }
 
+export type BacktestLaunchMode = 'async' | 'sync_fallback'
+
+export interface BacktestLaunchResult {
+  mode: BacktestLaunchMode
+  task: BacktestTask
+}
+
 export const runBacktest = (payload: BacktestRequestPayload) =>
   api.post('/backtest', payload)
 
 export const startBacktestTask = (payload: BacktestRequestPayload) =>
   api.post('/backtest/tasks', payload)
+
+function isMethodNotAllowed(error: any): boolean {
+  return Number(error?.response?.status) === 405
+}
+
+function createSyncFallbackTask(payload: BacktestRequestPayload, result: any): BacktestTask {
+  const now = new Date().toISOString()
+  return {
+    task_id: `sync_${Date.now()}`,
+    status: 'done',
+    created_at: now,
+    started_at: now,
+    finished_at: now,
+    updated_at: now,
+    error: '',
+    result,
+    params: { ...payload },
+    total_count: result?.summary?.candidate_count ?? payload.selected_codes?.length ?? payload.input_codes?.length ?? 0,
+    processed_count: result?.summary?.candidate_count ?? payload.selected_codes?.length ?? payload.input_codes?.length ?? 0,
+    current_code: '',
+    progress_pct: 100,
+    message: '兼容同步回测完成',
+  }
+}
+
+export async function startBacktestTaskCompatible(payload: BacktestRequestPayload): Promise<BacktestLaunchResult> {
+  try {
+    const response = await startBacktestTask(payload)
+    return { mode: 'async', task: response.data.data as BacktestTask }
+  } catch (error) {
+    if (!isMethodNotAllowed(error)) throw error
+    const response = await runBacktest(payload)
+    return { mode: 'sync_fallback', task: createSyncFallbackTask(payload, response.data.data) }
+  }
+}
 
 export const getBacktestTask = (taskId: string) =>
   api.get(`/backtest/tasks/${encodeURIComponent(taskId)}`)

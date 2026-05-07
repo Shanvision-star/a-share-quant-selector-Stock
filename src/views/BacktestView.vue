@@ -9,7 +9,7 @@ import {
   getStrategyResultsHistory,
   getBacktestTask,
   listBacktestTasks,
-  startBacktestTask,
+  startBacktestTaskCompatible,
   type BacktestRequestPayload,
   type BacktestTask,
   type BacktestTaskEvent,
@@ -350,9 +350,18 @@ async function handleRunBacktest() {
   currentTask.value = null
   taskEvents.value = []
   try {
-    const res = await startBacktestTask(payload)
-    const task = res.data.data as BacktestTask
+    const launched = await startBacktestTaskCompatible(payload)
+    const task = launched.task
     applyBacktestTask(task)
+    if (launched.mode === 'sync_fallback') {
+      result.value = task.result
+      taskEvents.value = []
+      loading.value = false
+      taskMessage.value = '当前后端未提供异步任务接口，已使用兼容同步回测完成'
+      await loadBacktestTasks()
+      ElMessage.warning('后端异步任务接口不可用，已自动切换到同步回测')
+      return
+    }
     taskMessage.value = `任务已提交：${task.task_id}`
     await loadBacktestTasks()
     scheduleBacktestPoll(task.task_id, 300)

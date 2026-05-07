@@ -530,4 +530,64 @@ export const listBacktestTasks = (limit = 20) =>
 export const getBacktestTaskEvents = (taskId: string, limit = 500) =>
   api.get(`/backtest/tasks/${encodeURIComponent(taskId)}/events`, { params: { limit } })
 
+// ─── 单股跟踪 ───
+export interface TrackingCreatePayload {
+  code: string
+  name?: string
+  strategy_name?: string
+  source?: string
+  source_date?: string
+  signal_date: string
+  params?: Record<string, any>
+  note?: string
+}
+
+export interface TrackingItem {
+  tracking_id: string
+  code: string
+  name?: string
+  strategy_name?: string
+  source?: string
+  source_date?: string
+  signal_date?: string
+  status: 'watch_buy' | 'holding' | 'partial_sold' | 'closed' | string
+  entry_date?: string | null
+  entry_price?: number | null
+  quantity?: number
+  remaining_pct?: number
+  last_eval_date?: string | null
+  last_close?: number | null
+  latest_return_pct?: number
+  next_action?: string
+  latest_intent?: Record<string, any> | null
+  params?: Record<string, any>
+  updated_at?: string
+}
+
+export interface TrackingEvent {
+  event_id: number
+  tracking_id: string
+  event_date?: string
+  event_type: string
+  action?: string
+  message?: string
+  payload?: Record<string, any>
+  created_at?: string
+}
+
+export const createTrackingItem = (payload: TrackingCreatePayload) =>
+  api.post('/tracking', payload)
+
+export const listTrackingItems = (params?: { status?: string; code?: string; limit?: number }) =>
+  api.get('/tracking', { params })
+
+export const evaluateTrackingItem = (trackingId: string, date?: string) =>
+  api.post(`/tracking/${encodeURIComponent(trackingId)}/evaluate`, null, { params: date ? { date } : undefined })
+
+export const evaluateTrackingItems = (date?: string) =>
+  api.post('/tracking/evaluate', null, { params: date ? { date } : undefined })
+
+export const getTrackingEvents = (trackingId: string, limit = 200) =>
+  api.get(`/tracking/${encodeURIComponent(trackingId)}/events`, { params: { limit } })
+
 export default api

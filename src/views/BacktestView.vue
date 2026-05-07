@@ -4,11 +4,15 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   cancelBacktestTask,
+  createTrackingItem,
   detectBacktestCapabilities,
+  evaluateTrackingItem,
+  evaluateTrackingItems,
   getManualSelections,
   getBacktestTaskEvents,
   getStrategyResultsHistory,
   getBacktestTask,
+  listTrackingItems,
   listBacktestTasks,
   startBacktestTaskCompatible,
   type BacktestRequestPayload,
@@ -16,6 +20,7 @@ import {
   type BacktestTask,
   type BacktestTaskEvent,
   type BacktestTaskStatus,
+  type TrackingItem,
 } from '@/api'
 import { fetchAllStrategyResultItems, formatSimilarityPercent } from '@/utils/strategyResults'
 import { isBacktestTaskCancelable } from '@/views/backtestState'
@@ -77,6 +82,8 @@ const taskDrawerVisible = ref(false)
 const taskActionLoading = ref(false)
 const backtestCapabilities = ref<BacktestCapabilities | null>(null)
 const capabilityLoading = ref(false)
+const trackingItems = ref<TrackingItem[]>([])
+const trackingLoading = ref(false)
 let backtestPollTimer: number | null = null
 
 const params = reactive<BacktestRequestPayload>({
@@ -505,6 +512,106 @@ async function loadBacktestTaskEvents(taskId: string) {
   }
 }
 
+function buildTrackingParams() {
+  return {
+    buy_offset_days: params.buy_offset_days,
+    buy_price: params.buy_price,
+    sell_price: params.sell_price,
+    holding_days: params.holding_days,
+    intent_quantity: params.intent_quantity,
+    lot_size: params.lot_size,
+    profit_run_enabled: params.profit_run_enabled,
+    profit_trigger_pct: params.profit_trigger_pct,
+    profit_step_pct: params.profit_step_pct,
+    profit_sell_pct: params.profit_sell_pct,
+    profit_keep_pct: params.profit_keep_pct,
+    hold_above_short_trend_after_trigger: params.hold_above_short_trend_after_trigger,
+    enable_no_gain_exit: params.enable_no_gain_exit,
+    no_gain_days: params.no_gain_days,
+    exit_on_bull_bear_break: params.exit_on_bull_bear_break,
+    exit_on_short_trend_break: params.exit_on_short_trend_break,
+    short_trend_break_days: params.short_trend_break_days,
+    exit_on_short_trend_drawdown: params.exit_on_short_trend_drawdown,
+    short_trend_drawdown_pct: params.short_trend_drawdown_pct,
+  }
+}
+
+async function loadTrackingItems() {
+  trackingLoading.value = true
+  try {
+    const res = await listTrackingItems({ status: 'all', limit: 50 })
+    trackingItems.value = (res.data.data?.items || []) as TrackingItem[]
+  } catch (error) {
+    console.warn('加载单股跟踪失败', error)
+  } finally {
+    trackingLoading.value = false
+  }
+}
+
+async function addCandidateToTracking(row: StrategyCandidate) {
+  if (!row.code || !(row.signal_date || row.trade_date)) {
+    ElMessage.warning('缺少代码或信号日期，不能加入跟踪')
+    return
+  }
+  trackingLoading.value = true
+  try {
+    await createTrackingItem({
+      code: row.code,
+      name: row.name || '',
+      strategy_name: row.strategy_name || '',
+      source: params.source,
+      source_date: row.trade_date || row.signal_date || '',
+      signal_date: row.signal_date || row.trade_date || '',
+      params: buildTrackingParams(),
+    })
+    ElMessage.success(`${row.code} 已加入单股跟踪`)
+    await loadTrackingItems()
+  } catch (error: any) {
+    console.error('加入单股跟踪失败', error)
+    ElMessage.error(error?.response?.data?.detail || '加入单股跟踪失败，请确认后端已重启到最新代码')
+  } finally {
+    trackingLoading.value = false
+  }
+}
+
+async function addTradeToTracking(row: Record<string, any>) {
+  await addCandidateToTracking({
+    code: row.code,
+    name: row.name || '',
+    strategy_name: row.strategy_name || '',
+    trade_date: row.trade_date || row.signal_date || row.buy_date || '',
+    signal_date: row.signal_date || row.trade_date || row.buy_date || '',
+  })
+}
+
+async function evaluateTracking(row: TrackingItem) {
+  trackingLoading.value = true
+  try {
+    await evaluateTrackingItem(row.tracking_id, params.end_date)
+    ElMessage.success(`${row.code} 跟踪评估完成`)
+    await loadTrackingItems()
+  } catch (error: any) {
+    console.error('评估单股跟踪失败', error)
+    ElMessage.error(error?.response?.data?.detail || '评估单股跟踪失败')
+  } finally {
+    trackingLoading.value = false
+  }
+}
+
+async function evaluateAllTracking() {
+  trackingLoading.value = true
+  try {
+    const res = await evaluateTrackingItems(params.end_date)
+    ElMessage.success(`已评估 ${res.data.data?.total || 0} 条跟踪记录`)
+    await loadTrackingItems()
+  } catch (error: any) {
+    console.error('批量评估单股跟踪失败', error)
+    ElMessage.error(error?.response?.data?.detail || '批量评估单股跟踪失败')
+  } finally {
+    trackingLoading.value = false
+  }
+}
+
 async function openBacktestTask(task: BacktestTask) {
   clearBacktestPoll()
   taskDrawerVisible.value = true
@@ -633,6 +740,7 @@ function formatProfitActions(actions?: Array<Record<string, any>>): string {
 async function initializeBacktestPage() {
   await loadBacktestCapabilities()
   await loadBacktestTasks()
+  await loadTrackingItems()
 }
 
 onMounted(() => {
@@ -852,6 +960,11 @@ onBeforeUnmount(() => {
             <el-table-column prop="name" label="名称" min-width="100" />
             <el-table-column prop="strategy_name" label="策略" min-width="130" />
             <el-table-column label="相似度" width="80"><template #default="{ row }">{{ formatSimilarityPercent(row.similarity_score) }}</template></el-table-column>
+            <el-table-column label="跟踪" width="86" align="center">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" link :loading="trackingLoading" @click="addCandidateToTracking(row)">加入</el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </section>
 
@@ -927,6 +1040,34 @@ onBeforeUnmount(() => {
           </el-table>
         </section>
 
+        <section class="tracking-panel">
+          <div class="section-head">
+            <strong>单股跟踪</strong>
+            <div class="task-head-actions">
+              <span class="hint">{{ trackingItems.length }} 条</span>
+              <el-button size="small" :loading="trackingLoading" @click="loadTrackingItems">刷新</el-button>
+              <el-button size="small" type="primary" :loading="trackingLoading" @click="evaluateAllTracking">评估跟踪</el-button>
+            </div>
+          </div>
+          <el-table :data="trackingItems" size="small" height="180" border empty-text="可从候选或交易明细加入单股跟踪">
+            <el-table-column prop="code" label="代码" width="90" />
+            <el-table-column prop="name" label="名称" min-width="100" />
+            <el-table-column prop="status" label="状态" width="96" />
+            <el-table-column prop="next_action" label="建议" width="110" />
+            <el-table-column prop="entry_price" label="买入价" width="90" />
+            <el-table-column prop="latest_return_pct" label="收益%" width="90">
+              <template #default="{ row }"><span :class="metricClass(row.latest_return_pct)">{{ row.latest_return_pct ?? 0 }}%</span></template>
+            </el-table-column>
+            <el-table-column prop="remaining_pct" label="剩余%" width="90" />
+            <el-table-column prop="last_eval_date" label="评估日" width="110" />
+            <el-table-column label="操作" width="86" align="center">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" link :loading="trackingLoading" @click="evaluateTracking(row)">评估</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </section>
+
         <div v-if="summary" class="metric-grid">
           <div v-for="metric in metricItems" :key="metric.label" class="metric-cell">
             <span>{{ metric.label }}</span>
@@ -970,6 +1111,11 @@ onBeforeUnmount(() => {
             <el-table-column prop="exit_reason" label="末次退出" width="150" />
             <el-table-column label="分批" width="70"><template #default="{ row }">{{ row.exits?.length || 0 }}</template></el-table-column>
             <el-table-column label="放飞动作" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ formatProfitActions(row.profit_actions) }}</template></el-table-column>
+            <el-table-column label="跟踪" width="86" align="center">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" link :loading="trackingLoading" @click="addTradeToTracking(row)">加入</el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </div>
 
@@ -1079,7 +1225,7 @@ onBeforeUnmount(() => {
 .hint { font-size: 12px; color: #909399; margin-top: 4px; }
 .inline-number { width: 92px; margin-left: 12px; }
 .inline-slider { width: 210px; margin-left: 12px; }
-.candidate-panel, .task-panel { margin-bottom: 12px; }
+.candidate-panel, .task-panel, .tracking-panel { margin-bottom: 12px; }
 .section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .task-head-actions { display: flex; align-items: center; gap: 8px; }
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 8px; margin-bottom: 14px; }

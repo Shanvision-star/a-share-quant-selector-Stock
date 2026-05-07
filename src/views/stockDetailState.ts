@@ -35,3 +35,42 @@ export function getDisplayStockName(
   }
   return priceInfo?.name || fallbackName
 }
+
+export interface StockSequenceItem {
+  code?: unknown
+  [key: string]: unknown
+}
+
+export interface StockSequenceState {
+  codes: string[]
+  currentIndex: number
+  total: number
+  prevCode: string
+  nextCode: string
+}
+
+export function getStockSequenceState(
+  items: StockSequenceItem[],
+  currentCode: string,
+): StockSequenceState {
+  const seen = new Set<string>()
+  const codes: string[] = []
+
+  for (const item of items) {
+    const code = normalizeStockCode(item?.code)
+    if (!code || seen.has(code)) continue
+    seen.add(code)
+    codes.push(code)
+  }
+
+  const normalizedCurrent = normalizeStockCode(currentCode)
+  const currentIndex = codes.indexOf(normalizedCurrent)
+
+  return {
+    codes,
+    currentIndex,
+    total: codes.length,
+    prevCode: currentIndex > 0 ? codes[currentIndex - 1] : '',
+    nextCode: currentIndex >= 0 && currentIndex < codes.length - 1 ? codes[currentIndex + 1] : '',
+  }
+}

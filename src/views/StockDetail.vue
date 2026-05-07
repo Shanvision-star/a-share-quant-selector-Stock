@@ -2,6 +2,7 @@
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import KlineChart from '@/components/KlineChart.vue'
 import StockInfoPanel from '@/components/StockInfoPanel.vue'
 import { getStockPrice, getStrategyResultsHistory, getStockInfo, prefetchKline, prefetchKlineBatch } from '@/api'
@@ -16,6 +17,7 @@ import {
 import {
   createStockDetailLoadGuard,
   getDisplayStockName,
+  getStockSequenceState,
   type StockDetailLoadTicket,
 } from '@/views/stockDetailState'
 
@@ -82,6 +84,7 @@ function stopResize() {
 }
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleStockNavigationKeydown)
   stopResize()
   stopCardResize()
 })
@@ -120,6 +123,11 @@ const displayStockName = computed(() => getDisplayStockName(priceInfo.value, pro
 const strategyGroups = computed(() => buildStrategyGroups(strategyListItems.value))
 const sidebarSignalCount = computed(() => strategyListItems.value.length)
 const sidebarUniqueCount = computed(() => new Set(strategyListItems.value.map(item => item.code)).size)
+const stockNavigation = computed(() => getStockSequenceState(strategyListItems.value, props.code))
+const stockNavigationIndexText = computed(() => {
+  if (stockNavigation.value.currentIndex < 0 || stockNavigation.value.total <= 0) return '0/0'
+  return `${stockNavigation.value.currentIndex + 1}/${stockNavigation.value.total}`
+})
 // strategyListDate was superseded by sidebarSelectedDate (date picker)
 const sidebarSelectedDate = computed({
   get: () => strategyListStore.selectedDate,
@@ -132,6 +140,41 @@ function goToStockFromList(targetCode: string) {
   prefetchKlineCode(targetCode)
   prefetchAroundCode(targetCode)
   router.push(`/stocks/${targetCode}`)
+}
+
+function navigateStockSequence(direction: 'prev' | 'next') {
+  const targetCode = direction === 'prev'
+    ? stockNavigation.value.prevCode
+    : stockNavigation.value.nextCode
+  if (!targetCode) return
+  goToStockFromList(targetCode)
+}
+
+function shouldIgnoreStockNavigationShortcut(event: KeyboardEvent): boolean {
+  const target = event.target as HTMLElement | null
+  const tag = target?.tagName?.toLowerCase()
+  return !!(
+    event.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || event.shiftKey
+    || tag === 'input'
+    || tag === 'textarea'
+    || tag === 'select'
+    || target?.isContentEditable
+    || target?.closest('.el-select, .el-date-editor, .el-input, .el-textarea, .intraday-popup')
+  )
+}
+
+function handleStockNavigationKeydown(event: KeyboardEvent) {
+  if (shouldIgnoreStockNavigationShortcut(event)) return
+  if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    navigateStockSequence('prev')
+  } else if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    navigateStockSequence('next')
+  }
 }
 
 function prefetchKlineCode(targetCode: string) {
@@ -197,6 +240,7 @@ function prefetchStrategyItem(item: { code?: string }) {
 }
 
 onMounted(() => {
+  window.addEventListener('keydown', handleStockNavigationKeydown)
   loadAll(props.code)
   void initStrategySidebar()
 })
@@ -414,6 +458,25 @@ function formatListSimilarity(score: unknown): string {
         <div class="detail-actions">
           <el-checkbox v-model="showShortTermTrend">短期趋势线</el-checkbox>
           <el-checkbox v-model="showBullBearLine">知行多空线</el-checkbox>
+          <div v-if="stockNavigation.total > 1" class="stock-nav-control" title="可用键盘 ↑ / ↓ 顺序切换">
+            <el-button-group>
+              <el-button
+                size="small"
+                :icon="ArrowUp"
+                :disabled="!stockNavigation.prevCode"
+                title="上一只（↑）"
+                @click="navigateStockSequence('prev')"
+              />
+              <el-button
+                size="small"
+                :icon="ArrowDown"
+                :disabled="!stockNavigation.nextCode"
+                title="下一只（↓）"
+                @click="navigateStockSequence('next')"
+              />
+            </el-button-group>
+            <span class="stock-nav-index">{{ stockNavigationIndexText }}</span>
+          </div>
           <el-radio-group v-model="period" size="small" @change="onPeriodChange">
             <el-radio-button value="daily">日K</el-radio-button>
             <el-radio-button value="weekly">周K</el-radio-button>
@@ -652,6 +715,28 @@ function formatListSimilarity(score: unknown): string {
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
+}
+.stock-nav-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  background: #f8fbff;
+}
+.stock-nav-index {
+  min-width: 42px;
+  font-size: 12px;
+  line-height: 1;
+  color: #606266;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+:deep(.stock-nav-control .el-button) {
+  width: 28px;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 /* ─── K 线图区：填满可用高度 ─────────────────────────────────────── */

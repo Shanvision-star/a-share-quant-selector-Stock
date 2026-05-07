@@ -6,6 +6,7 @@ import type { KlineAdjust } from '@/api'
 import { createRequestManager, isAbortError } from '@/api/requestManager'
 import { buildMainKlineRequestKey, selectFastKlineLimit, shouldShowBlockingKlineLoading } from '@/components/klineRequest'
 import { buildBrickStackedBars } from '@/utils/klineIndicators'
+import { buildVolumeAxisScaleForZoom } from '@/utils/klineVolumeScale'
 
 const props = withDefaults(defineProps<{
   code: string
@@ -246,6 +247,16 @@ function formatAxisCategory(value: unknown): string {
 function formatSignalMarkLabel(params: any): string {
   const labelValue = params?.data?.value ?? params?.value
   return labelValue == null ? '' : String(labelValue)
+}
+
+function readDataZoomWindow(event: any, fallback: { start: number; end: number }) {
+  const payload = Array.isArray(event?.batch) ? event.batch[0] : event
+  const start = toFiniteNumber(payload?.start)
+  const end = toFiniteNumber(payload?.end)
+  return {
+    start: start === null ? fallback.start : Math.max(0, Math.min(100, start)),
+    end: end === null ? fallback.end : Math.max(0, Math.min(100, end)),
+  }
 }
 
 function updateCursorLatestChange(rawIndex: unknown) {
@@ -558,6 +569,8 @@ async function renderChart() {
     const zoomStart = axisDates.length > effectiveBars
       ? Math.max(0, ((axisDates.length - effectiveBars) / axisDates.length) * 100)
       : 0
+    const volumeValues = normalizedBars.map((bar: any) => bar.volume)
+    const initialVolumeScale = buildVolumeAxisScaleForZoom(volumeValues, axisDates.length, zoomStart, 100)
 
     // 策略信号不参与后端 K 线计算，只在前端主图上追加成标注箭头。
     const signalMarks = (props.signals || [])
@@ -701,8 +714,8 @@ async function renderChart() {
       ],
       yAxis: [
         { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
-        { scale: false, min: 0, max: (v: any) => (v?.max ?? 0) * 1.05, gridIndex: 1, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
-        { scale: false, min: 0, max: (v: any) => (v?.max ?? 0) * 1.05, gridIndex: 2, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
+        { scale: false, min: 0, max: initialVolumeScale.max, gridIndex: 1, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
+        { scale: false, min: 0, max: initialVolumeScale.max, gridIndex: 2, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
         {
           scale: true,
           gridIndex: 3,
@@ -800,6 +813,16 @@ async function renderChart() {
       chart.off('click')
       chart.off('updateAxisPointer')
       chart.off('globalout')
+      chart.off('datazoom')
+      let currentZoomWindow = { start: zoomStart, end: 100 }
+      const updateVolumeAxesForZoom = (start: number, end: number) => {
+        const scale = buildVolumeAxisScaleForZoom(volumeValues, axisDates.length, start, end)
+        try {
+          chart?.setOption({ yAxis: [{}, { max: scale.max }, { max: scale.max }] }, false)
+        } catch {
+          // 拖动缩放时图表可能正在重绘，下一次 render 会重新计算成交量轴。
+        }
+      }
       chart.on('click', 'series', (params: any) => {
         // 跳过 markPoint（信号箭头）点击，避免 dataIndex 对应错误的日期
         if (params.seriesName === 'Candles' && props.period === 'daily' && params.dataType !== 'markPoint') {
@@ -819,6 +842,10 @@ async function renderChart() {
       })
       chart.on('globalout', () => {
         cursorLatestChange.value = null
+      })
+      chart.on('datazoom', (event: any) => {
+        currentZoomWindow = readDataZoomWindow(event, currentZoomWindow)
+        updateVolumeAxesForZoom(currentZoomWindow.start, currentZoomWindow.end)
       })
     }
   } catch (error) {

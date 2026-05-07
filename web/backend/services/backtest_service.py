@@ -191,11 +191,11 @@ def _fetch_candidates(params: dict) -> list[dict]:
     return [item for item in candidates if not selected_codes or item['code'] in selected_codes]
 
 
-def run_backtest(params: dict) -> dict:
+def run_backtest(params: dict, progress_callback=None) -> dict:
     candidates = [SignalCandidate.from_mapping(item) for item in _fetch_candidates(params)]
     engine = BacktestEngine(
         signal_source=StaticSignalSource(candidates),
         daily_portal=CachingDailyDataPortal(FunctionDailyDataPortal(_load_price_frame)),
         minute_portal=CsvMinuteDataPortal(project_root / "data" / "minute"),
     )
-    return engine.run(BacktestParams.from_mapping(params))
+    return engine.run(BacktestParams.from_mapping(params), progress_callback=progress_callback)

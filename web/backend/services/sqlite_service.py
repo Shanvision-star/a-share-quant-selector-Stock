@@ -8,7 +8,7 @@ DB_PATH = project_root / "data" / "web_strategy_cache.db"
 
 _local = threading.local()
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def get_connection() -> sqlite3.Connection:
@@ -166,6 +166,42 @@ def init_database():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_manual_selection_date ON manual_selections(selection_date)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_manual_selection_code ON manual_selections(code)")
+
+    # 表 8: backtest_tasks - 回测异步任务状态
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS backtest_tasks (
+            task_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            error TEXT,
+            params_json TEXT,
+            result_json TEXT,
+            total_count INTEGER DEFAULT 0,
+            processed_count INTEGER DEFAULT 0,
+            current_code TEXT,
+            progress_pct INTEGER DEFAULT 0,
+            message TEXT
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_created_at ON backtest_tasks(created_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_status ON backtest_tasks(status)")
+
+    # 表 9: backtest_task_events - 回测任务进度事件流
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS backtest_task_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            progress_pct INTEGER,
+            message TEXT,
+            payload_json TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_backtest_events_task_id ON backtest_task_events(task_id)")
 
     # 记录 schema version
     cursor.execute(

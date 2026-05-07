@@ -37,6 +37,24 @@ class FakeBacktestJobManager:
             "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
         }
 
+    def list_recent(self, limit=20):
+        return [self.get("bt_test")]
+
+    def list_events(self, task_id, limit=500):
+        if task_id != "bt_test":
+            return []
+        return [
+            {
+                "event_id": 1,
+                "task_id": task_id,
+                "event_type": "progress",
+                "progress_pct": 50,
+                "message": "正在回测 000001",
+                "payload": {"processed_count": 1, "total_count": 2, "current_code": "000001"},
+                "created_at": "2026-05-07 10:00:01",
+            }
+        ]
+
 
 def _client():
     app = FastAPI()
@@ -88,3 +106,25 @@ def test_get_unknown_backtest_task_returns_404(monkeypatch):
     response = _client().get("/api/backtest/tasks/missing")
 
     assert response.status_code == 404
+
+
+def test_list_backtest_tasks_returns_history(monkeypatch):
+    monkeypatch.setattr(backtest, "backtest_job_manager", FakeBacktestJobManager())
+
+    response = _client().get("/api/backtest/tasks")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["data"]["items"][0]["task_id"] == "bt_test"
+
+
+def test_list_backtest_task_events_returns_progress_events(monkeypatch):
+    monkeypatch.setattr(backtest, "backtest_job_manager", FakeBacktestJobManager())
+
+    response = _client().get("/api/backtest/tasks/bt_test/events")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["items"][0]["event_type"] == "progress"
+    assert body["data"]["items"][0]["payload"]["current_code"] == "000001"

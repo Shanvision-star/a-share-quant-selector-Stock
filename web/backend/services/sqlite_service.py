@@ -8,7 +8,7 @@ DB_PATH = project_root / "data" / "web_strategy_cache.db"
 
 _local = threading.local()
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def get_connection() -> sqlite3.Connection:
@@ -202,6 +202,52 @@ def init_database():
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_backtest_events_task_id ON backtest_task_events(task_id)")
+
+    # 表 10: tracking_items - 单股跟踪状态，独立于历史回测任务
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tracking_items (
+            tracking_id TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            name TEXT,
+            strategy_name TEXT,
+            source TEXT,
+            source_date TEXT,
+            signal_date TEXT,
+            status TEXT NOT NULL,
+            entry_date TEXT,
+            entry_price REAL,
+            quantity INTEGER DEFAULT 0,
+            remaining_pct REAL DEFAULT 100,
+            last_eval_date TEXT,
+            last_close REAL,
+            latest_return_pct REAL DEFAULT 0,
+            next_action TEXT,
+            latest_intent_json TEXT,
+            params_json TEXT,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            closed_at TEXT
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracking_items_code ON tracking_items(code)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracking_items_status ON tracking_items(status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracking_items_updated_at ON tracking_items(updated_at)")
+
+    # 表 11: tracking_events - 单股跟踪事件流
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tracking_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tracking_id TEXT NOT NULL,
+            event_date TEXT,
+            event_type TEXT NOT NULL,
+            action TEXT,
+            message TEXT,
+            payload_json TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracking_events_tracking_id ON tracking_events(tracking_id)")
 
     # 记录 schema version
     cursor.execute(

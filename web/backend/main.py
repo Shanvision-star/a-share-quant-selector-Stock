@@ -65,6 +65,7 @@ from web.backend.routers import (
     trajectory,
     txt_export,
     manual_selection,
+    tracking,
 )
 
 
@@ -137,6 +138,7 @@ app.include_router(backtest.router)
 app.include_router(trajectory.router)
 app.include_router(txt_export.router)
 app.include_router(manual_selection.router)
+app.include_router(tracking.router)
 
 
 @app.get("/api/health")

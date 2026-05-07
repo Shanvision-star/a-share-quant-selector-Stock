@@ -4,11 +4,14 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getManualSelections,
+  getBacktestTaskEvents,
   getStrategyResultsHistory,
   getBacktestTask,
+  listBacktestTasks,
   startBacktestTask,
   type BacktestRequestPayload,
   type BacktestTask,
+  type BacktestTaskEvent,
   type BacktestTaskStatus,
 } from '@/api'
 import { fetchAllStrategyResultItems, formatSimilarityPercent } from '@/utils/strategyResults'
@@ -63,6 +66,9 @@ const manualSelectionMode = ref<'none' | 'single' | 'batch'>('none')
 const activeTaskId = ref('')
 const taskStatus = ref<BacktestTaskStatus | ''>('')
 const taskMessage = ref('')
+const currentTask = ref<BacktestTask | null>(null)
+const taskHistory = ref<BacktestTask[]>([])
+const taskEvents = ref<BacktestTaskEvent[]>([])
 let backtestPollTimer: number | null = null
 
 const params = reactive<BacktestRequestPayload>({
@@ -110,6 +116,7 @@ const trades = computed(() => result.value?.trades || [])
 const equityCurve = computed(() => result.value?.equity_curve || [])
 const runtime = computed(() => result.value?.runtime || {})
 const runtimeWarnings = computed(() => runtime.value?.warnings || [])
+const taskProgress = computed(() => Math.max(0, Math.min(100, Number(currentTask.value?.progress_pct || 0))))
 const selectedCandidateCodes = computed(() => {
   const selected = new Set<string>()
   for (const row of candidateRows.value) {
@@ -328,12 +335,14 @@ async function handleRunBacktest() {
   activeTaskId.value = ''
   taskStatus.value = ''
   taskMessage.value = ''
+  currentTask.value = null
+  taskEvents.value = []
   try {
     const res = await startBacktestTask(payload)
     const task = res.data.data as BacktestTask
-    activeTaskId.value = task.task_id
-    taskStatus.value = task.status
+    applyBacktestTask(task)
     taskMessage.value = `任务已提交：${task.task_id}`
+    await loadBacktestTasks()
     scheduleBacktestPoll(task.task_id, 300)
   } catch (error: any) {
     console.error('回测失败', error)
@@ -362,15 +371,14 @@ async function pollBacktestTask(taskId: string) {
   try {
     const res = await getBacktestTask(taskId)
     const task = res.data.data as BacktestTask
-    taskStatus.value = task.status
-    taskMessage.value = task.finished_at
-      ? `任务 ${task.task_id} 已结束：${task.finished_at}`
-      : `任务 ${task.task_id} ${formatTaskStatus(task.status)}`
+    applyBacktestTask(task)
+    await loadBacktestTaskEvents(taskId)
 
     if (task.status === 'done') {
       result.value = task.result
       loading.value = false
       clearBacktestPoll()
+      await loadBacktestTasks()
       ElMessage.success(`回测完成：${result.value?.summary?.trade_count || 0} 笔交易`)
       return
     }
@@ -378,6 +386,7 @@ async function pollBacktestTask(taskId: string) {
     if (task.status === 'failed') {
       loading.value = false
       clearBacktestPoll()
+      await loadBacktestTasks()
       ElMessage.error(task.error || '回测任务失败')
       return
     }
@@ -389,6 +398,42 @@ async function pollBacktestTask(taskId: string) {
     clearBacktestPoll()
     ElMessage.error(error?.response?.data?.detail || '查询回测任务失败')
   }
+}
+
+function applyBacktestTask(task: BacktestTask) {
+  currentTask.value = task
+  activeTaskId.value = task.task_id
+  taskStatus.value = task.status
+  taskMessage.value = task.finished_at
+    ? `任务 ${task.task_id} 已结束：${task.finished_at}`
+    : task.message || `任务 ${task.task_id} ${formatTaskStatus(task.status)}`
+}
+
+async function loadBacktestTasks() {
+  try {
+    const res = await listBacktestTasks(12)
+    taskHistory.value = (res.data.data?.items || []) as BacktestTask[]
+  } catch (error) {
+    console.warn('加载回测任务历史失败', error)
+  }
+}
+
+async function loadBacktestTaskEvents(taskId: string) {
+  try {
+    const res = await getBacktestTaskEvents(taskId, 80)
+    taskEvents.value = (res.data.data?.items || []) as BacktestTaskEvent[]
+  } catch (error) {
+    console.warn('加载回测任务事件失败', error)
+  }
+}
+
+async function openBacktestTask(task: BacktestTask) {
+  clearBacktestPoll()
+  applyBacktestTask(task)
+  await loadBacktestTaskEvents(task.task_id)
+  result.value = task.result || null
+  loading.value = task.status === 'queued' || task.status === 'running'
+  if (loading.value) scheduleBacktestPoll(task.task_id, 500)
 }
 
 function formatTaskStatus(status: BacktestTaskStatus | ''): string {
@@ -440,6 +485,7 @@ onMounted(() => {
   } else if (String(query.batch || '') === '1') {
     manualSelectionMode.value = 'batch'
   }
+  loadBacktestTasks()
 })
 
 watch(() => params.source, (next) => {
@@ -640,21 +686,50 @@ onBeforeUnmount(() => {
           </el-table>
         </section>
 
+        <section class="task-panel">
+          <div class="section-head">
+            <strong>回测任务</strong>
+            <span class="hint">{{ activeTaskId ? `当前 ${activeTaskId}` : '暂无运行中任务' }}</span>
+          </div>
+          <el-alert
+            v-if="activeTaskId"
+            :title="taskMessage || `任务 ${activeTaskId} ${formatTaskStatus(taskStatus)}`"
+            :type="taskStatus === 'failed' ? 'error' : taskStatus === 'done' ? 'success' : 'info'"
+            show-icon
+            :closable="false"
+            class="task-alert"
+          />
+          <div v-if="activeTaskId" class="task-progress">
+            <el-progress :percentage="taskProgress" :status="taskStatus === 'failed' ? 'exception' : taskStatus === 'done' ? 'success' : undefined" />
+            <div class="runtime-meta">
+              已处理 {{ currentTask?.processed_count || 0 }}/{{ currentTask?.total_count || 0 }}，
+              当前代码 {{ currentTask?.current_code || '-' }}，
+              状态 {{ formatTaskStatus(taskStatus) }}
+            </div>
+          </div>
+          <el-table :data="taskHistory" size="small" height="150" border empty-text="暂无回测任务历史">
+            <el-table-column prop="created_at" label="提交时间" width="150" />
+            <el-table-column prop="status" label="状态" width="78">
+              <template #default="{ row }">{{ formatTaskStatus(row.status) }}</template>
+            </el-table-column>
+            <el-table-column prop="progress_pct" label="进度" width="80">
+              <template #default="{ row }">{{ row.progress_pct || 0 }}%</template>
+            </el-table-column>
+            <el-table-column prop="message" label="说明" min-width="150" show-overflow-tooltip />
+            <el-table-column label="操作" width="78" align="center">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" link @click="openBacktestTask(row)">查看</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </section>
+
         <div v-if="summary" class="metric-grid">
           <div v-for="metric in metricItems" :key="metric.label" class="metric-cell">
             <span>{{ metric.label }}</span>
             <strong :class="metricClass(metric.value)">{{ metric.value }}{{ metric.suffix }}</strong>
           </div>
         </div>
-
-        <el-alert
-          v-if="activeTaskId"
-          :title="taskMessage || `任务 ${activeTaskId} ${formatTaskStatus(taskStatus)}`"
-          :type="taskStatus === 'failed' ? 'error' : taskStatus === 'done' ? 'success' : 'info'"
-          show-icon
-          :closable="false"
-          class="task-alert"
-        />
 
         <el-empty v-if="!summary && !loading" description="加载候选或输入个股后点击开始回测" />
         <el-empty v-else-if="!summary && loading" description="回测任务运行中，结果完成后自动刷新" />
@@ -676,6 +751,9 @@ onBeforeUnmount(() => {
             用时 {{ summary.runtime_elapsed_seconds ?? 0 }} 秒
           </div>
           <div class="section-title">交易明细</div>
+          <div v-if="taskEvents.length" class="runtime-meta">
+            最近事件：{{ taskEvents.slice(-3).map(item => item.message || item.event_type).join(' / ') }}
+          </div>
           <el-table :data="trades" size="small" height="360" border>
             <el-table-column prop="buy_date" label="买入日" width="100" />
             <el-table-column prop="sell_date" label="卖出日" width="100" />
@@ -722,7 +800,7 @@ onBeforeUnmount(() => {
 .hint { font-size: 12px; color: #909399; margin-top: 4px; }
 .inline-number { width: 92px; margin-left: 12px; }
 .inline-slider { width: 210px; margin-left: 12px; }
-.candidate-panel { margin-bottom: 12px; }
+.candidate-panel, .task-panel { margin-bottom: 12px; }
 .section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 8px; margin-bottom: 14px; }
 .metric-cell { padding: 10px 12px; border: 1px solid #ebeef5; border-radius: 6px; background: #fafafa; }
@@ -735,5 +813,6 @@ onBeforeUnmount(() => {
 .runtime-alert { margin-bottom: 8px; }
 .runtime-meta { margin-bottom: 10px; font-size: 12px; color: #606266; }
 .task-alert { margin-bottom: 12px; }
+.task-progress { margin-bottom: 10px; }
 @media (max-width: 1180px) { .backtest-layout { grid-template-columns: 1fr; overflow: auto; } .metric-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); } }
 </style>

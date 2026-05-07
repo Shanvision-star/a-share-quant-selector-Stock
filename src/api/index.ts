@@ -393,9 +393,25 @@ export interface BacktestTask {
   created_at?: string
   started_at?: string | null
   finished_at?: string | null
+  updated_at?: string
   error?: string
   result?: any
   params?: Record<string, any>
+  total_count?: number
+  processed_count?: number
+  current_code?: string
+  progress_pct?: number
+  message?: string
+}
+
+export interface BacktestTaskEvent {
+  event_id: number
+  task_id: string
+  event_type: string
+  progress_pct?: number | null
+  message?: string
+  payload?: Record<string, any>
+  created_at?: string
 }
 
 export const runBacktest = (payload: BacktestRequestPayload) =>
@@ -406,5 +422,11 @@ export const startBacktestTask = (payload: BacktestRequestPayload) =>
 
 export const getBacktestTask = (taskId: string) =>
   api.get(`/backtest/tasks/${encodeURIComponent(taskId)}`)
+
+export const listBacktestTasks = (limit = 20) =>
+  api.get('/backtest/tasks', { params: { limit } })
+
+export const getBacktestTaskEvents = (taskId: string, limit = 500) =>
+  api.get(`/backtest/tasks/${encodeURIComponent(taskId)}/events`, { params: { limit } })
 
 export default api

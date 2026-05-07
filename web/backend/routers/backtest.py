@@ -108,6 +108,15 @@ async def list_backtest_task_events(
     return {"success": True, "data": {"items": backtest_job_manager.list_events(task_id, limit)}}
 
 
+@router.post("/backtest/tasks/{task_id}/cancel")
+async def cancel_backtest_task(task_id: str):
+    """请求取消异步回测任务。"""
+    task = backtest_job_manager.cancel(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"回测任务不存在或已过期: {task_id}")
+    return {"success": True, "data": task}
+
+
 @router.get("/backtest/tasks/{task_id}")
 async def get_backtest_task(task_id: str):
     """查询异步回测任务状态。"""

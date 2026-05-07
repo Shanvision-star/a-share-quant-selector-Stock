@@ -55,6 +55,21 @@ class FakeBacktestJobManager:
             }
         ]
 
+    def cancel(self, task_id):
+        if task_id != "bt_test":
+            return None
+        return {
+            "task_id": task_id,
+            "status": "cancel_requested",
+            "created_at": "2026-05-07 10:00:00",
+            "started_at": "2026-05-07 10:00:01",
+            "finished_at": None,
+            "error": "",
+            "result": None,
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "message": "取消中",
+        }
+
 
 def _client():
     app = FastAPI()
@@ -128,3 +143,22 @@ def test_list_backtest_task_events_returns_progress_events(monkeypatch):
     body = response.json()
     assert body["data"]["items"][0]["event_type"] == "progress"
     assert body["data"]["items"][0]["payload"]["current_code"] == "000001"
+
+
+def test_cancel_backtest_task_requests_task_cancel(monkeypatch):
+    monkeypatch.setattr(backtest, "backtest_job_manager", FakeBacktestJobManager())
+
+    response = _client().post("/api/backtest/tasks/bt_test/cancel")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["data"]["status"] == "cancel_requested"
+
+
+def test_cancel_unknown_backtest_task_returns_404(monkeypatch):
+    monkeypatch.setattr(backtest, "backtest_job_manager", FakeBacktestJobManager())
+
+    response = _client().post("/api/backtest/tasks/missing/cancel")
+
+    assert response.status_code == 404

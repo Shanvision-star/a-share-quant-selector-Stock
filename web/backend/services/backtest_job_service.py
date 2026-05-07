@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from datetime import datetime
 import inspect
 import json
@@ -19,6 +19,13 @@ from web.backend.services.backtest_service import run_backtest
 
 
 BacktestRunner = Callable[[dict], dict]
+
+TERMINAL_STATUSES = {"done", "failed", "canceled"}
+CANCEL_STATUSES = {"cancel_requested", "canceled"}
+
+
+class BacktestJobCancelled(Exception):
+    """回测任务被用户请求取消。"""
 
 
 def _now_text() -> str:
@@ -254,23 +261,55 @@ class BacktestJobManager:
     def list_events(self, task_id: str, limit: int = 500) -> list[dict]:
         return self.repository.list_events(task_id, limit)
 
+    def cancel(self, task_id: str) -> dict | None:
+        """请求取消任务：排队任务立即取消，运行中任务在下一次进度边界停止。"""
+        task = self.get(task_id)
+        if task is None:
+            return None
+        if task.get("status") in TERMINAL_STATUSES:
+            return task
+
+        self._update(task_id, status="cancel_requested", message="取消中")
+        self.repository.add_event(task_id, "cancel_requested", {"status": "cancel_requested"}, "取消中")
+
+        with self._lock:
+            future = self._futures.get(task_id)
+        if future is None:
+            self._mark_canceled(task_id)
+        elif future.cancel():
+            self._mark_canceled(task_id)
+
+        return self.get(task_id)
+
     def wait(self, task_id: str, timeout: float | None = None) -> dict:
         future = None
         with self._lock:
             future = self._futures.get(task_id)
         if future is None:
             raise KeyError(task_id)
-        future.result(timeout=timeout)
+        try:
+            future.result(timeout=timeout)
+        except CancelledError:
+            pass
         task = self.get(task_id)
         if task is None:
             raise KeyError(task_id)
         return task
 
     def _run_task(self, task_id: str, params: dict):
-        self._update(task_id, status="running", started_at=_now_text(), message="运行中")
+        if not self._mark_running(task_id):
+            self._mark_canceled(task_id)
+            return
         self.repository.add_event(task_id, "running", {"status": "running"}, "运行中")
         try:
+            if self._is_cancel_requested(task_id):
+                raise BacktestJobCancelled()
             result = self._call_runner(params, self._progress_callback(task_id))
+            if self._is_cancel_requested(task_id):
+                raise BacktestJobCancelled()
+        except BacktestJobCancelled:
+            self._mark_canceled(task_id)
+            return
         except Exception as exc:  # noqa: BLE001 - 任务边界需要记录所有异常，不能让线程静默失败。
             self._update(task_id, status="failed", error=str(exc), finished_at=_now_text(), message="失败")
             self.repository.add_event(task_id, "failed", {"error": str(exc)}, str(exc))
@@ -290,6 +329,8 @@ class BacktestJobManager:
 
     def _progress_callback(self, task_id: str):
         def callback(payload: dict):
+            if self._is_cancel_requested(task_id):
+                raise BacktestJobCancelled()
             total_count = int(payload.get("total_count") or 0)
             processed_count = int(payload.get("processed_count") or 0)
             progress_pct = int(payload.get("progress_pct") or _progress_pct(processed_count, total_count))
@@ -307,12 +348,37 @@ class BacktestJobManager:
 
         return callback
 
+    def _mark_running(self, task_id: str) -> bool:
+        changes = {"status": "running", "started_at": _now_text(), "message": "运行中"}
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task and task.get("status") in CANCEL_STATUSES:
+                return False
+            if task:
+                task.update(changes)
+        if not task:
+            stored = self.repository.get(task_id)
+            if stored and stored.get("status") in CANCEL_STATUSES:
+                return False
+        self.repository.update(task_id, **changes)
+        return True
+
+    def _mark_canceled(self, task_id: str):
+        task = self.get(task_id)
+        if task and task.get("status") == "canceled":
+            return
+        self._update(task_id, status="canceled", finished_at=_now_text(), error="", message="已取消")
+        self.repository.add_event(task_id, "canceled", {"status": "canceled"}, "已取消")
+
+    def _is_cancel_requested(self, task_id: str) -> bool:
+        task = self.get(task_id)
+        return bool(task and task.get("status") in CANCEL_STATUSES)
+
     def _update(self, task_id: str, **changes):
         with self._lock:
             task = self._tasks.get(task_id)
-            if not task:
-                return
-            task.update(changes)
+            if task:
+                task.update(changes)
         self.repository.update(task_id, **changes)
 
 

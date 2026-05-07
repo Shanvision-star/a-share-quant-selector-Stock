@@ -43,6 +43,7 @@ class BacktestRequest(BaseModel):
     profit_trigger_pct: float = Field(default=5, ge=0, le=200)
     profit_step_pct: float = Field(default=10, ge=0, le=200)
     profit_sell_pct: float = Field(default=25, ge=0, le=100)
+    profit_keep_pct: float = Field(default=0, ge=0, le=100)
     hold_above_short_trend_after_trigger: bool = True
     enable_no_gain_exit: bool = True
     no_gain_days: int = Field(default=3, ge=1, le=30)
@@ -56,6 +57,8 @@ class BacktestRequest(BaseModel):
     minute_buy_price: Literal['open', 'close', 'high', 'low'] = 'open'
     minute_sell_price: Literal['open', 'close', 'high', 'low'] = 'close'
     intent_quantity: int = Field(default=0, ge=0, le=100000000)
+    lot_size: int = Field(default=100, ge=1, le=10000)
+    allow_st_buy: bool = False
 
 
 @router.post("/backtest")

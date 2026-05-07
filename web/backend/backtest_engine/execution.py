@@ -32,6 +32,16 @@ def _safe_int(value, default: int = 0) -> int:
         return default
 
 
+def _round_lot_quantity(quantity: int, lot_size: int = 100) -> int:
+    if quantity <= 0 or lot_size <= 0:
+        return max(0, quantity)
+    return (quantity // lot_size) * lot_size
+
+
+def _clamp_pct(value, default: float = 0.0) -> float:
+    return max(0.0, min(100.0, _safe_float(value, default)))
+
+
 def _find_signal_index(frame: pd.DataFrame, signal_date: str) -> Optional[int]:
     signal_ts = pd.to_datetime(signal_date)
     matched = frame.index[frame["date"] >= signal_ts]
@@ -42,6 +52,81 @@ def _find_signal_index(frame: pd.DataFrame, signal_date: str) -> Optional[int]:
 
 def _pick_price(row, field: str) -> float:
     return _safe_float(row.get(field), 0.0)
+
+
+def _is_st_stock(candidate: SignalCandidate) -> bool:
+    text = f"{candidate.name}{candidate.strategy_name}".upper()
+    return "ST" in text or "退" in text
+
+
+def _is_tradeable_row(row) -> bool:
+    volume = _safe_float(row.get("volume"), 1.0)
+    prices = [_safe_float(row.get(field), 0.0) for field in ("open", "high", "low", "close")]
+    return volume > 0 and all(price > 0 for price in prices)
+
+
+def _previous_close(frame: pd.DataFrame, index: int) -> float:
+    row = frame.iloc[index]
+    prev_close = _safe_float(row.get("prev_close"), 0.0)
+    if prev_close > 0:
+        return prev_close
+    if index <= 0:
+        return 0.0
+    return _safe_float(frame.iloc[index - 1].get("close"), 0.0)
+
+
+def _limit_pct(candidate: SignalCandidate) -> float:
+    if _is_st_stock(candidate):
+        return 0.05
+    if candidate.code.startswith(("300", "301", "688")):
+        return 0.20
+    return 0.10
+
+
+def _is_limit_up_locked(row, prev_close: float, limit_pct: float) -> bool:
+    if prev_close <= 0:
+        return False
+    limit_price = round(prev_close * (1 + limit_pct), 2)
+    low_price = _safe_float(row.get("low"), 0.0)
+    open_price = _safe_float(row.get("open"), 0.0)
+    return low_price >= limit_price * 0.999 and open_price >= limit_price * 0.999
+
+
+def _is_limit_down_locked(row, prev_close: float, limit_pct: float) -> bool:
+    if prev_close <= 0:
+        return False
+    limit_price = round(prev_close * (1 - limit_pct), 2)
+    high_price = _safe_float(row.get("high"), 0.0)
+    open_price = _safe_float(row.get("open"), 0.0)
+    return high_price <= limit_price * 1.001 and open_price <= limit_price * 1.001
+
+
+def _find_sellable_index(frame: pd.DataFrame, start_index: int, end_index: int, candidate: SignalCandidate) -> Optional[int]:
+    for index in range(start_index, end_index + 1):
+        row = frame.iloc[index]
+        if not _is_tradeable_row(row):
+            continue
+        prev_close = _previous_close(frame, index)
+        if _is_limit_down_locked(row, prev_close, _limit_pct(candidate)):
+            continue
+        return index
+    return None
+
+
+def _resolve_minute_sell_date(
+    bars: list[MinuteBar],
+    buy_date,
+    holding_days: int,
+):
+    """按交易日序列解析分钟级卖出日，强制 T+1 以后才允许卖出。"""
+    dates = sorted({bar.ts.date() for bar in bars})
+    if buy_date not in dates:
+        return None
+    buy_index = dates.index(buy_date)
+    target_index = buy_index + max(1, holding_days)
+    if target_index >= len(dates):
+        return None
+    return dates[target_index]
 
 
 def _append_exit(
@@ -130,7 +215,7 @@ class DailyExecutionSimulator:
             end_bound_index = int(end_matches[-1])
         else:
             end_bound_index = len(frame) - 1
-        if buy_index > end_bound_index:
+        if buy_index >= end_bound_index:
             return None
 
         holding_days = max(1, int(params.get("holding_days", 5)))
@@ -139,6 +224,13 @@ class DailyExecutionSimulator:
         buy_price_field = str(params.get("buy_price", "open"))
         buy_price = _pick_price(buy_row, buy_price_field)
         if buy_price <= 0:
+            return None
+        if _is_st_stock(candidate) and not bool(params.get("allow_st_buy", False)):
+            return None
+        if not _is_tradeable_row(buy_row):
+            return None
+        prev_close = _previous_close(frame, buy_index)
+        if _is_limit_up_locked(buy_row, prev_close, _limit_pct(candidate)):
             return None
 
         legacy_take_profit_pct = _safe_float(params.get("take_profit_pct"), 0.0)
@@ -150,15 +242,19 @@ class DailyExecutionSimulator:
         profit_trigger_pct = _safe_float(params.get("profit_trigger_pct"), 5.0)
         profit_step_pct = max(0.0, _safe_float(params.get("profit_step_pct"), 10.0))
         profit_sell_pct = max(0.0, min(100.0, _safe_float(params.get("profit_sell_pct"), 25.0)))
+        profit_keep_pct = _clamp_pct(params.get("profit_keep_pct"), 0.0)
+        profit_keep_fraction = profit_keep_pct / 100
         no_gain_days = max(1, int(params.get("no_gain_days", 3)))
         short_break_days = max(1, int(params.get("short_trend_break_days", 2)))
         short_drawdown_pct = _safe_float(params.get("short_trend_drawdown_pct"), 5.0)
 
         remaining = 1.0
         exits: list[dict] = []
+        profit_actions: list[dict] = []
         runner_triggered = False
         next_profit_ladder_pct = profit_trigger_pct + profit_step_pct
         short_break_streak = 0
+        hold_core_recorded = False
 
         for index in range(buy_index + 1, target_exit_index + 1):
             row = frame.iloc[index]
@@ -205,19 +301,53 @@ class DailyExecutionSimulator:
             current_high_pct = (high_price / buy_price - 1) * 100 if buy_price > 0 else 0.0
             if profit_run_enabled and profit_trigger_pct > 0 and current_high_pct >= profit_trigger_pct:
                 runner_triggered = True
+                if not profit_actions:
+                    profit_actions.append(
+                        {
+                            "date": row["date"].strftime("%Y-%m-%d"),
+                            "action": "enter_runner",
+                            "profit_pct": round(current_high_pct, 2),
+                            "remaining_pct": round(remaining * 100, 2),
+                        }
+                    )
 
             if runner_triggered and profit_step_pct > 0 and profit_sell_pct > 0:
                 while remaining > 0 and current_high_pct >= next_profit_ladder_pct:
+                    sellable_portion = max(0.0, remaining - profit_keep_fraction)
+                    if sellable_portion <= 0:
+                        if not hold_core_recorded:
+                            profit_actions.append(
+                                {
+                                    "date": row["date"].strftime("%Y-%m-%d"),
+                                    "action": "hold_core",
+                                    "profit_pct": round(current_high_pct, 2),
+                                    "remaining_pct": round(remaining * 100, 2),
+                                    "keep_pct": round(profit_keep_pct, 2),
+                                }
+                            )
+                            hold_core_recorded = True
+                        next_profit_ladder_pct += profit_step_pct
+                        continue
                     exit_price = buy_price * (1 + next_profit_ladder_pct / 100)
+                    portion = min(remaining, sellable_portion, profit_sell_pct / 100)
                     remaining = _append_exit(
                         exits,
                         row,
                         exit_price,
-                        min(remaining, profit_sell_pct / 100),
+                        portion,
                         f"profit_ladder_{next_profit_ladder_pct:.1f}pct",
                         remaining,
                         fee_rate,
                         slippage_rate,
+                    )
+                    profit_actions.append(
+                        {
+                            "date": row["date"].strftime("%Y-%m-%d"),
+                            "action": "sell_partial",
+                            "profit_pct": round(next_profit_ladder_pct, 2),
+                            "sell_pct": round(portion * 100, 2),
+                            "remaining_pct": round(remaining * 100, 2),
+                        }
                     )
                     next_profit_ladder_pct += profit_step_pct
 
@@ -239,7 +369,10 @@ class DailyExecutionSimulator:
                 break
 
         if remaining > 0:
-            final_row = frame.iloc[target_exit_index]
+            final_index = _find_sellable_index(frame, target_exit_index, end_bound_index, candidate)
+            if final_index is None:
+                return None
+            final_row = frame.iloc[final_index]
             final_price = _pick_price(final_row, sell_price_field)
             remaining = _append_exit(exits, final_row, final_price, remaining, "holding_days", remaining, fee_rate, slippage_rate)
 
@@ -271,14 +404,19 @@ class DailyExecutionSimulator:
             "return_pct": round(net_return * 100, 2),
             "exit_reason": exits[-1]["reason"],
             "exits": exits,
+            "profit_actions": profit_actions,
         }
+        quantity = _round_lot_quantity(
+            _safe_int(params.get("intent_quantity"), 0),
+            max(1, _safe_int(params.get("lot_size"), 100)),
+        )
         intent = OrderIntent.from_candidate(
             candidate,
             side="BUY",
             planned_at=buy_row["date"],
             price_type=buy_price_field,
             target_price=buy_price,
-            quantity=_safe_int(params.get("intent_quantity"), 0),
+            quantity=quantity,
         )
         return trade, intent
 
@@ -321,7 +459,11 @@ class MinuteExecutionSimulator:
             return None
 
         buy_bar = _first_bar_at_or_after(bars, buy_date, str(params.get("minute_buy_time", "09:35")))
-        sell_bar = _first_bar_at_or_after(bars, buy_date, str(params.get("minute_sell_time", "14:55")))
+        sell_date = _resolve_minute_sell_date(bars, buy_date, max(1, int(params.get("holding_days", 1))))
+        if sell_date is None:
+            return None
+
+        sell_bar = _first_bar_at_or_after(bars, sell_date, str(params.get("minute_sell_time", "14:55")))
         if buy_bar is None or sell_bar is None or sell_bar.ts < buy_bar.ts:
             return None
 
@@ -335,7 +477,10 @@ class MinuteExecutionSimulator:
         fee_rate = _safe_float(params.get("fee_rate"), 0.0003)
         slippage_rate = _safe_float(params.get("slippage_rate"), 0.0005)
         net_return = (sell_price / buy_price - 1) - (fee_rate + slippage_rate) * 2
-        quantity = _safe_int(params.get("intent_quantity"), 0)
+        quantity = _round_lot_quantity(
+            _safe_int(params.get("intent_quantity"), 0),
+            max(1, _safe_int(params.get("lot_size"), 100)),
+        )
         intents = [
             OrderIntent.from_candidate(
                 candidate,

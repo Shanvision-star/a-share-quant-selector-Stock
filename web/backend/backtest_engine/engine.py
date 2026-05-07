@@ -25,16 +25,20 @@ class BacktestEngine:
         self.daily_portal = daily_portal
         self.minute_portal = minute_portal
 
-    def run(self, params: BacktestParams) -> dict:
+    def run(self, params: BacktestParams, progress_callback=None) -> dict:
         if params.get("timeframe", "daily") == "minute":
-            return self.run_minute(params)
-        return self.run_daily(params)
+            return self.run_minute(params, progress_callback=progress_callback)
+        return self.run_daily(params, progress_callback=progress_callback)
 
-    def run_daily(self, params: BacktestParams) -> dict:
+    def run_daily(self, params: BacktestParams, progress_callback=None) -> dict:
         if self.daily_portal is None:
             raise ValueError("daily_portal is required for daily backtest")
         candidates, candidate_runtime = self._fetch_capped_candidates(params)
-        trades, skipped, intents, execution_runtime = DailyExecutionSimulator(self.daily_portal).run(candidates, params)
+        trades, skipped, intents, execution_runtime = DailyExecutionSimulator(self.daily_portal).run(
+            candidates,
+            params,
+            progress_callback=progress_callback,
+        )
         return build_result(
             params=params,
             candidates=candidates,
@@ -44,11 +48,15 @@ class BacktestEngine:
             runtime=_merge_runtime(candidate_runtime, execution_runtime),
         )
 
-    def run_minute(self, params: BacktestParams) -> dict:
+    def run_minute(self, params: BacktestParams, progress_callback=None) -> dict:
         if self.minute_portal is None:
             raise ValueError("minute_portal is required for minute backtest")
         candidates, candidate_runtime = self._fetch_capped_candidates(params)
-        trades, skipped, intents, execution_runtime = MinuteExecutionSimulator(self.minute_portal).run(candidates, params)
+        trades, skipped, intents, execution_runtime = MinuteExecutionSimulator(self.minute_portal).run(
+            candidates,
+            params,
+            progress_callback=progress_callback,
+        )
         return build_result(
             params=params,
             candidates=candidates,

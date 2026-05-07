@@ -1,7 +1,7 @@
 """回测接口。"""
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -88,6 +88,24 @@ async def submit_backtest_task(payload: BacktestRequest):
         raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
     task = backtest_job_manager.submit(_payload_to_dict(payload))
     return {"success": True, "data": task}
+
+
+@router.get("/backtest/tasks")
+async def list_backtest_tasks(limit: int = Query(default=20, ge=1, le=200)):
+    """查询最近回测任务。"""
+    return {"success": True, "data": {"items": backtest_job_manager.list_recent(limit)}}
+
+
+@router.get("/backtest/tasks/{task_id}/events")
+async def list_backtest_task_events(
+    task_id: str,
+    limit: int = Query(default=500, ge=1, le=2000),
+):
+    """查询回测任务事件流，用于前端进度展示。"""
+    task = backtest_job_manager.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"回测任务不存在或已过期: {task_id}")
+    return {"success": True, "data": {"items": backtest_job_manager.list_events(task_id, limit)}}
 
 
 @router.get("/backtest/tasks/{task_id}")

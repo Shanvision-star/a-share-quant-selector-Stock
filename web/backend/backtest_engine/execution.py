@@ -183,6 +183,7 @@ class DailyExecutionSimulator:
         self,
         candidates: list[SignalCandidate],
         params: BacktestParams,
+        progress_callback=None,
     ) -> tuple[list[dict], int, list[OrderIntent], dict]:
         trades: list[dict] = []
         intents: list[OrderIntent] = []
@@ -207,6 +208,16 @@ class DailyExecutionSimulator:
                 intents.append(intent)
             else:
                 skipped += 1
+            if progress_callback:
+                progress_callback(
+                    {
+                        "total_count": len(candidates),
+                        "processed_count": runtime["processed_count"],
+                        "current_code": candidate.code,
+                        "trade_count": len(trades),
+                        "skipped_count": skipped,
+                    }
+                )
         runtime["elapsed_seconds"] = round(time.perf_counter() - started_at, 4)
         return trades, skipped, intents, runtime
 
@@ -462,6 +473,7 @@ class MinuteExecutionSimulator:
         self,
         candidates: list[SignalCandidate],
         params: BacktestParams,
+        progress_callback=None,
     ) -> tuple[list[dict], int, list[OrderIntent], dict]:
         trades: list[dict] = []
         intents: list[OrderIntent] = []
@@ -486,6 +498,16 @@ class MinuteExecutionSimulator:
                 intents.extend(trade_intents)
             else:
                 skipped += 1
+            if progress_callback:
+                progress_callback(
+                    {
+                        "total_count": len(candidates),
+                        "processed_count": runtime["processed_count"],
+                        "current_code": candidate.code,
+                        "trade_count": len(trades),
+                        "skipped_count": skipped,
+                    }
+                )
         runtime["elapsed_seconds"] = round(time.perf_counter() - started_at, 4)
         return trades, skipped, intents, runtime
 

@@ -3,6 +3,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from web.backend.services.backtest_service import run_backtest as run_backtest_service
 
@@ -38,6 +39,9 @@ class BacktestRequest(BaseModel):
     take_profit_pct: Optional[float] = Field(default=0, ge=0, le=200)
     stop_loss_pct: Optional[float] = Field(default=0, ge=0, le=100)
     max_positions_per_day: int = Field(default=10, ge=0, le=500)
+    max_candidates: int = Field(default=1000, ge=0, le=100000)
+    max_signals_per_code: int = Field(default=120, ge=0, le=10000)
+    max_runtime_seconds: float = Field(default=30, ge=0, le=600)
     codes_fallback_to_start_date: bool = False
     profit_run_enabled: bool = True
     profit_trigger_pct: float = Field(default=5, ge=0, le=200)
@@ -66,7 +70,7 @@ async def run_backtest(payload: BacktestRequest):
     """同步回测：返回摘要、交易明细和资金曲线。"""
     if payload.start_date > payload.end_date:
         raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
-    result = run_backtest_service(payload.dict())
+    result = await run_in_threadpool(run_backtest_service, payload.dict())
     return {"success": True, "data": result}
 
 

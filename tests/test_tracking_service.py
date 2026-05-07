@@ -24,6 +24,18 @@ def _daily_loader(code: str) -> pd.DataFrame:
     )
 
 
+def _runner_daily_loader(code: str) -> pd.DataFrame:
+    assert code == "000559"
+    return pd.DataFrame(
+        [
+            {"date": "2026-04-30", "open": 10.00, "high": 10.10, "low": 9.90, "close": 10.00, "volume": 1000},
+            {"date": "2026-05-06", "open": 10.00, "high": 10.20, "low": 9.90, "close": 10.10, "volume": 1000},
+            {"date": "2026-05-07", "open": 10.40, "high": 10.70, "low": 10.30, "close": 10.60, "volume": 1000},
+            {"date": "2026-05-08", "open": 11.40, "high": 11.80, "low": 11.30, "close": 11.60, "volume": 1000},
+        ]
+    )
+
+
 def test_tracking_service_creates_watch_item_and_event():
     """从人工选股或回测结果加入跟踪后，应持久化 watch_buy 状态和事件。"""
     conn = _memory_connection()
@@ -79,10 +91,10 @@ def test_tracking_service_evaluates_watch_item_into_buy_intent():
     assert events[-1]["payload"]["intent"]["broker_order_id"] is None
 
 
-def test_tracking_service_evaluates_holding_into_partial_sell_suggestion():
-    """持仓收益达到放飞阈值后，应生成部分卖出建议并保留底仓。"""
+def test_tracking_service_profit_runner_waits_for_ladder_before_partial_sell():
+    """放飞触发后先进入跟踪状态，达到阶梯涨幅才生成部分卖出建议。"""
     conn = _memory_connection()
-    service = TrackingService(connection_factory=lambda: conn, daily_loader=_daily_loader)
+    service = TrackingService(connection_factory=lambda: conn, daily_loader=_runner_daily_loader)
     item = service.create_item(
         {
             "code": "000559",
@@ -97,6 +109,7 @@ def test_tracking_service_evaluates_holding_into_partial_sell_suggestion():
                 "intent_quantity": 400,
                 "profit_run_enabled": True,
                 "profit_trigger_pct": 5,
+                "profit_step_pct": 10,
                 "profit_sell_pct": 25,
                 "profit_keep_pct": 50,
             },
@@ -104,10 +117,53 @@ def test_tracking_service_evaluates_holding_into_partial_sell_suggestion():
     )
     service.evaluate_item(item["tracking_id"], "2026-05-06")
 
-    evaluated = service.evaluate_item(item["tracking_id"], "2026-05-07")
+    runner = service.evaluate_item(item["tracking_id"], "2026-05-07")
+    evaluated = service.evaluate_item(item["tracking_id"], "2026-05-08")
 
+    assert runner["status"] == "holding"
+    assert runner["next_action"] == "HOLD_RUNNER"
+    assert runner["remaining_pct"] == 100
+    assert runner["latest_intent"] is None
+    assert runner["params"]["runner_triggered"] is True
+    assert runner["params"]["next_profit_ladder_pct"] == 15
     assert evaluated["status"] == "partial_sold"
     assert evaluated["next_action"] == "SELL_PARTIAL"
     assert evaluated["remaining_pct"] == 75
-    assert evaluated["latest_return_pct"] > 5
+    assert evaluated["latest_return_pct"] > 15
     assert evaluated["latest_intent"]["side"] == "SELL"
+    assert evaluated["params"]["next_profit_ladder_pct"] == 25
+
+
+def test_tracking_service_same_day_evaluation_is_idempotent():
+    """同一评估日重复点击评估时，不能重复生成卖出建议或继续扣减剩余仓位。"""
+    conn = _memory_connection()
+    service = TrackingService(connection_factory=lambda: conn, daily_loader=_runner_daily_loader)
+    item = service.create_item(
+        {
+            "code": "000559",
+            "name": "万向钱潮",
+            "strategy_name": "BowlReboundStrategy",
+            "source": "manual",
+            "source_date": "2026-05-01",
+            "signal_date": "2026-04-30",
+            "params": {
+                "buy_offset_days": 1,
+                "buy_price": "open",
+                "intent_quantity": 400,
+                "profit_run_enabled": True,
+                "profit_trigger_pct": 5,
+                "profit_step_pct": 10,
+                "profit_sell_pct": 25,
+                "profit_keep_pct": 50,
+            },
+        }
+    )
+    service.evaluate_item(item["tracking_id"], "2026-05-06")
+    service.evaluate_item(item["tracking_id"], "2026-05-07")
+    first = service.evaluate_item(item["tracking_id"], "2026-05-08")
+
+    second = service.evaluate_item(item["tracking_id"], "2026-05-08")
+
+    assert first["remaining_pct"] == 75
+    assert second["remaining_pct"] == 75
+    assert second["latest_intent"]["intent_id"] == first["latest_intent"]["intent_id"]

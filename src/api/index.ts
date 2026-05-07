@@ -368,6 +368,7 @@ export interface BacktestRequestPayload {
   profit_trigger_pct?: number
   profit_step_pct?: number
   profit_sell_pct?: number
+  profit_keep_pct?: number
   hold_above_short_trend_after_trigger?: boolean
   enable_no_gain_exit?: boolean
   no_gain_days?: number
@@ -376,6 +377,9 @@ export interface BacktestRequestPayload {
   short_trend_break_days?: number
   exit_on_short_trend_drawdown?: boolean
   short_trend_drawdown_pct?: number
+  intent_quantity?: number
+  lot_size?: number
+  allow_st_buy?: boolean
 }
 
 export const runBacktest = (payload: BacktestRequestPayload) =>

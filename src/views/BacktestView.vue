@@ -56,6 +56,7 @@ const candidateLoading = ref(false)
 const loading = ref(false)
 const result = ref<any>(null)
 const route = useRoute()
+const manualSelectionMode = ref<'none' | 'single' | 'batch'>('none')
 
 const params = reactive<BacktestRequestPayload>({
   start_date: dateRange.value[0],
@@ -79,6 +80,7 @@ const params = reactive<BacktestRequestPayload>({
   profit_trigger_pct: 5,
   profit_step_pct: 10,
   profit_sell_pct: 25,
+  profit_keep_pct: 25,
   hold_above_short_trend_after_trigger: true,
   enable_no_gain_exit: true,
   no_gain_days: 3,
@@ -87,6 +89,9 @@ const params = reactive<BacktestRequestPayload>({
   short_trend_break_days: 2,
   exit_on_short_trend_drawdown: true,
   short_trend_drawdown_pct: 5,
+  intent_quantity: 0,
+  lot_size: 100,
+  allow_st_buy: false,
 })
 
 const parsedInputCodes = computed(() => parseCodes(codeInput.value))
@@ -226,8 +231,19 @@ async function loadManualSelections() {
       signal_date: item.source_signal_date || item.source_trade_date || item.selection_date,
       similarity_score: null,
     }))
-    selectedCandidateKeys.value = new Set(candidateRows.value.map(candidateKey))
-    ElMessage.success(`已加载 ${candidateRows.value.length} 条人工选股`)
+    const inputCodeSet = new Set(parsedInputCodes.value)
+    if (inputCodeSet.size) {
+      selectedCandidateKeys.value = new Set(
+        candidateRows.value
+          .filter(row => inputCodeSet.has(row.code))
+          .map(candidateKey),
+      )
+    } else if (manualSelectionMode.value === 'batch') {
+      selectedCandidateKeys.value = new Set(candidateRows.value.map(candidateKey))
+    } else {
+      selectedCandidateKeys.value = new Set()
+    }
+    ElMessage.success(`已加载 ${candidateRows.value.length} 条人工选股，已选 ${selectedCandidateKeys.value.size} 条`)
   } catch (error) {
     console.error('加载人工选股失败', error)
     ElMessage.error('加载人工选股失败')
@@ -290,6 +306,10 @@ async function handleRunBacktest() {
     ElMessage.warning('请输入至少一个6位股票代码')
     return
   }
+  if (payload.source === 'manual' && !payload.selected_codes?.length) {
+    ElMessage.warning('请先勾选人工选股，或从人工选股池点击单只回测')
+    return
+  }
   loading.value = true
   try {
     const res = await runBacktest(payload)
@@ -309,6 +329,22 @@ function metricClass(value: unknown) {
   return numberValue > 0 ? 'positive' : 'negative'
 }
 
+function formatProfitActions(actions?: Array<Record<string, any>>): string {
+  if (!actions?.length) return '-'
+  return actions.map((action) => {
+    if (action.action === 'enter_runner') {
+      return `进入放飞 ${action.profit_pct ?? 0}%`
+    }
+    if (action.action === 'sell_partial') {
+      return `放飞卖${action.sell_pct ?? 0}%，余${action.remaining_pct ?? 0}%`
+    }
+    if (action.action === 'hold_core') {
+      return `保留底仓${action.keep_pct ?? action.remaining_pct ?? 0}%继续持有`
+    }
+    return String(action.action || '-')
+  }).join(' / ')
+}
+
 onMounted(() => {
   const query = route.query || {}
   const source = String(query.source || '')
@@ -321,15 +357,22 @@ onMounted(() => {
     dateRange.value = [start, end]
     syncDateRange()
   }
-  if (params.source === 'manual') {
-    loadManualSelections()
+  const queryCodes = String(query.code || query.codes || '')
+  if (queryCodes) {
+    codeInput.value = queryCodes
+    manualSelectionMode.value = 'single'
+  } else if (String(query.batch || '') === '1') {
+    manualSelectionMode.value = 'batch'
   }
 })
 
 watch(() => params.source, (next) => {
   candidateRows.value = []
   selectedCandidateKeys.value = new Set()
-  if (next === 'manual') loadManualSelections()
+  if (next === 'manual') {
+    manualSelectionMode.value = 'none'
+    loadManualSelections()
+  }
 })
 </script>
 
@@ -338,7 +381,7 @@ watch(() => params.source, (next) => {
     <div class="backtest-toolbar">
       <div>
         <h2>回测工作台</h2>
-        <p>策略候选、人工选股和输入个股都可批量回测，止盈止损按知行短期趋势线/多空线执行。</p>
+        <p>策略候选可批量回测；人工选股默认单只或勾选后回测，避免误把整个池子一次性导入。</p>
       </div>
       <div class="toolbar-actions">
         <el-button :loading="candidateLoading" @click="handleLoadCandidates">{{ params.source === 'manual' ? '加载人工选股' : '加载策略候选' }}</el-button>
@@ -434,6 +477,9 @@ watch(() => params.source, (next) => {
           <el-form-item :label="`每档卖出 ${params.profit_sell_pct}% 仓位`">
             <el-slider v-model="params.profit_sell_pct" :min="10" :max="100" :step="5" show-stops />
           </el-form-item>
+          <el-form-item :label="`放飞后至少保留 ${params.profit_keep_pct}% 底仓`">
+            <el-slider v-model="params.profit_keep_pct" :min="0" :max="90" :step="5" show-stops />
+          </el-form-item>
           <el-form-item>
             <el-switch v-model="params.hold_above_short_trend_after_trigger" active-text="放飞后不破白线不清仓" />
           </el-form-item>
@@ -462,7 +508,12 @@ watch(() => params.source, (next) => {
                 <el-form-item label="滑点率"><el-input-number v-model="params.slippage_rate" :min="0" :max="0.02" :step="0.0001" :precision="4" controls-position="right" /></el-form-item>
                 <el-form-item label="固定止损%"><el-input-number v-model="params.stop_loss_pct" :min="0" :max="100" :step="1" controls-position="right" /></el-form-item>
                 <el-form-item label="固定止盈%(关闭放飞时生效)"><el-input-number v-model="params.take_profit_pct" :min="0" :max="200" :step="1" controls-position="right" /></el-form-item>
+                <el-form-item label="下单意图股数"><el-input-number v-model="params.intent_quantity" :min="0" :max="100000000" :step="100" controls-position="right" /></el-form-item>
+                <el-form-item label="整数手股数"><el-input-number v-model="params.lot_size" :min="1" :max="10000" :step="100" controls-position="right" /></el-form-item>
               </div>
+              <el-form-item>
+                <el-switch v-model="params.allow_st_buy" active-text="允许 ST/退市风险股买入回测" />
+              </el-form-item>
             </el-collapse-item>
           </el-collapse>
         </el-form>
@@ -516,6 +567,7 @@ watch(() => params.source, (next) => {
             <el-table-column prop="hold_days" label="持有" width="70" />
             <el-table-column prop="exit_reason" label="末次退出" width="150" />
             <el-table-column label="分批" width="70"><template #default="{ row }">{{ row.exits?.length || 0 }}</template></el-table-column>
+            <el-table-column label="放飞动作" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ formatProfitActions(row.profit_actions) }}</template></el-table-column>
           </el-table>
         </div>
 

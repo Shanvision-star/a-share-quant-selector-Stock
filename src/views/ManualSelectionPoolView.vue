@@ -84,7 +84,24 @@ function sendToBacktest() {
   const end = selectedDate.value || dateRange.value[1]
   router.push({
     path: '/backtest',
-    query: { source: 'manual', start, end },
+    query: { source: 'manual', start, end, batch: '1' },
+  })
+}
+
+function sendSingleToBacktest(item: any) {
+  const tradeDate = item.selection_date || selectedDate.value || dateRange.value[1]
+  if (!tradeDate || !item.code) {
+    ElMessage.warning('缺少选股日期或股票代码')
+    return
+  }
+  router.push({
+    path: '/backtest',
+    query: {
+      source: 'manual',
+      start: tradeDate,
+      end: tradeDate,
+      code: item.code,
+    },
   })
 }
 
@@ -140,7 +157,7 @@ onMounted(async () => {
         />
         <el-button :icon="Refresh" size="small" @click="refresh">刷新</el-button>
         <el-button :icon="Download" size="small" @click="exportCsv">导出 CSV</el-button>
-        <el-button type="primary" :icon="DataAnalysis" size="small" @click="sendToBacktest">发送到回测</el-button>
+        <el-button type="primary" :icon="DataAnalysis" size="small" @click="sendToBacktest">批量回测当前列表</el-button>
       </div>
     </div>
 
@@ -184,9 +201,10 @@ onMounted(async () => {
           <el-table-column prop="source_trade_date" label="原策略交易日" width="120" />
           <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
           <el-table-column prop="updated_at" label="更新时间" width="160" />
-          <el-table-column label="操作" width="120" align="center">
+          <el-table-column label="操作" width="190" align="center">
             <template #default="{ row }">
               <el-button size="small" @click="gotoDetail(row.code)">详情</el-button>
+              <el-button size="small" type="primary" link @click="sendSingleToBacktest(row)">单只回测</el-button>
               <el-button size="small" type="danger" link @click="removeItem(row)">移出</el-button>
             </template>
           </el-table-column>

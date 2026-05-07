@@ -421,6 +421,14 @@ export interface BacktestLaunchResult {
   task: BacktestTask
 }
 
+export type BacktestCapabilityMode = 'async_tasks' | 'sync_compat'
+
+export interface BacktestCapabilities {
+  asyncTasks: boolean
+  mode: BacktestCapabilityMode
+  reason: string
+}
+
 export const runBacktest = (payload: BacktestRequestPayload) =>
   api.post('/backtest', payload)
 
@@ -429,6 +437,10 @@ export const startBacktestTask = (payload: BacktestRequestPayload) =>
 
 function isMethodNotAllowed(error: any): boolean {
   return Number(error?.response?.status) === 405
+}
+
+function getStatus(value: any): number {
+  return Number(value?.status ?? value?.response?.status ?? 0)
 }
 
 function createSyncFallbackTask(payload: BacktestRequestPayload, result: any): BacktestTask {
@@ -451,7 +463,51 @@ function createSyncFallbackTask(payload: BacktestRequestPayload, result: any): B
   }
 }
 
-export async function startBacktestTaskCompatible(payload: BacktestRequestPayload): Promise<BacktestLaunchResult> {
+function isAsyncTaskEndpointAvailable(status: number): boolean {
+  return status === 400 || status === 422 || (status >= 200 && status < 300)
+}
+
+function syncCompatCapabilities(reason: string): BacktestCapabilities {
+  return { asyncTasks: false, mode: 'sync_compat', reason }
+}
+
+function asyncTaskCapabilities(reason: string): BacktestCapabilities {
+  return { asyncTasks: true, mode: 'async_tasks', reason }
+}
+
+export async function detectBacktestCapabilities(): Promise<BacktestCapabilities> {
+  try {
+    const response = await api.post('/backtest/tasks', {}, {
+      validateStatus: (status: number) => status < 500,
+    })
+    const status = getStatus(response)
+    if (status === 405 || status === 404) {
+      return syncCompatCapabilities('async_task_endpoint_missing')
+    }
+    if (isAsyncTaskEndpointAvailable(status)) {
+      return asyncTaskCapabilities('async_task_endpoint_available')
+    }
+    return syncCompatCapabilities(`unexpected_probe_status_${status || 'unknown'}`)
+  } catch (error: any) {
+    const status = getStatus(error)
+    if (status === 405 || status === 404) {
+      return syncCompatCapabilities('async_task_endpoint_missing')
+    }
+    if (isAsyncTaskEndpointAvailable(status)) {
+      return asyncTaskCapabilities('async_task_endpoint_available')
+    }
+    return syncCompatCapabilities('capability_probe_failed')
+  }
+}
+
+export async function startBacktestTaskCompatible(
+  payload: BacktestRequestPayload,
+  capabilities?: BacktestCapabilities | null,
+): Promise<BacktestLaunchResult> {
+  if (capabilities?.asyncTasks === false) {
+    const response = await runBacktest(payload)
+    return { mode: 'sync_fallback', task: createSyncFallbackTask(payload, response.data.data) }
+  }
   try {
     const response = await startBacktestTask(payload)
     return { mode: 'async', task: response.data.data as BacktestTask }

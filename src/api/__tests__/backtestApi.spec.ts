@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import api, {
+  detectBacktestCapabilities,
   startBacktestTaskCompatible,
   type BacktestRequestPayload,
 } from '@/api'
@@ -51,5 +52,35 @@ describe('backtest API compatibility', () => {
     expect(result.mode).toBe('async')
     expect(result.task).toEqual(asyncTask)
     expect(postSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('detects async task support from validation response on the task endpoint', async () => {
+    const postSpy = vi.spyOn(api, 'post').mockResolvedValueOnce({ status: 422, data: {} } as any)
+
+    const capabilities = await detectBacktestCapabilities()
+
+    expect(capabilities.asyncTasks).toBe(true)
+    expect(capabilities.mode).toBe('async_tasks')
+    expect(postSpy).toHaveBeenCalledWith('/backtest/tasks', {}, expect.any(Object))
+  })
+
+  it('detects sync compatibility mode when the task endpoint only allows GET', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({ status: 405, data: { detail: 'Method Not Allowed' } } as any)
+
+    const capabilities = await detectBacktestCapabilities()
+
+    expect(capabilities.asyncTasks).toBe(false)
+    expect(capabilities.mode).toBe('sync_compat')
+  })
+
+  it('skips async task startup when capability detection already found sync compatibility mode', async () => {
+    const postSpy = vi.spyOn(api, 'post')
+      .mockResolvedValueOnce({ data: { success: true, data: { summary: { trade_count: 1 } } } } as any)
+
+    const result = await startBacktestTaskCompatible(payload, { asyncTasks: false, mode: 'sync_compat', reason: 'test' })
+
+    expect(result.mode).toBe('sync_fallback')
+    expect(result.task.status).toBe('done')
+    expect(postSpy.mock.calls.map(call => call[0])).toEqual(['/backtest'])
   })
 })

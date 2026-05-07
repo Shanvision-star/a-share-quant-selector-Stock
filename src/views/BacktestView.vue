@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   cancelBacktestTask,
+  detectBacktestCapabilities,
   getManualSelections,
   getBacktestTaskEvents,
   getStrategyResultsHistory,
@@ -11,11 +12,13 @@ import {
   listBacktestTasks,
   startBacktestTaskCompatible,
   type BacktestRequestPayload,
+  type BacktestCapabilities,
   type BacktestTask,
   type BacktestTaskEvent,
   type BacktestTaskStatus,
 } from '@/api'
 import { fetchAllStrategyResultItems, formatSimilarityPercent } from '@/utils/strategyResults'
+import { isBacktestTaskCancelable } from '@/views/backtestState'
 
 interface StrategyCandidate {
   code: string
@@ -72,6 +75,8 @@ const taskHistory = ref<BacktestTask[]>([])
 const taskEvents = ref<BacktestTaskEvent[]>([])
 const taskDrawerVisible = ref(false)
 const taskActionLoading = ref(false)
+const backtestCapabilities = ref<BacktestCapabilities | null>(null)
+const capabilityLoading = ref(false)
 let backtestPollTimer: number | null = null
 
 const params = reactive<BacktestRequestPayload>({
@@ -120,6 +125,17 @@ const equityCurve = computed(() => result.value?.equity_curve || [])
 const runtime = computed(() => result.value?.runtime || {})
 const runtimeWarnings = computed(() => runtime.value?.warnings || [])
 const taskProgress = computed(() => Math.max(0, Math.min(100, Number(currentTask.value?.progress_pct || 0))))
+const isSyncCompatMode = computed(() => backtestCapabilities.value?.asyncTasks === false)
+const backtestModeLabel = computed(() => {
+  if (capabilityLoading.value) return '能力检测中'
+  if (isSyncCompatMode.value) return '同步兼容模式'
+  if (backtestCapabilities.value?.asyncTasks) return '异步任务模式'
+  return '未检测'
+})
+const backtestModeTagType = computed(() => {
+  if (capabilityLoading.value) return 'info'
+  return isSyncCompatMode.value ? 'warning' : 'success'
+})
 const drawerSummaryItems = computed(() => {
   const data = currentTask.value?.result?.summary || {}
   return [
@@ -350,10 +366,15 @@ async function handleRunBacktest() {
   currentTask.value = null
   taskEvents.value = []
   try {
-    const launched = await startBacktestTaskCompatible(payload)
+    const launched = await startBacktestTaskCompatible(payload, backtestCapabilities.value)
     const task = launched.task
     applyBacktestTask(task)
     if (launched.mode === 'sync_fallback') {
+      backtestCapabilities.value = {
+        asyncTasks: false,
+        mode: 'sync_compat',
+        reason: 'async_task_endpoint_missing',
+      }
       result.value = task.result
       taskEvents.value = []
       loading.value = false
@@ -371,6 +392,26 @@ async function handleRunBacktest() {
     loading.value = false
   } finally {
     // 异步任务会在轮询结束时关闭 loading。
+  }
+}
+
+async function loadBacktestCapabilities() {
+  capabilityLoading.value = true
+  try {
+    backtestCapabilities.value = await detectBacktestCapabilities()
+    if (backtestCapabilities.value.asyncTasks === false) {
+      taskHistory.value = []
+      taskEvents.value = []
+    }
+  } catch (error) {
+    console.warn('检测回测后端能力失败', error)
+    backtestCapabilities.value = {
+      asyncTasks: false,
+      mode: 'sync_compat',
+      reason: 'capability_probe_failed',
+    }
+  } finally {
+    capabilityLoading.value = false
   }
 }
 
@@ -439,6 +480,10 @@ function applyBacktestTask(task: BacktestTask) {
 }
 
 async function loadBacktestTasks() {
+  if (isSyncCompatMode.value) {
+    taskHistory.value = []
+    return
+  }
   try {
     const res = await listBacktestTasks(12)
     taskHistory.value = (res.data.data?.items || []) as BacktestTask[]
@@ -448,6 +493,10 @@ async function loadBacktestTasks() {
 }
 
 async function loadBacktestTaskEvents(taskId: string) {
+  if (isSyncCompatMode.value || taskId.startsWith('sync_')) {
+    taskEvents.value = []
+    return
+  }
   try {
     const res = await getBacktestTaskEvents(taskId, 80)
     taskEvents.value = (res.data.data?.items || []) as BacktestTaskEvent[]
@@ -515,7 +564,7 @@ function isTaskActive(status: BacktestTaskStatus | ''): boolean {
 }
 
 function isTaskCancelable(task: BacktestTask | null | undefined): task is BacktestTask {
-  return task?.status === 'queued' || task?.status === 'running'
+  return isBacktestTaskCancelable(task, backtestCapabilities.value)
 }
 
 function formatTaskStatus(status: BacktestTaskStatus | ''): string {
@@ -581,6 +630,11 @@ function formatProfitActions(actions?: Array<Record<string, any>>): string {
   }).join(' / ')
 }
 
+async function initializeBacktestPage() {
+  await loadBacktestCapabilities()
+  await loadBacktestTasks()
+}
+
 onMounted(() => {
   const query = route.query || {}
   const source = String(query.source || '')
@@ -600,7 +654,7 @@ onMounted(() => {
   } else if (String(query.batch || '') === '1') {
     manualSelectionMode.value = 'batch'
   }
-  loadBacktestTasks()
+  void initializeBacktestPage()
 })
 
 watch(() => params.source, (next) => {
@@ -805,6 +859,7 @@ onBeforeUnmount(() => {
           <div class="section-head">
             <strong>回测任务</strong>
             <div class="task-head-actions">
+              <el-tag size="small" :type="backtestModeTagType">{{ backtestModeLabel }}</el-tag>
               <span class="hint">{{ activeTaskId ? `当前 ${activeTaskId}` : '暂无运行中任务' }}</span>
               <el-button v-if="activeTaskId" size="small" link type="primary" @click="taskDrawerVisible = true">详情</el-button>
               <el-button
@@ -819,6 +874,15 @@ onBeforeUnmount(() => {
               </el-button>
             </div>
           </div>
+          <el-alert
+            v-if="isSyncCompatMode"
+            title="同步兼容模式"
+            description="当前后端未提供异步回测任务接口，页面会自动使用同步回测；任务取消、异步历史和事件流暂不可用。重启后端到当前 web 代码后会恢复异步任务模式。"
+            type="warning"
+            show-icon
+            :closable="false"
+            class="capability-alert"
+          />
           <el-alert
             v-if="activeTaskId"
             :title="taskMessage || `任务 ${activeTaskId} ${formatTaskStatus(taskStatus)}`"
@@ -835,7 +899,8 @@ onBeforeUnmount(() => {
               状态 {{ formatTaskStatus(taskStatus) }}
             </div>
           </div>
-          <el-table :data="taskHistory" size="small" height="150" border empty-text="暂无回测任务历史">
+          <el-empty v-if="isSyncCompatMode" description="同步兼容模式不保存异步任务历史" />
+          <el-table v-else :data="taskHistory" size="small" height="150" border empty-text="暂无回测任务历史">
             <el-table-column prop="created_at" label="提交时间" width="150" />
             <el-table-column prop="status" label="状态" width="78">
               <template #default="{ row }">{{ formatTaskStatus(row.status) }}</template>
@@ -1027,6 +1092,7 @@ onBeforeUnmount(() => {
 .section-title { font-size: 13px; font-weight: 600; color: #303133; margin-bottom: 8px; }
 .runtime-alert { margin-bottom: 8px; }
 .runtime-meta { margin-bottom: 10px; font-size: 12px; color: #606266; }
+.capability-alert { margin-bottom: 12px; }
 .task-alert { margin-bottom: 12px; }
 .task-progress { margin-bottom: 10px; }
 .task-drawer { display: flex; flex-direction: column; gap: 12px; }

@@ -23,6 +23,7 @@ class BacktestRequest(BaseModel):
     start_date: str = Field(..., pattern=DATE_PATTERN)
     end_date: str = Field(..., pattern=DATE_PATTERN)
     simulation_end_date: Optional[str] = Field(default=None, pattern=DATE_PATTERN)
+    timeframe: Literal['daily', 'minute'] = 'daily'
     source: Literal['manual', 'strategy', 'codes'] = 'strategy'
     strategy: Literal['all', 'b1', 'b2', 'bowl', 'brick'] = 'all'
     selected_codes: list[str] = Field(default_factory=list)
@@ -50,6 +51,11 @@ class BacktestRequest(BaseModel):
     short_trend_break_days: int = Field(default=2, ge=1, le=20)
     exit_on_short_trend_drawdown: bool = True
     short_trend_drawdown_pct: float = Field(default=5, ge=0, le=50)
+    minute_buy_time: str = Field(default='09:35', pattern=r"^\d{2}:\d{2}$")
+    minute_sell_time: str = Field(default='14:55', pattern=r"^\d{2}:\d{2}$")
+    minute_buy_price: Literal['open', 'close', 'high', 'low'] = 'open'
+    minute_sell_price: Literal['open', 'close', 'high', 'low'] = 'close'
+    intent_quantity: int = Field(default=0, ge=0, le=100000000)
 
 
 @router.post("/backtest")

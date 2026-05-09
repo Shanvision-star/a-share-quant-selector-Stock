@@ -376,3 +376,80 @@ fast_path_stocks.append(code)
 ```
 
 回复不要堆砌实现细节。用户需要深挖时，再按模块展开。
+## 阶段收口回复格式（2026-05-10）
+
+后续每一段开发、排查、合并、部署、计划评审结束后，最终回复必须参考以下格式。目标是让用户快速知道“做了什么、怎么验证、还有什么风险、下一步该怎么决策”，并节省 token。
+
+## 任务结束长期 memory 规则（2026-05-10）
+
+每次任务结束后，必须先完成“总结 -> 问题推导 -> 下一步计划 -> 解决方案”的闭环，再给最终回复。这个闭环既是用户沟通格式，也是后续 Agent 的长期 memory 来源。
+
+执行要求：
+
+1. **先总结**
+   - 说明本轮真实完成了什么。
+   - 区分已完成、部分完成、被阻塞和未开始。
+   - 涉及分支、提交、合并、部署时写清楚具体状态。
+
+2. **再推导分析出现的问题**
+   - 按“现象 -> 数据 -> 假设 -> 验证 -> 根因 -> 修复方案”说明。
+   - 如果只是文档或计划任务，也要说明决策依据和边界。
+   - 不确定的地方必须明确写“不确定”，不能装作已经验证。
+
+3. **给下一步计划和解决方案**
+   - 下一步计划必须能执行，不写泛泛方向。
+   - 每个计划尽量包含入口文件、验证方式和风险。
+   - 如果有多条路线，给出推荐路线和不推荐路线的原因。
+
+4. **沉淀长期 memory**
+   - 可复用规则写入 `agent.md`。
+   - 某个模块的阶段记录写入对应 docs，例如 `docs/Backtesting/`、`docs/reback_analysis/`、`docs/QMT/`。
+   - memory 只写事实、规则、约束和推导，不写情绪化描述。
+   - 未完成事项必须写成待办或风险，不能写成已完成。
+
+5. **验证后才能收口**
+   - 代码任务必须有 fresh verification evidence。
+   - 文档任务至少要能说明改动文件、改动目的和未验证限制。
+   - 如果工具、网络或权限阻塞验证，最终回复必须标记 blocked / partial。
+
+### 回复结构
+
+1. **完成结果**
+   - 说明本轮实际完成的代码、文档、分支、合并、部署或设计结果。
+   - 只写已经真实完成和验证过的事实，不把计划写成完成事实。
+   - 如果涉及分支/提交/部署，写清楚分支名、提交号、是否已合并、是否已推送、是否已部署。
+
+2. **当前限制**
+   - 写清楚未完成、未推送、未部署、未验证、环境阻塞、网络失败、权限限制等。
+   - 不隐藏失败，不用模糊表达替代具体问题。
+
+3. **Code Implementation Audit**
+   - 用简短审计形式说明：
+     - Result: pass / partial / blocked / fail
+     - Syntax / type / logic
+     - Project conventions
+     - Security
+     - Minimal change / regression risk
+     - Tests
+     - Doc sync
+     - Remaining risks
+   - 没有代码变更时可改为 Documentation / Workflow Audit。
+
+4. **Segment Closeout**
+   - Task summary: 本段任务摘要。
+   - Method / execution path: 执行路径。
+   - Verification evidence: 具体命令、检查结果、页面验证、提交号或部署状态。
+   - Problems encountered: 过程中的问题。
+   - Risks and how they were handled: 风险与处理方式。
+   - What remains unverified: 仍未验证的内容。
+   - Next-step plan analysis: 下一步计划推导，而不是只列待办。
+   - Recommended next step: 推荐用户下一步批准或执行的事项。
+   - Decisions needing user review: 需要用户审核的决策点。
+
+### 输出要求
+
+- 中文优先，除非文件或用户明确要求英文。
+- 保持直接、可审计、低 token；不要写无关背景。
+- 如果只是小修，可以压缩小节，但必须保留：完成结果、验证证据、当前限制、下一步建议。
+- 如果没有 fresh verification evidence，不能声称“完成 / 修复 / 通过”。
+- 如果因为工具、网络、权限导致无法完成，要明确写 blocked，并说明最小可恢复路径。

@@ -71,13 +71,13 @@ const marketCapTagText = computed(() => {
   }
   if (updateJobStore.marketCapStatus === 'cached') {
     const ageText = updateJobStore.marketCapCacheAgeDays == null ? '' : `（${updateJobStore.marketCapCacheAgeDays} 天前）`
-    return `市值缓存有效${ageText}，本次不刷新`
+    return `市值使用缓存基准${ageText}，本次不阻塞更新`
   }
   if (updateJobStore.marketCapStatus === 'refreshing') {
     if (updateJobStore.marketCapCachedCount > 0) {
-      return `市值后台刷新中，先使用缓存 ${updateJobStore.marketCapCachedCount} 只`
+      return `市值后台维护中，先使用缓存 ${updateJobStore.marketCapCachedCount} 只，不阻塞更新`
     }
-    return '市值初始化中...'
+    return '市值缓存初始化中，K线更新会继续推进'
   }
   return '市值刷新失败，继续使用缓存'
 })
@@ -288,11 +288,11 @@ function getUpdatePhaseLabel(phase: string) {
   if (phase === 'scan') return '状态检查'
   if (phase === 'scan_complete') return '检查完成'
   if (phase === 'market_cap_cached') return '市值缓存复用'
-  if (phase === 'market_cap_refresh') return '市值后台刷新'
+  if (phase === 'market_cap_refresh') return '市值后台维护'
   if (phase === 'fast_update') return '快路径更新'
   if (phase === 'update') return '慢路径更新'
   if (phase === 'verify') return '抽样验证'
-  if (phase === 'market_cap_wait') return '等待市值刷新'
+  if (phase === 'market_cap_wait') return '兼容等待市值刷新'
   if (phase === 'market_cap_complete') return '市值刷新完成'
   if (phase === 'complete') return '更新完成'
   return phase

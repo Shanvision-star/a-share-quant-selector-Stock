@@ -34,6 +34,7 @@ _SLOW_PATH_BUFFER_DAYS = 3
 _SLOW_PATH_MIN_FETCH_DAYS = 10
 _SLOW_PATH_MAX_FETCH_DAYS = 60
 _FAST_PATH_WORKERS = 24
+_MARKET_CAP_WAIT_SECONDS = 0
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -145,6 +146,7 @@ class AKShareFetcher:
         self._slow_path_min_fetch_days = _SLOW_PATH_MIN_FETCH_DAYS
         self._slow_path_max_fetch_days = _SLOW_PATH_MAX_FETCH_DAYS
         self._fast_path_workers = _FAST_PATH_WORKERS
+        self._market_cap_wait_seconds = _MARKET_CAP_WAIT_SECONDS
         self._load_runtime_tuning_config()
         self._load_market_cap_weekly_cache()
     
@@ -231,6 +233,7 @@ class AKShareFetcher:
         slow_path_min_fetch_days = _SLOW_PATH_MIN_FETCH_DAYS
         slow_path_max_fetch_days = _SLOW_PATH_MAX_FETCH_DAYS
         fast_path_workers = _FAST_PATH_WORKERS
+        market_cap_wait_seconds = _MARKET_CAP_WAIT_SECONDS
 
         try:
             if self.runtime_config_file.exists():
@@ -270,6 +273,13 @@ class AKShareFetcher:
                     update_cfg.get('fast_path_workers'),
                     fast_path_workers,
                 )
+                try:
+                    market_cap_wait_seconds = max(
+                        0,
+                        int(update_cfg.get('market_cap_wait_seconds', market_cap_wait_seconds)),
+                    )
+                except Exception:
+                    market_cap_wait_seconds = _MARKET_CAP_WAIT_SECONDS
         except Exception as e:
             logger.warning("读取运行时调优配置失败，使用默认值: %s", e)
 
@@ -286,6 +296,7 @@ class AKShareFetcher:
             self._slow_path_min_fetch_days = slow_path_min_fetch_days
             self._slow_path_max_fetch_days = slow_path_max_fetch_days
             self._fast_path_workers = fast_path_workers
+            self._market_cap_wait_seconds = market_cap_wait_seconds
 
     def _get_baostock_cooldown_status(self):
         """返回 (是否冷却中, 剩余秒数, 最近错误)。"""
@@ -1929,7 +1940,7 @@ class AKShareFetcher:
 
         # ── 一次性批量获取全市场市值（避免1840次单独API调用）─────────
         # ── 市值策略：立即使用缓存，后台线程异步刷新 ─────────────────────
-        # 目的：K线更新不等待市值API，选股结束后再推送最新市值到前端
+        # 目的：K线更新不等待市值API；市值刷新只维护缓存，不阻塞主流程。
         print("\n加载缓存市值数据，后台异步刷新...")
         with _market_cap_cache_lock:
             market_cap_map: dict = dict(self._market_cap_cache)   # 立即用缓存（快速）
@@ -2392,10 +2403,14 @@ class AKShareFetcher:
         print("=" * 70)
         print(f"[OK] 并发更新完成！总计：{total_to_update_all} 只 | 成功：{updated} 只 | 失败：{failed} 只")
 
-        # ── 等待后台市值刷新线程（最多30秒），完成后推送市值更新事件 ────
-        if not _bg_done.is_set():
-            emit_progress(97, "K线更新完成，等待后台市值刷新...", phase='market_cap_wait')
-            _bg_done.wait(timeout=30)
+        # ── 市值刷新不阻塞主流程；兼容旧行为时可配置短等待 ───────────────
+        if not _bg_done.is_set() and self._market_cap_wait_seconds > 0:
+            emit_progress(
+                97,
+                f"K线更新完成，最多等待市值后台刷新 {self._market_cap_wait_seconds} 秒...",
+                phase='market_cap_wait',
+            )
+            _bg_done.wait(timeout=self._market_cap_wait_seconds)
 
         if _bg_cap_count[0] > 0:
             logger.info("[市值] 后台刷新完成，共 %d 只最新市值已写入缓存", _bg_cap_count[0])

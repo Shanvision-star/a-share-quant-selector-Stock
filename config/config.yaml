@@ -21,6 +21,8 @@ update:
   slow_path_buffer_days: 3
   slow_path_min_fetch_days: 10
   slow_path_max_fetch_days: 60
+  # 市值刷新只维护缓存，默认不阻塞 K 线更新和策略重建；如需兼容旧行为可设置为 5~30
+  market_cap_wait_seconds: 0
   # Baostock 备选链路熔断参数（网络异常时用于限流降压）
   baostock_circuit:
     failure_threshold: 3

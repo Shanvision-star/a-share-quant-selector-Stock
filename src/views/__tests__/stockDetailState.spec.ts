@@ -3,7 +3,9 @@ import {
   createStockDetailLoadGuard,
   getDisplayStockName,
   getStockSequenceState,
+  isStockDetailPayloadCurrent,
   normalizeStockCode,
+  shouldShowInitialStockDetailLoading,
 } from '@/views/stockDetailState'
 
 describe('stockDetailState', () => {
@@ -36,6 +38,18 @@ describe('stockDetailState', () => {
     expect(normalizeStockCode('000889.SZ')).toBe('000889')
     expect(normalizeStockCode('SH600000')).toBe('600000')
     expect(normalizeStockCode(null)).toBe('')
+  })
+
+  it('detects stale stock detail payloads during fast route switches', () => {
+    expect(isStockDetailPayloadCurrent({ code: '000767', name: '晋控电力' }, '000889')).toBe(false)
+    expect(isStockDetailPayloadCurrent({ ts_code: '000889.SZ', name: '中嘉博创' }, '000889')).toBe(true)
+    expect(isStockDetailPayloadCurrent(null, '000889')).toBe(false)
+  })
+
+  it('only shows the blocking detail loader before the first successful detail render', () => {
+    expect(shouldShowInitialStockDetailLoading(true, false)).toBe(true)
+    expect(shouldShowInitialStockDetailLoading(true, true)).toBe(false)
+    expect(shouldShowInitialStockDetailLoading(false, false)).toBe(false)
   })
 
   it('builds previous and next stock navigation from the deduped strategy order', () => {

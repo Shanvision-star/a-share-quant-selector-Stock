@@ -36,6 +36,22 @@ export function getDisplayStockName(
   return priceInfo?.name || fallbackName
 }
 
+export function isStockDetailPayloadCurrent(
+  payload: Record<string, any> | null | undefined,
+  currentCode: string,
+): boolean {
+  const payloadCode = normalizeStockCode(payload?.code ?? payload?.ts_code)
+  const routeCode = normalizeStockCode(currentCode)
+  return !!payloadCode && !!routeCode && payloadCode === routeCode
+}
+
+export function shouldShowInitialStockDetailLoading(
+  isLoading: boolean,
+  hasLoadedInitialDetail: boolean,
+): boolean {
+  return isLoading && !hasLoadedInitialDetail
+}
+
 export interface StockSequenceItem {
   code?: unknown
   [key: string]: unknown

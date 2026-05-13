@@ -18,6 +18,9 @@ import {
   createStockDetailLoadGuard,
   getDisplayStockName,
   getStockSequenceState,
+  isStockDetailPayloadCurrent,
+  normalizeStockCode,
+  shouldShowInitialStockDetailLoading,
   type StockDetailLoadTicket,
 } from '@/views/stockDetailState'
 
@@ -36,10 +39,29 @@ const period = ref('daily')
 const adjust = ref<'qfq' | 'hfq' | 'nfq'>('qfq')
 const priceInfo = ref<any>(null)
 const stockInfo = ref<any>(null)
+const stockInfoCode = ref('')
 const signals = ref<any[]>([])
 const strategyCard = ref<any>(null)
 const loading = ref(false)
-const showInitialLoading = computed(() => loading.value && !priceInfo.value)
+const switchingCode = ref('')
+const hasLoadedInitialDetail = ref(false)
+const safePriceInfo = computed(() =>
+  isStockDetailPayloadCurrent(priceInfo.value, props.code) ? priceInfo.value : null,
+)
+const safeStockInfo = computed(() =>
+  normalizeStockCode(stockInfoCode.value) === normalizeStockCode(props.code) ? stockInfo.value : null,
+)
+const safeStrategyCard = computed(() =>
+  isStockDetailPayloadCurrent(strategyCard.value, props.code) ? strategyCard.value : null,
+)
+const showInitialLoading = computed(() =>
+  shouldShowInitialStockDetailLoading(loading.value, hasLoadedInitialDetail.value),
+)
+const isSwitchingStock = computed(() =>
+  loading.value
+  && hasLoadedInitialDetail.value
+  && normalizeStockCode(switchingCode.value) === normalizeStockCode(props.code),
+)
 const showShortTermTrend = ref(true)
 const showBullBearLine = ref(true)
 
@@ -119,7 +141,7 @@ function stopCardResize() {
 // ─── 策略选股列表 ──────────────────────────────────────────────────────
 const strategyListItems = computed(() => strategyListStore.items)
 const currentStrategyItem = computed(() => strategyListItems.value.find(item => item.code === props.code))
-const displayStockName = computed(() => getDisplayStockName(priceInfo.value, props.code, currentStrategyItem.value?.name || ''))
+const displayStockName = computed(() => getDisplayStockName(safePriceInfo.value, props.code, currentStrategyItem.value?.name || ''))
 const strategyGroups = computed(() => buildStrategyGroups(strategyListItems.value))
 const sidebarSignalCount = computed(() => strategyListItems.value.length)
 const sidebarUniqueCount = computed(() => new Set(strategyListItems.value.map(item => item.code)).size)
@@ -319,9 +341,13 @@ const _stockInfoCache = new Map<string, any>()
 async function loadAll(code: string) {
   const ticket = loadGuard.start(code)
   loading.value = true
-  priceInfo.value = null
-  stockInfo.value = null
-  strategyCard.value = null
+  switchingCode.value = code
+  if (!hasLoadedInitialDetail.value) {
+    priceInfo.value = null
+    stockInfo.value = null
+    stockInfoCode.value = ''
+    strategyCard.value = null
+  }
   signals.value = []
   try {
     const [pRes] = await Promise.all([
@@ -330,6 +356,7 @@ async function loadAll(code: string) {
     ])
     if (!loadGuard.isCurrent(ticket, props.code)) return
     priceInfo.value = pRes.data.data
+    hasLoadedInitialDetail.value = true
   } catch (e) {
     if (loadGuard.isCurrent(ticket, props.code)) {
       console.error('加载失败', e)
@@ -337,23 +364,27 @@ async function loadAll(code: string) {
   } finally {
     if (loadGuard.isCurrent(ticket, props.code)) {
       loading.value = false
+      switchingCode.value = ''
     }
   }
   // 懒加载扩展信息（行业/地区/经营范围/概念标签）——有客户端缓存，同一股票只请求一次
   if (_stockInfoCache.has(code)) {
     if (!loadGuard.isCurrent(ticket, props.code)) return
+    stockInfoCode.value = code
     stockInfo.value = _stockInfoCache.get(code)
   } else {
     getStockInfo(code).then(res => {
       if (!loadGuard.isCurrent(ticket, props.code)) return
       const data = res.data.data
       _stockInfoCache.set(code, data)
+      stockInfoCode.value = code
       stockInfo.value = data
     }).catch((err) => {
       if (!loadGuard.isCurrent(ticket, props.code)) return
       console.warn('扩展信息加载失败', err)
       const fallback = { industry: '', region: '', main_business: '', concept_tags: [] }
       _stockInfoCache.set(code, fallback)
+      stockInfoCode.value = code
       stockInfo.value = fallback
     })
   }
@@ -433,7 +464,7 @@ function formatListSimilarity(score: unknown): string {
       :class="{ 'panel-collapsed': leftCollapsed }"
       :style="leftCollapsed ? {} : { width: leftWidth + 'px' }"
     >
-      <StockInfoPanel :price-info="priceInfo" :stock-info="stockInfo" side="left" />
+      <StockInfoPanel :price-info="safePriceInfo" :stock-info="safeStockInfo" side="left" />
     </div>
 
     <!-- 左侧：分隔条（拖拽 + 折叠） -->
@@ -456,6 +487,7 @@ function formatListSimilarity(score: unknown): string {
       <div class="detail-header">
         <h2>{{ displayStockName || '加载中' }} {{ code }}</h2>
         <div class="detail-actions">
+          <span v-if="isSwitchingStock" class="switching-hint">切换中 {{ code }}</span>
           <el-checkbox v-model="showShortTermTrend">短期趋势线</el-checkbox>
           <el-checkbox v-model="showBullBearLine">知行多空线</el-checkbox>
           <div v-if="stockNavigation.total > 1" class="stock-nav-control" title="可用键盘 ↑ / ↓ 顺序切换">
@@ -504,19 +536,19 @@ function formatListSimilarity(score: unknown): string {
 
       <!-- 策略匹配详情拖拽调整把手 -->
       <div
-        v-if="strategyCard"
+        v-if="safeStrategyCard"
         class="card-resize-handle"
         title="拖拽调整策略详情区高度"
         @mousedown.prevent="startCardResize"
       ></div>
 
-      <div class="strategy-card" v-if="strategyCard" :style="{ height: strategyCardHeight + 'px' }">
+      <div class="strategy-card" v-if="safeStrategyCard" :style="{ height: strategyCardHeight + 'px' }">
         <el-card shadow="never">
           <template #header>策略匹配详情</template>
-          <p><strong>策略:</strong> {{ strategyCard.strategy_name }}</p>
-          <p><strong>分类:</strong> {{ strategyCard.category }}</p>
-          <p><strong>匹配日期:</strong> {{ strategyCard.signal_date || strategyCard.trade_date }}</p>
-          <p v-if="strategyCard.reason"><strong>原因:</strong> {{ strategyCard.reason }}</p>
+          <p><strong>策略:</strong> {{ safeStrategyCard.strategy_name }}</p>
+          <p><strong>分类:</strong> {{ safeStrategyCard.category }}</p>
+          <p><strong>匹配日期:</strong> {{ safeStrategyCard.signal_date || safeStrategyCard.trade_date }}</p>
+          <p v-if="safeStrategyCard.reason"><strong>原因:</strong> {{ safeStrategyCard.reason }}</p>
         </el-card>
       </div>
     </div>
@@ -715,6 +747,11 @@ function formatListSimilarity(score: unknown): string {
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
+}
+.switching-hint {
+  font-size: 12px;
+  color: #409eff;
+  white-space: nowrap;
 }
 .stock-nav-control {
   display: inline-flex;

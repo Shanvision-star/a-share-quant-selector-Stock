@@ -3,6 +3,7 @@ import sys
 import json
 import math
 import logging
+from collections import OrderedDict
 from pathlib import Path
 import pandas as pd
 
@@ -19,6 +20,8 @@ _stock_names = None
 import time as _time
 _ADJUST_CACHE: dict = {}   # key=(code, adjust, period, limit) → {'ts': float, 'result': dict}
 _ADJUST_CACHE_TTL = 600    # 10分钟
+_QFQ_KLINE_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_QFQ_KLINE_CACHE_MAX = 512
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +182,32 @@ def _round_or_none(value, digits: int = 2):
     return round(number, digits)
 
 
+def _get_stock_csv_mtime_ns(code: str) -> int:
+    """读取 CSV 修改时间，用于 K 线缓存失效。"""
+    try:
+        path = csv_manager.get_stock_path(code)
+        if path.exists():
+            return int(path.stat().st_mtime_ns)
+    except Exception:
+        pass
+    return 0
+
+
+def _get_qfq_kline_cache(key: tuple) -> dict | None:
+    cached = _QFQ_KLINE_CACHE.get(key)
+    if cached is None:
+        return None
+    _QFQ_KLINE_CACHE.move_to_end(key)
+    return cached
+
+
+def _set_qfq_kline_cache(key: tuple, result: dict) -> None:
+    _QFQ_KLINE_CACHE[key] = result
+    _QFQ_KLINE_CACHE.move_to_end(key)
+    while len(_QFQ_KLINE_CACHE) > _QFQ_KLINE_CACHE_MAX:
+        _QFQ_KLINE_CACHE.popitem(last=False)
+
+
 def _prepare_kline_df(df, period: str) -> pd.DataFrame:
     prepared = df.copy()
     prepared['date'] = pd.to_datetime(prepared['date'])
@@ -256,11 +285,21 @@ def get_kline(code: str, period: str = "daily", limit: int = 2600, adjust: str =
             _ADJUST_CACHE[cache_key] = {'ts': now, 'result': result}
         return result
 
-    # 前复权：走现有 CSV 路径（不改动，最快）
-    df = csv_manager.read_stock(code)
+    # 前复权：走本地 CSV。日 K 快图只读所需行数，并用 CSV mtime 做缓存失效。
+    csv_mtime_ns = _get_stock_csv_mtime_ns(code)
+    cache_key = (code, period, int(limit), adjust, csv_mtime_ns)
+    cached = _get_qfq_kline_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    read_nrows = int(limit) if period == "daily" else None
+    df = csv_manager.read_stock(code, nrows=read_nrows)
     if df.empty:
         return None
-    return _build_kline_result(df, code, period, limit, adjust)
+    result = _build_kline_result(df, code, period, limit, adjust)
+    if result is not None:
+        _set_qfq_kline_cache(cache_key, result)
+    return result
 
 
 def _build_kline_result(df, code: str, period: str, limit: int, adjust: str) -> dict:

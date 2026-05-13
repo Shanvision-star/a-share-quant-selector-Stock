@@ -31,6 +31,7 @@ export const getStockList = (params: {
 const DEFAULT_KLINE_PERIOD = 'daily'
 const DEFAULT_KLINE_LIMIT = 2600
 const DEFAULT_KLINE_ADJUST: KlineAdjust = 'qfq'
+const DEFAULT_KLINE_RESPONSE_CACHE_MAX = 180
 const klineResponseCache = new Map<string, any>()
 const klinePendingRequests = new Map<string, Promise<any>>()
 const DEFAULT_KLINE_PREFETCH_CONCURRENCY = 4
@@ -80,7 +81,25 @@ export function clearKlineCache() {
 }
 
 export function getCachedKlineResponse(code: string, params?: KlineRequestParams) {
-  return klineResponseCache.get(getKlineCacheKey(code, params))
+  const cacheKey = getKlineCacheKey(code, params)
+  const cached = klineResponseCache.get(cacheKey)
+  if (cached) {
+    klineResponseCache.delete(cacheKey)
+    klineResponseCache.set(cacheKey, cached)
+  }
+  return cached
+}
+
+function rememberKlineResponse(cacheKey: string, response: any) {
+  if (klineResponseCache.has(cacheKey)) {
+    klineResponseCache.delete(cacheKey)
+  }
+  klineResponseCache.set(cacheKey, response)
+  while (klineResponseCache.size > DEFAULT_KLINE_RESPONSE_CACHE_MAX) {
+    const oldestKey = klineResponseCache.keys().next().value
+    if (!oldestKey) break
+    klineResponseCache.delete(oldestKey)
+  }
 }
 
 export const getKline = (
@@ -90,7 +109,7 @@ export const getKline = (
 ) => {
   const normalizedParams = normalizeKlineParams(params)
   const cacheKey = getKlineCacheKey(code, normalizedParams)
-  const cached = klineResponseCache.get(cacheKey)
+  const cached = getCachedKlineResponse(code, normalizedParams)
   if (cached) return Promise.resolve(cached)
 
   const pending = klinePendingRequests.get(cacheKey)
@@ -99,7 +118,7 @@ export const getKline = (
   const request = api
     .get(`/kline/${code}`, { params: normalizedParams, signal: options.signal })
     .then((response) => {
-      klineResponseCache.set(cacheKey, response)
+      rememberKlineResponse(cacheKey, response)
       return response
     })
     .finally(() => {

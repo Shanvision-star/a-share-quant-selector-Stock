@@ -60,6 +60,20 @@ describe('getKline', () => {
     expect(getSpy).toHaveBeenCalledTimes(1)
   })
 
+  it('evicts the oldest kline cache entries when the cache grows past its limit', async () => {
+    const getSpy = vi.spyOn(api, 'get').mockImplementation((url: string) => Promise.resolve({
+      data: { data: { bars: [{ date: '2026-04-30', url }] } },
+    } as any))
+
+    await getKline('000001', { period: 'daily', limit: 500, adjust: 'qfq' })
+    for (let i = 2; i <= 190; i += 1) {
+      await getKline(String(i).padStart(6, '0'), { period: 'daily', limit: 500, adjust: 'qfq' })
+    }
+    await getKline('000001', { period: 'daily', limit: 500, adjust: 'qfq' })
+
+    expect(getSpy.mock.calls.filter(call => call[0] === '/kline/000001')).toHaveLength(2)
+  })
+
   it('queues strategy-day kline prefetches with bounded concurrency and deduped codes', async () => {
     const pending: Array<() => void> = []
     const getSpy = vi.spyOn(api, 'get').mockImplementation(() => new Promise((resolve) => {

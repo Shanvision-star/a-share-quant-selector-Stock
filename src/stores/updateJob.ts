@@ -61,6 +61,9 @@ export const useUpdateJobStore = defineStore('updateJob', () => {
     fastPathTotal: 0,
     fastPathSuccess: 0,
     fastPathFailed: 0,
+    shortPathTotal: 0,
+    shortPathSuccess: 0,
+    shortPathFailed: 0,
     slowPathTotal: 0,
     slowPathReasons: {
       time_gate: 0,
@@ -145,6 +148,9 @@ export const useUpdateJobStore = defineStore('updateJob', () => {
       fastPathTotal: 0,
       fastPathSuccess: 0,
       fastPathFailed: 0,
+      shortPathTotal: 0,
+      shortPathSuccess: 0,
+      shortPathFailed: 0,
       slowPathTotal: 0,
       slowPathReasons: {
         time_gate: 0,
@@ -202,6 +208,9 @@ export const useUpdateJobStore = defineStore('updateJob', () => {
       if (typeof data.fast_path_total === 'number') updateStats.value.fastPathTotal = data.fast_path_total
       if (typeof data.fast_path_success === 'number') updateStats.value.fastPathSuccess = data.fast_path_success
       if (typeof data.fast_path_failed === 'number') updateStats.value.fastPathFailed = data.fast_path_failed
+      if (typeof data.short_path_total === 'number') updateStats.value.shortPathTotal = data.short_path_total
+      if (typeof data.short_path_success === 'number') updateStats.value.shortPathSuccess = data.short_path_success
+      if (typeof data.short_path_failed === 'number') updateStats.value.shortPathFailed = data.short_path_failed
       if (typeof data.slow_path_total === 'number') updateStats.value.slowPathTotal = data.slow_path_total
       if (data.slow_path_reasons && typeof data.slow_path_reasons === 'object') {
         updateStats.value.slowPathReasons = {
@@ -326,6 +335,9 @@ export const useUpdateJobStore = defineStore('updateJob', () => {
       fastPathTotal: 0,
       fastPathSuccess: 0,
       fastPathFailed: 0,
+      shortPathTotal: 0,
+      shortPathSuccess: 0,
+      shortPathFailed: 0,
       slowPathTotal: 0,
       slowPathReasons: {
         time_gate: 0,

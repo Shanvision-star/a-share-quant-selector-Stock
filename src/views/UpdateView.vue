@@ -463,6 +463,9 @@ function getUpdatePhaseLabel(phase: string) {
               <span v-if="updateJobStore.updateStats?.fastPathTotal > 0">
                 快路径：<b class="stat-success">{{ updateJobStore.updateStats?.fastPathSuccess }}/{{ updateJobStore.updateStats?.fastPathTotal }}</b>
               </span>
+              <span v-if="updateJobStore.updateStats?.shortPathTotal > 0">
+                短窗快补：<b class="stat-success">{{ updateJobStore.updateStats?.shortPathSuccess }}/{{ updateJobStore.updateStats?.shortPathTotal }}</b>
+              </span>
               <span v-if="updateJobStore.updateStats?.slowPathTotal > 0">
                 慢路径：<b>{{ updateJobStore.updateStats?.slowPathTotal }}</b>
               </span>

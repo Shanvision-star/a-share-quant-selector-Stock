@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime as real_datetime
 
 from web.backend.services import data_service
 from web.backend.services import strategy_service
@@ -63,5 +64,59 @@ def test_run_data_update_uses_actual_update_target_for_rebuild(monkeypatch):
     assert any(
         event["event"] == "rebuild_start"
         and event["data"]["trade_date"] == "2026-05-06"
+        for event in events
+    )
+
+
+def test_run_data_update_preopen_intraday_fast_uses_latest_completed_trade_date(monkeypatch):
+    """开盘前勾选盘中快路径时，统一作业仍应使用最近已完成交易日。"""
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 14, 7, 30, 0)
+
+    monkeypatch.setattr(data_service, "datetime", FakeDateTime)
+    monkeypatch.setattr(data_service.csv_manager, "list_all_stocks", lambda: ["000001"])
+    monkeypatch.setattr(strategy_service, "get_latest_trade_date", lambda: "2026-05-13")
+    monkeypatch.setattr(data_service.repo, "generate_run_id", lambda: "run-preopen")
+    monkeypatch.setattr(data_service.repo, "create_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(data_service.repo, "finish_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(data_service.repo, "insert_event", lambda *args, **kwargs: None)
+
+    update_calls = []
+
+    def fake_daily_update(**kwargs):
+        update_calls.append(kwargs)
+        return {
+            "status": "done",
+            "message": "2026-05-13 数据更新完成",
+            "target_date": "2026-05-13",
+            "completed": 1,
+            "cache_hit": False,
+            "fast_path_total": 1,
+            "slow_path_total": 0,
+        }
+
+    monkeypatch.setattr(data_service.fetcher, "daily_update", fake_daily_update)
+
+    async def collect_events():
+        return [
+            event
+            async for event in data_service.run_data_update(
+                auto_rebuild=False,
+                target_date=None,
+                allow_intraday_fast=True,
+                pipeline=False,
+                init_if_empty=True,
+            )
+        ]
+
+    events = asyncio.run(collect_events())
+
+    assert update_calls[0]["date"] == "2026-05-13"
+    assert update_calls[0]["allow_intraday_fast"] is True
+    assert any(
+        event["event"] == "job_start"
+        and event["data"]["trade_date"] == "2026-05-13"
         for event in events
     )

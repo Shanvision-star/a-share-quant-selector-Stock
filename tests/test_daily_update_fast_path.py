@@ -158,6 +158,151 @@ def test_daily_update_uses_fast_path_after_same_day_preopen_fallback(tmp_path, m
     assert summary["slow_path_total"] == 0
 
 
+def test_daily_update_intraday_fast_before_open_still_targets_completed_day(tmp_path, monkeypatch):
+    """开盘前即使勾选盘中快路径，也只能补最近已完成交易日，不能写入当天未开盘快照。"""
+    _write_stock_csv(tmp_path, "000001", date_text="2026-05-12")
+    _write_stock_csv(tmp_path, "600000", date_text="2026-05-12")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 14, 7, 30, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {"000001": 1000000000, "600000": 1000000000}
+    fetcher._market_cap_cache_date = "2026-05-14"
+    requested_snapshot_dates = []
+
+    def fake_snapshot(target_date_str, stock_codes=None):
+        requested_snapshot_dates.append(target_date_str)
+        return {
+            code: {
+                "date": target_date_str,
+                "open": 11.0,
+                "high": 12.0,
+                "low": 10.8,
+                "close": 11.5,
+                "volume": 2000,
+                "amount": 2300000.0,
+                "turnover": 1.5,
+                "market_cap": 1100000000,
+            }
+            for code in stock_codes
+        }
+
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", fake_snapshot)
+
+    summary = fetcher.daily_update(date=None, allow_intraday_fast=True)
+
+    assert summary["status"] == "done"
+    assert summary["target_date"] == "2026-05-13"
+    assert requested_snapshot_dates == ["2026-05-13"]
+    assert summary["fast_path_total"] == 2
+    assert summary["fast_path_success"] == 2
+    assert summary["slow_path_total"] == 0
+
+
+def test_daily_update_intraday_fast_from_nine_oclock_can_target_today(tmp_path, monkeypatch):
+    """9:00 起用户勾选盘中快路径时，可以尝试写入当天快照。"""
+    _write_stock_csv(tmp_path, "000001", date_text="2026-05-13")
+    _write_stock_csv(tmp_path, "600000", date_text="2026-05-13")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 14, 9, 0, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {"000001": 1000000000, "600000": 1000000000}
+    fetcher._market_cap_cache_date = "2026-05-14"
+    requested_snapshot_dates = []
+
+    def fake_snapshot(target_date_str, stock_codes=None):
+        requested_snapshot_dates.append(target_date_str)
+        return {
+            code: {
+                "date": target_date_str,
+                "open": 11.0,
+                "high": 12.0,
+                "low": 10.8,
+                "close": 11.5,
+                "volume": 2000,
+                "amount": 2300000.0,
+                "turnover": 1.5,
+                "market_cap": 1100000000,
+            }
+            for code in stock_codes
+        }
+
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", fake_snapshot)
+
+    summary = fetcher.daily_update(date=None, allow_intraday_fast=True)
+
+    assert summary["status"] == "done"
+    assert summary["target_date"] == "2026-05-14"
+    assert requested_snapshot_dates == ["2026-05-14"]
+    assert summary["fast_path_total"] == 2
+    assert summary["fast_path_success"] == 2
+    assert summary["slow_path_total"] == 0
+
+
+def test_daily_update_refetches_fast_snapshot_after_same_day_snapshot_fallback(tmp_path, monkeypatch):
+    """9:00 后尝试当天快照但尚未就绪时，回退后要重新按已完成交易日走快路径。"""
+    _write_stock_csv(tmp_path, "000001", date_text="2026-05-12")
+    _write_stock_csv(tmp_path, "600000", date_text="2026-05-12")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 14, 9, 0, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {"000001": 1000000000, "600000": 1000000000}
+    fetcher._market_cap_cache_date = "2026-05-14"
+    requested_snapshot_dates = []
+
+    def fake_snapshot(target_date_str, stock_codes=None):
+        requested_snapshot_dates.append(target_date_str)
+        if target_date_str == "2026-05-14":
+            return {}
+        return {
+            code: {
+                "date": target_date_str,
+                "open": 11.0,
+                "high": 12.0,
+                "low": 10.8,
+                "close": 11.5,
+                "volume": 2000,
+                "amount": 2300000.0,
+                "turnover": 1.5,
+                "market_cap": 1100000000,
+            }
+            for code in stock_codes
+        }
+
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", fake_snapshot)
+
+    def fail_slow_path(*args, **kwargs):
+        raise AssertionError("回退到最近已完成交易日后应重新走快路径")
+
+    monkeypatch.setattr(fetcher, "_update_single_stock", fail_slow_path)
+
+    summary = fetcher.daily_update(date="2026-05-14", allow_intraday_fast=True)
+
+    assert summary["status"] == "done"
+    assert summary["target_date"] == "2026-05-13"
+    assert requested_snapshot_dates == ["2026-05-14", "2026-05-13"]
+    assert summary["fast_path_total"] == 2
+    assert summary["fast_path_success"] == 2
+    assert summary["slow_path_total"] == 0
+
+
 def test_daily_update_downgrades_same_day_selection_before_close_without_intraday_fast(tmp_path, monkeypatch):
     _write_stock_csv(tmp_path, "000001", date_text="2026-05-06")
 

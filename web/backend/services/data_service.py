@@ -5,7 +5,7 @@ import random
 import asyncio
 import concurrent.futures
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, time as dt_time, timedelta
 from typing import Any, Dict
 
 project_root = Path(__file__).resolve().parents[3]
@@ -18,6 +18,22 @@ from web.backend.services import strategy_result_repository as repo
 
 csv_manager = CSVManager(str(project_root / "data"))
 fetcher = AKShareFetcher(str(project_root / "data"))
+
+_INTRADAY_FAST_START = dt_time(9, 0)
+_INTRADAY_FAST_END = dt_time(15, 0)
+
+
+def _resolve_update_trade_date(allow_intraday_fast: bool = False) -> str:
+    """统一作业入口的默认目标日：9:00 前固定使用最近已完成交易日。"""
+    now = datetime.now()
+    now_time = now.time()
+    if now_time >= _INTRADAY_FAST_END:
+        target = now.date()
+    elif allow_intraday_fast and _INTRADAY_FAST_START <= now_time < _INTRADAY_FAST_END:
+        target = now.date()
+    else:
+        target = now.date() - timedelta(days=1)
+    return previous_a_share_trading_day(target).strftime('%Y-%m-%d')
 
 
 def _enqueue_init_progress(
@@ -113,7 +129,6 @@ async def run_data_update(
     strategies 为 None 或 ['all'] 时跑全部策略；否则只对所选策略增量重建缓存
     """
     from web.backend.services.strategy_service import (
-        get_latest_trade_date,
         build_strategy_result_snapshot,
     )
 
@@ -121,10 +136,8 @@ async def run_data_update(
     run_type = 'update_and_rebuild' if auto_rebuild else 'update_only'
     if target_date:
         effective_date = target_date
-    elif allow_intraday_fast:
-        effective_date = previous_a_share_trading_day(datetime.now().date()).strftime('%Y-%m-%d')
     else:
-        effective_date = get_latest_trade_date()
+        effective_date = _resolve_update_trade_date(allow_intraday_fast=allow_intraday_fast)
 
     try:
         repo.create_run(run_id, run_type, effective_date, 'all')

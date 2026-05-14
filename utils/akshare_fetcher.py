@@ -4,7 +4,7 @@ A股数据抓取模块 - 使用 akshare / 直接HTTP请求
 import akshare as ak
 import pandas as pd
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, time as dt_time, timedelta
 import time
 import sys
 from pathlib import Path
@@ -35,6 +35,8 @@ _SLOW_PATH_MIN_FETCH_DAYS = 10
 _SLOW_PATH_MAX_FETCH_DAYS = 60
 _FAST_PATH_WORKERS = 24
 _MARKET_CAP_WAIT_SECONDS = 0
+_INTRADAY_FAST_START = dt_time(9, 0)
+_INTRADAY_FAST_END = dt_time(15, 0)
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -1696,24 +1698,29 @@ class AKShareFetcher:
         # ── 推算目标交易日 ──────────────────────────────────────────────
         now = datetime.now()
         today = now.date()
-        from datetime import time as dt_time
-        is_after_close = now.time() >= dt_time(15, 0)
+        now_time = now.time()
+        is_after_close = now_time >= _INTRADAY_FAST_END
+        # 盘中快路径只在真实交易时段生效；开盘前没有当日有效快照，必须补最近已完成交易日。
+        allow_same_day_intraday_fast = (
+            bool(allow_intraday_fast)
+            and _INTRADAY_FAST_START <= now_time < _INTRADAY_FAST_END
+        )
         latest_completed_trade_date = previous_a_share_trading_day(
             today if is_after_close else today - timedelta(days=1)
         )
         requested_target_date = None
 
         if date is None:
-            target_date = today if (is_after_close or allow_intraday_fast) else today - timedelta(days=1)
+            target_date = today if (is_after_close or allow_same_day_intraday_fast) else today - timedelta(days=1)
             target_date = previous_a_share_trading_day(target_date)
-            if not is_after_close and allow_intraday_fast and not max_stocks:
+            if not is_after_close and allow_same_day_intraday_fast and not max_stocks:
                 print(f"[WARN] 盘中手动快路径已开启，本次尝试更新当日数据 {target_date.strftime('%Y-%m-%d')}")
             elif not is_after_close and not max_stocks:
                 print(f"[WARN] 未收盘，仍然检查是否缺失最近交易日数据 {target_date.strftime('%Y-%m-%d')}")
         else:
             requested_target_date = datetime.strptime(date, "%Y-%m-%d").date()
             target_date = requested_target_date
-            if requested_target_date == today and not is_after_close and not allow_intraday_fast:
+            if requested_target_date == today and not is_after_close and not allow_same_day_intraday_fast:
                 target_date = previous_a_share_trading_day(today - timedelta(days=1))
                 print(
                     "[WARN] 选择了当日但当前尚未收盘，且未开启盘中快路径；"
@@ -1725,7 +1732,7 @@ class AKShareFetcher:
         # 盘中快路径只有用户明确允许时才写入今天的未收盘快照。
         can_use_spot_fast_path = (
             target_date == latest_completed_trade_date
-            or (allow_intraday_fast and target_date == today)
+            or (allow_same_day_intraday_fast and target_date == today)
         )
 
         target_date_str = target_date.strftime('%Y-%m-%d')
@@ -1846,7 +1853,10 @@ class AKShareFetcher:
             previous_target_str = target_date_str
             target_date = fallback_target
             target_date_str = target_date.strftime('%Y-%m-%d')
-            can_use_spot_fast_path = False
+            can_use_spot_fast_path = (
+                target_date == latest_completed_trade_date
+                or (allow_same_day_intraday_fast and target_date == today)
+            )
             spot_data_map.clear()
             fast_path_total = 0
             fast_path_success = 0
@@ -2121,6 +2131,18 @@ class AKShareFetcher:
                 if not stocks_to_update:
                     print(f"[OK] 回退后所有股票已是最新数据 ({target_date_str})")
                     return finalize_no_update(f"当日快照未就绪，已回退到最近已完成交易日 {target_date_str}")
+                if can_use_spot_fast_path:
+                    emit_progress(
+                        35,
+                        f"重新加载 {target_date_str} 行情快照（回退后继续快路径）...",
+                        phase='market_cap_refresh' if _need_cap_refresh else 'market_cap_cached',
+                    )
+                    _fallback_spot_snapshot = self._fetch_spot_snapshot_map(
+                        target_date_str=target_date_str,
+                        stock_codes=stocks_to_update,
+                    )
+                    if _fallback_spot_snapshot:
+                        spot_data_map.update(_fallback_spot_snapshot)
             emit_progress(
                 36,
                 f"{target_date_str} 行情快照就绪：{len(spot_data_map)} 只，可进入快路径分流",

@@ -38,3 +38,18 @@ export function buildStrategyDayPrefetchCodes(
   const rest = uniqueCodes.filter(code => code !== currentCode)
   return current.concat(rest).slice(0, Math.max(0, maxCount))
 }
+
+export function scheduleKlineIdleWork(callback: () => void, timeout = 450): () => void {
+  const win = typeof window !== 'undefined' ? window as any : null
+  if (win?.requestIdleCallback) {
+    const idleId = win.requestIdleCallback(callback, { timeout })
+    return () => {
+      if (win.cancelIdleCallback) {
+        win.cancelIdleCallback(idleId)
+      }
+    }
+  }
+
+  const timerId = window.setTimeout(callback, timeout)
+  return () => window.clearTimeout(timerId)
+}

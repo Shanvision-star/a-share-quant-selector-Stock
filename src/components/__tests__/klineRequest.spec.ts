@@ -1,11 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildStrategyDayPrefetchCodes,
   buildMainKlineRequestKey,
   getNeighborCodes,
+  scheduleKlineIdleWork,
   selectFastKlineLimit,
   shouldShowBlockingKlineLoading,
 } from '@/components/klineRequest'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('buildMainKlineRequestKey', () => {
   it('returns a stable key across different chart params', () => {
@@ -37,5 +42,22 @@ describe('buildMainKlineRequestKey', () => {
       '000003',
     ])
     expect(buildStrategyDayPrefetchCodes(['000001', '000002', '000003'], '000009', 2)).toEqual(['000001', '000002'])
+  })
+
+  it('defers full kline rerender work and allows cancellation while navigating', () => {
+    vi.useFakeTimers()
+    const callback = vi.fn()
+
+    const cancel = scheduleKlineIdleWork(callback, 200)
+    vi.advanceTimersByTime(199)
+    expect(callback).not.toHaveBeenCalled()
+
+    cancel()
+    vi.advanceTimersByTime(1)
+    expect(callback).not.toHaveBeenCalled()
+
+    scheduleKlineIdleWork(callback, 200)
+    vi.advanceTimersByTime(200)
+    expect(callback).toHaveBeenCalledTimes(1)
   })
 })

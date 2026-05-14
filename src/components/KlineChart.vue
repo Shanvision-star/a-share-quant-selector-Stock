@@ -4,7 +4,7 @@ import * as echarts from 'echarts'
 import { getCachedKlineResponse, getKline, getIntradayKline } from '@/api'
 import type { KlineAdjust } from '@/api'
 import { createRequestManager, isAbortError } from '@/api/requestManager'
-import { buildMainKlineRequestKey, selectFastKlineLimit, shouldShowBlockingKlineLoading } from '@/components/klineRequest'
+import { buildMainKlineRequestKey, scheduleKlineIdleWork, selectFastKlineLimit, shouldShowBlockingKlineLoading } from '@/components/klineRequest'
 import { buildBrickStackedBars } from '@/utils/klineIndicators'
 import { buildVolumeAxisScaleForZoom } from '@/utils/klineVolumeScale'
 
@@ -33,6 +33,7 @@ let resizeObserver: ResizeObserver | null = null
 let pendingResizeFrame: number | null = null
 let pendingGridFrame: number | null = null
 let isApplyingOption = false
+let cancelPendingFullKlineRender: (() => void) | null = null
 
 /** 当前渲染的K线数组（供区间统计使用） */
 const renderedBars = ref<any[]>([])
@@ -426,6 +427,10 @@ async function renderChart() {
   if (!chartRef.value) return
 
   const seq = ++renderSeq
+  if (cancelPendingFullKlineRender) {
+    cancelPendingFullKlineRender()
+    cancelPendingFullKlineRender = null
+  }
   const requestKey = buildMainKlineRequestKey(props.code, props.period, props.adjust)
   const controller = requestManager.start(requestKey)
   loading.value = true
@@ -798,7 +803,12 @@ async function renderChart() {
       void getKline(props.code, fullKlineParams)
         .then(() => {
           if (seq === renderSeq) {
-            void safeRenderChart()
+            cancelPendingFullKlineRender = scheduleKlineIdleWork(() => {
+              cancelPendingFullKlineRender = null
+              if (seq === renderSeq) {
+                void safeRenderChart()
+              }
+            })
           }
         })
         .catch((error) => {
@@ -1247,6 +1257,10 @@ onUnmounted(() => {
   if (pendingGridFrame !== null) {
     cancelAnimationFrame(pendingGridFrame)
     pendingGridFrame = null
+  }
+  if (cancelPendingFullKlineRender) {
+    cancelPendingFullKlineRender()
+    cancelPendingFullKlineRender = null
   }
   document.removeEventListener('mousemove', onDrag)
   document.removeEventListener('mouseup', stopDrag)

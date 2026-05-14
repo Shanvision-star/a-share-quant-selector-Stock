@@ -355,7 +355,7 @@ function getUpdatePhaseLabel(phase: string) {
           盘中也允许极速快路径
         </el-checkbox>
         <div class="intraday-fast-tip">
-          15:00 后会自动用全市场快照补当天日线；盘中勾选才会把未收盘快照写入当日数据，历史缺口仍自动进入慢路径补齐。
+          9:00 前固定补最近已完成交易日；9:00-15:00 勾选才会尝试把未收盘快照写入当日数据；15:00 后自动补当天日线。
         </div>
       </div>
 

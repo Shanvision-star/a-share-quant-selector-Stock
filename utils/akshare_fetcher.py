@@ -37,6 +37,7 @@ _FAST_PATH_WORKERS = 24
 _MARKET_CAP_WAIT_SECONDS = 0
 _INTRADAY_FAST_START = dt_time(9, 0)
 _INTRADAY_FAST_END = dt_time(15, 0)
+_SHORT_GAP_FAST_MAX_DAYS = 5
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -1749,6 +1750,9 @@ class AKShareFetcher:
         fast_path_total = 0
         fast_path_success = 0
         fast_path_failed = 0
+        short_path_total = 0
+        short_path_success = 0
+        short_path_failed = 0
         slow_path_total = 0
         slow_path_reason_counts = {
             'time_gate': 0,
@@ -1784,6 +1788,9 @@ class AKShareFetcher:
                 'fast_path_total': fast_path_total,
                 'fast_path_success': fast_path_success,
                 'fast_path_failed': fast_path_failed,
+                'short_path_total': short_path_total,
+                'short_path_success': short_path_success,
+                'short_path_failed': short_path_failed,
                 'slow_path_total': slow_path_total,
                 'slow_path_reasons': dict(slow_path_reason_counts),
             }
@@ -1817,6 +1824,9 @@ class AKShareFetcher:
                 'fast_path_total': fast_path_total,
                 'fast_path_success': fast_path_success,
                 'fast_path_failed': fast_path_failed,
+                'short_path_total': short_path_total,
+                'short_path_success': short_path_success,
+                'short_path_failed': short_path_failed,
                 'slow_path_total': slow_path_total,
                 'slow_path_reasons': dict(slow_path_reason_counts),
             }
@@ -1842,7 +1852,8 @@ class AKShareFetcher:
 
         def fallback_same_day_target(reason, snapshot_count=0, requested_count=0):
             nonlocal target_date, target_date_str, can_use_spot_fast_path
-            nonlocal fast_path_total, fast_path_success, fast_path_failed, slow_path_total
+            nonlocal fast_path_total, fast_path_success, fast_path_failed
+            nonlocal short_path_total, short_path_success, short_path_failed, slow_path_total
             if target_date != today:
                 return False
 
@@ -1861,6 +1872,9 @@ class AKShareFetcher:
             fast_path_total = 0
             fast_path_success = 0
             fast_path_failed = 0
+            short_path_total = 0
+            short_path_success = 0
+            short_path_failed = 0
             slow_path_total = 0
             for key in slow_path_reason_counts:
                 slow_path_reason_counts[key] = 0
@@ -2157,6 +2171,7 @@ class AKShareFetcher:
         #   3. spot_data_map 中存在该股
         #   4. spot_data_map[code]['close'] > 0（停牌过滤）
         fast_path_stocks: list = []
+        short_gap_stocks: list = []
         slow_path_stocks: list = []
         days_behind_map: dict = {}
         gap_cache: dict = {}
@@ -2185,6 +2200,12 @@ class AKShareFetcher:
                 and float(_spot.get('close', 0)) > 0
             ):
                 fast_path_stocks.append(_code)
+            elif (
+                2 <= _days_behind <= _SHORT_GAP_FAST_MAX_DAYS
+                and _ld is not None
+                and target_date <= latest_completed_trade_date
+            ):
+                short_gap_stocks.append(_code)
             else:
                 slow_path_stocks.append(_code)
 
@@ -2202,11 +2223,13 @@ class AKShareFetcher:
                     slow_path_reason_counts['other'] += 1
 
         fast_path_total = len(fast_path_stocks)
+        short_path_total = len(short_gap_stocks)
         slow_path_total = len(slow_path_stocks)
         emit_progress(
             36,
             (
                 f"分流完成：快路径 {fast_path_total} 只，"
+                f"短窗快补 {short_path_total} 只，"
                 f"慢路径 {slow_path_total} 只"
             ),
             phase='scan_complete',
@@ -2260,9 +2283,89 @@ class AKShareFetcher:
                 39,
                 (
                     f"快路径完成：成功 {fast_path_success}，"
-                    f"跳过/失败 {fast_path_failed}，慢路径待处理 {len(slow_path_stocks)} 只"
+                    f"跳过/失败 {fast_path_failed}，短窗快补 {len(short_gap_stocks)} 只，"
+                    f"慢路径待处理 {len(slow_path_stocks)} 只"
                 ),
                 phase='fast_update',
+            )
+
+        # ── 短窗快补：缺 2-5 个真实交易日，按精确日期窗口拉日 K ───────
+        short_total = len(short_gap_stocks)
+        if short_gap_stocks:
+            emit_progress(
+                39,
+                f"短窗快补 {short_total} 只股票（缺口 2-{_SHORT_GAP_FAST_MAX_DAYS} 个交易日）...",
+                phase='short_update',
+            )
+            short_lock = threading.Lock()
+            short_emit_step = 1 if short_total <= 20 else 10
+            short_workers = min(self._fast_path_workers, max(1, short_total))
+
+            def _write_short_gap_stock(_code):
+                _last_date = latest_date_map.get(_code)
+                if _last_date is None:
+                    return _code, False, None
+                _start_date = _last_date + timedelta(days=1)
+                _prefetched_cap = market_cap_map.get(_code)
+                _df = self._fetch_stock_history_eastmoney(
+                    _code,
+                    _start_date.strftime("%Y%m%d"),
+                    target_date.strftime("%Y%m%d"),
+                    prefetched_market_cap=_prefetched_cap,
+                )
+                if _df is None or _df.empty or 'date' not in _df.columns:
+                    return _code, False, None
+
+                _dates = pd.to_datetime(_df['date'], errors='coerce')
+                _mask = (_dates.dt.date > _last_date) & (_dates.dt.date <= target_date)
+                _df = _df.loc[_mask].copy()
+                if _df.empty:
+                    return _code, False, None
+
+                self.csv_manager.update_stock(_code, _df)
+                return _code, True, _df
+
+            with ThreadPoolExecutor(max_workers=short_workers) as short_executor:
+                futures = {
+                    short_executor.submit(_write_short_gap_stock, _code): _code
+                    for _code in short_gap_stocks
+                }
+                for short_index, future in enumerate(as_completed(futures), start=1):
+                    _code = futures[future]
+                    try:
+                        _code, _ok, _stock_df = future.result()
+                    except Exception:
+                        _ok, _stock_df = False, None
+                    with short_lock:
+                        completed += 1
+                        if _ok:
+                            updated += 1
+                            short_path_success += 1
+                        else:
+                            failed += 1
+                            short_path_failed += 1
+                        if short_index == 1 or short_index % short_emit_step == 0 or short_index == short_total:
+                            emit_progress(
+                                39 + int(short_index / max(short_total, 1) * 5),
+                                (
+                                    f"短窗快补中：{short_index}/{short_total}，"
+                                    f"累计完成 {completed}/{len(stocks_to_update)}，成功 {updated}，失败 {failed}"
+                                ),
+                                phase='short_update',
+                                current_code=_code,
+                            )
+                    if on_stock_ready and _ok and _stock_df is not None:
+                        try:
+                            on_stock_ready(_code, _stock_df)
+                        except Exception:
+                            pass
+            emit_progress(
+                44,
+                (
+                    f"短窗快补完成：成功 {short_path_success}，"
+                    f"失败 {short_path_failed}，慢路径待处理 {len(slow_path_stocks)} 只"
+                ),
+                phase='short_update',
             )
 
         # ── 并发更新 K 线数据（慢路径：多日缺失）──────────────────────────
@@ -2287,7 +2390,7 @@ class AKShareFetcher:
         if total > 0:
             print(f"\n开始并发更新 {total} 只股票（慢路径）...")
             emit_progress(
-                40,
+                44,
                 (
                     f"开始并发更新 {total} 只股票（慢路径，平均抓取 {_avg_fetch_days} 天，"
                     f"最大 {_max_fetch_days} 天）..."
@@ -2295,7 +2398,7 @@ class AKShareFetcher:
                 phase='update',
             )
         else:
-            emit_progress(40, "慢路径无需更新，直接进入抽样验证...", phase='update')
+            emit_progress(44, "慢路径无需更新，直接进入抽样验证...", phase='update')
         all_done = total == 0
         try:
             with ThreadPoolExecutor(max_workers=16) as executor:
@@ -2335,7 +2438,7 @@ class AKShareFetcher:
                             )
                             if slow_completed == 1 or slow_completed % emit_step == 0 or slow_completed == total:
                                 emit_progress(
-                                    40 + int(slow_completed / total * 50),
+                                    44 + int(slow_completed / total * 48),
                                     (
                                         f"并发更新中：慢路径 {slow_completed}/{total}，"
                                         f"累计完成 {completed}/{total_to_update_all}，成功 {updated}，失败 {failed}"

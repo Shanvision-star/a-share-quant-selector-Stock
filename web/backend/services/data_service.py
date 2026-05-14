@@ -457,6 +457,9 @@ async def run_data_update(
             'fast_path_total',
             'fast_path_success',
             'fast_path_failed',
+            'short_path_total',
+            'short_path_success',
+            'short_path_failed',
             'slow_path_total',
             'slow_path_reasons',
         )

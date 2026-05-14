@@ -303,6 +303,149 @@ def test_daily_update_refetches_fast_snapshot_after_same_day_snapshot_fallback(t
     assert summary["slow_path_total"] == 0
 
 
+def test_daily_update_uses_short_gap_fast_path_for_two_to_five_trading_days(tmp_path, monkeypatch):
+    """缺 2-5 个真实交易日时，用短窗口日K快补，不进入长慢路径。"""
+    _write_stock_csv(tmp_path, "000001", date_text="2026-05-12")
+    _write_stock_csv(tmp_path, "600000", date_text="2026-05-12")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 14, 16, 0, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {"000001": 1000000000, "600000": 1000000000}
+    fetcher._market_cap_cache_date = "2026-05-14"
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", lambda target_date_str, stock_codes=None: {
+        code: {
+            "date": target_date_str,
+            "open": 11.0,
+            "high": 12.0,
+            "low": 10.8,
+            "close": 11.5,
+            "volume": 2000,
+            "amount": 2300000.0,
+            "turnover": 1.5,
+            "market_cap": 1100000000,
+        }
+        for code in stock_codes
+    })
+
+    eastmoney_calls = []
+
+    def fake_eastmoney(stock_code, start_date, end_date, prefetched_market_cap=None, fqt=1):
+        eastmoney_calls.append((stock_code, start_date, end_date))
+        return pd.DataFrame([
+            {
+                "date": pd.Timestamp("2026-05-14"),
+                "open": 12.0,
+                "high": 12.5,
+                "low": 11.8,
+                "close": 12.2,
+                "volume": 2200,
+                "amount": 2684000.0,
+                "turnover": 1.8,
+                "market_cap": prefetched_market_cap or 1100000000,
+            },
+            {
+                "date": pd.Timestamp("2026-05-13"),
+                "open": 11.0,
+                "high": 11.8,
+                "low": 10.9,
+                "close": 11.5,
+                "volume": 2000,
+                "amount": 2300000.0,
+                "turnover": 1.5,
+                "market_cap": prefetched_market_cap or 1100000000,
+            },
+        ])
+
+    monkeypatch.setattr(fetcher, "_fetch_stock_history_eastmoney", fake_eastmoney)
+
+    def fail_slow_path(*args, **kwargs):
+        raise AssertionError("2-5 日小缺口不应进入长慢路径")
+
+    monkeypatch.setattr(fetcher, "_update_single_stock", fail_slow_path)
+
+    summary = fetcher.daily_update(date="2026-05-14", allow_intraday_fast=False)
+
+    assert summary["status"] == "done"
+    assert summary["short_path_total"] == 2
+    assert summary["short_path_success"] == 2
+    assert summary["short_path_failed"] == 0
+    assert summary["slow_path_total"] == 0
+    assert sorted(eastmoney_calls) == [
+        ("000001", "20260513", "20260514"),
+        ("600000", "20260513", "20260514"),
+    ]
+    for code in ("000001", "600000"):
+        refreshed = pd.read_csv(fetcher.csv_manager.get_stock_path(code), nrows=2)
+        assert refreshed["date"].tolist() == ["2026-05-14", "2026-05-13"]
+
+
+def test_daily_update_keeps_large_gap_on_slow_path(tmp_path, monkeypatch):
+    """超过 5 个真实交易日仍走慢路径，避免短窗快补丢历史。"""
+    _write_stock_csv(tmp_path, "000001", date_text="2026-05-06")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 14, 16, 0, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {"000001": 1000000000}
+    fetcher._market_cap_cache_date = "2026-05-14"
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", lambda target_date_str, stock_codes=None: {
+        code: {
+            "date": target_date_str,
+            "open": 11.0,
+            "high": 12.0,
+            "low": 10.8,
+            "close": 11.5,
+            "volume": 2000,
+            "amount": 2300000.0,
+            "turnover": 1.5,
+            "market_cap": 1100000000,
+        }
+        for code in stock_codes
+    })
+
+    def fail_short_window(*args, **kwargs):
+        raise AssertionError("超过 5 个交易日不能走短窗快补")
+
+    monkeypatch.setattr(fetcher, "_fetch_stock_history_eastmoney", fail_short_window)
+    slow_calls = []
+
+    def fake_slow_path(code, days_to_fetch, market_cap_map):
+        slow_calls.append((code, days_to_fetch))
+        return True, pd.DataFrame([
+            {
+                "date": pd.Timestamp("2026-05-14"),
+                "open": 12.0,
+                "high": 12.5,
+                "low": 11.8,
+                "close": 12.2,
+                "volume": 2200,
+                "amount": 2684000.0,
+                "turnover": 1.8,
+                "market_cap": market_cap_map.get(code, 0),
+            },
+        ])
+
+    monkeypatch.setattr(fetcher, "_update_single_stock", fake_slow_path)
+
+    summary = fetcher.daily_update(date="2026-05-14", allow_intraday_fast=False)
+
+    assert summary["status"] == "done"
+    assert summary["short_path_total"] == 0
+    assert summary["slow_path_total"] == 1
+    assert slow_calls == [("000001", 10)]
+
+
 def test_daily_update_downgrades_same_day_selection_before_close_without_intraday_fast(tmp_path, monkeypatch):
     _write_stock_csv(tmp_path, "000001", date_text="2026-05-06")
 

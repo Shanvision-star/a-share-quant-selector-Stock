@@ -1758,6 +1758,7 @@ class AKShareFetcher:
             'time_gate': 0,
             'missing_local_data': 0,
             'gap_gt1': 0,
+            'short_gap_fallback': 0,
             'missing_spot': 0,
             'suspended': 0,
             'other': 0,
@@ -2292,6 +2293,7 @@ class AKShareFetcher:
         # ── 短窗快补：缺 2-5 个真实交易日，按精确日期窗口拉日 K ───────
         short_total = len(short_gap_stocks)
         if short_gap_stocks:
+            short_requeue_stocks: list = []
             emit_progress(
                 39,
                 f"短窗快补 {short_total} 只股票（缺口 2-{_SHORT_GAP_FAST_MAX_DAYS} 个交易日）...",
@@ -2337,19 +2339,21 @@ class AKShareFetcher:
                     except Exception:
                         _ok, _stock_df = False, None
                     with short_lock:
-                        completed += 1
                         if _ok:
+                            completed += 1
                             updated += 1
                             short_path_success += 1
                         else:
-                            failed += 1
                             short_path_failed += 1
+                            short_requeue_stocks.append(_code)
+                            slow_path_reason_counts['short_gap_fallback'] += 1
                         if short_index == 1 or short_index % short_emit_step == 0 or short_index == short_total:
                             emit_progress(
                                 39 + int(short_index / max(short_total, 1) * 5),
                                 (
                                     f"短窗快补中：{short_index}/{short_total}，"
-                                    f"累计完成 {completed}/{len(stocks_to_update)}，成功 {updated}，失败 {failed}"
+                                    f"累计完成 {completed}/{len(stocks_to_update)}，成功 {updated}，"
+                                    f"最终失败 {failed}，转慢路径 {len(short_requeue_stocks)}"
                                 ),
                                 phase='short_update',
                                 current_code=_code,
@@ -2359,11 +2363,16 @@ class AKShareFetcher:
                             on_stock_ready(_code, _stock_df)
                         except Exception:
                             pass
+            if short_requeue_stocks:
+                # 短窗快补只依赖 EastMoney；网络或接口短暂失败时回到旧增量链路，
+                # 让新浪/Baostock 兜底继续尝试，避免把可恢复的数据源抖动算成最终失败。
+                slow_path_stocks.extend(short_requeue_stocks)
+                slow_path_total = len(slow_path_stocks)
             emit_progress(
                 44,
                 (
                     f"短窗快补完成：成功 {short_path_success}，"
-                    f"失败 {short_path_failed}，慢路径待处理 {len(slow_path_stocks)} 只"
+                    f"转慢路径 {short_path_failed}，慢路径待处理 {len(slow_path_stocks)} 只"
                 ),
                 phase='short_update',
             )

@@ -385,6 +385,90 @@ def test_daily_update_uses_short_gap_fast_path_for_two_to_five_trading_days(tmp_
         assert refreshed["date"].tolist() == ["2026-05-14", "2026-05-13"]
 
 
+def test_daily_update_requeues_short_gap_failures_to_slow_path(tmp_path, monkeypatch):
+    """短窗快补的单一数据源失败时，不能把可兜底股票直接算作最终失败。"""
+    _write_stock_csv(tmp_path, "000001", date_text="2026-05-12")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 14, 16, 0, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {"000001": 1000000000}
+    fetcher._market_cap_cache_date = "2026-05-14"
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", lambda target_date_str, stock_codes=None: {
+        code: {
+            "date": target_date_str,
+            "open": 11.0,
+            "high": 12.0,
+            "low": 10.8,
+            "close": 11.5,
+            "volume": 2000,
+            "amount": 2300000.0,
+            "turnover": 1.5,
+            "market_cap": 1100000000,
+        }
+        for code in stock_codes
+    })
+
+    short_calls = []
+
+    def unavailable_eastmoney(stock_code, start_date, end_date, prefetched_market_cap=None, fqt=1):
+        short_calls.append((stock_code, start_date, end_date))
+        return None
+
+    monkeypatch.setattr(fetcher, "_fetch_stock_history_eastmoney", unavailable_eastmoney)
+    slow_calls = []
+
+    def fake_slow_path(code, days_to_fetch, market_cap_map):
+        slow_calls.append((code, days_to_fetch))
+        df = pd.DataFrame([
+            {
+                "date": pd.Timestamp("2026-05-14"),
+                "open": 12.0,
+                "high": 12.5,
+                "low": 11.8,
+                "close": 12.2,
+                "volume": 2200,
+                "amount": 2684000.0,
+                "turnover": 1.8,
+                "market_cap": market_cap_map.get(code, 0),
+            },
+            {
+                "date": pd.Timestamp("2026-05-13"),
+                "open": 11.0,
+                "high": 11.8,
+                "low": 10.9,
+                "close": 11.5,
+                "volume": 2000,
+                "amount": 2300000.0,
+                "turnover": 1.5,
+                "market_cap": market_cap_map.get(code, 0),
+            },
+        ])
+        fetcher.csv_manager.update_stock(code, df)
+        return True, df
+
+    monkeypatch.setattr(fetcher, "_update_single_stock", fake_slow_path)
+
+    summary = fetcher.daily_update(date="2026-05-14", allow_intraday_fast=False)
+
+    assert summary["status"] == "done"
+    assert summary["short_path_total"] == 1
+    assert summary["short_path_success"] == 0
+    assert summary["short_path_failed"] == 1
+    assert summary["slow_path_total"] == 1
+    assert summary["updated"] == 1
+    assert summary["failed"] == 0
+    assert short_calls == [("000001", "20260513", "20260514")]
+    assert slow_calls == [("000001", 10)]
+    refreshed = pd.read_csv(fetcher.csv_manager.get_stock_path("000001"), nrows=2)
+    assert refreshed["date"].tolist() == ["2026-05-14", "2026-05-13"]
+
+
 def test_daily_update_keeps_large_gap_on_slow_path(tmp_path, monkeypatch):
     """超过 5 个真实交易日仍走慢路径，避免短窗快补丢历史。"""
     _write_stock_csv(tmp_path, "000001", date_text="2026-05-06")

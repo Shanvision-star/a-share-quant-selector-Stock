@@ -39,6 +39,7 @@ const slowPathReasonText: Record<string, string> = {
   time_gate: '快路径门禁（目标日不是最近已完成交易日）',
   missing_local_data: '本地无历史数据',
   gap_gt1: '缺口大于1个交易日',
+  short_gap_fallback: '短窗快补失败转慢路径',
   missing_spot: '目标日快照缺失',
   suspended: '停牌或无成交',
   other: '其他原因',

@@ -423,8 +423,8 @@ def test_daily_update_requeues_short_gap_failures_to_slow_path(tmp_path, monkeyp
     monkeypatch.setattr(fetcher, "_fetch_stock_history_eastmoney", unavailable_eastmoney)
     slow_calls = []
 
-    def fake_slow_path(code, days_to_fetch, market_cap_map):
-        slow_calls.append((code, days_to_fetch))
+    def fake_slow_path(code, days_to_fetch, market_cap_map, prefer_fast_fallback=False):
+        slow_calls.append((code, days_to_fetch, prefer_fast_fallback))
         df = pd.DataFrame([
             {
                 "date": pd.Timestamp("2026-05-14"),
@@ -464,9 +464,55 @@ def test_daily_update_requeues_short_gap_failures_to_slow_path(tmp_path, monkeyp
     assert summary["updated"] == 1
     assert summary["failed"] == 0
     assert short_calls == [("000001", "20260513", "20260514")]
-    assert slow_calls == [("000001", 10)]
+    assert slow_calls == [("000001", 10, True)]
     refreshed = pd.read_csv(fetcher.csv_manager.get_stock_path("000001"), nrows=2)
     assert refreshed["date"].tolist() == ["2026-05-14", "2026-05-13"]
+
+
+def test_fetch_stock_update_prefer_fast_fallback_skips_eastmoney(tmp_path, monkeypatch):
+    """短窗已确认 EastMoney 失败后，慢路径应优先使用新浪快通道。"""
+    fetcher = AKShareFetcher(str(tmp_path))
+
+    def fail_eastmoney(*args, **kwargs):
+        raise AssertionError("短窗失败转慢路径时不应再次等待 EastMoney")
+
+    monkeypatch.setattr(fetcher, "_fetch_stock_history_eastmoney", fail_eastmoney)
+    sina_calls = []
+
+    def fake_sina(stock_code, days, prefetched_market_cap=None):
+        sina_calls.append((stock_code, days, prefetched_market_cap))
+        return pd.DataFrame(
+            [
+                {
+                    "date": pd.Timestamp("2026-05-14"),
+                    "open": 12.0,
+                    "high": 12.5,
+                    "low": 11.8,
+                    "close": 12.2,
+                    "volume": 2200,
+                    "amount": 0.0,
+                    "turnover": 0.0,
+                    "market_cap": prefetched_market_cap or 0,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(fetcher, "_fetch_update_sina", fake_sina)
+
+    def fail_baostock(*args, **kwargs):
+        raise AssertionError("新浪快通道成功时不应进入 Baostock")
+
+    monkeypatch.setattr(fetcher, "_fetch_update_baostock", fail_baostock)
+
+    df = fetcher.fetch_stock_update(
+        "000001",
+        days=10,
+        prefetched_market_cap=1230000000,
+        prefer_fast_fallback=True,
+    )
+
+    assert len(df) == 1
+    assert sina_calls == [("000001", 10, 1230000000)]
 
 
 def test_daily_update_keeps_large_gap_on_slow_path(tmp_path, monkeypatch):
@@ -504,8 +550,8 @@ def test_daily_update_keeps_large_gap_on_slow_path(tmp_path, monkeypatch):
     monkeypatch.setattr(fetcher, "_fetch_stock_history_eastmoney", fail_short_window)
     slow_calls = []
 
-    def fake_slow_path(code, days_to_fetch, market_cap_map):
-        slow_calls.append((code, days_to_fetch))
+    def fake_slow_path(code, days_to_fetch, market_cap_map, prefer_fast_fallback=False):
+        slow_calls.append((code, days_to_fetch, prefer_fast_fallback))
         return True, pd.DataFrame([
             {
                 "date": pd.Timestamp("2026-05-14"),
@@ -527,7 +573,7 @@ def test_daily_update_keeps_large_gap_on_slow_path(tmp_path, monkeypatch):
     assert summary["status"] == "done"
     assert summary["short_path_total"] == 0
     assert summary["slow_path_total"] == 1
-    assert slow_calls == [("000001", 10)]
+    assert slow_calls == [("000001", 10, False)]
 
 
 def test_daily_update_downgrades_same_day_selection_before_close_without_intraday_fast(tmp_path, monkeypatch):
@@ -556,7 +602,7 @@ def test_daily_update_downgrades_same_day_selection_before_close_without_intrada
     assert summary["slow_path_total"] == 0
 
 
-def test_daily_update_falls_back_when_same_day_snapshot_is_unavailable(tmp_path, monkeypatch):
+def test_daily_update_uses_slow_path_when_same_day_snapshot_is_unavailable_after_close(tmp_path, monkeypatch):
     _write_stock_csv(tmp_path, "000001", date_text="2026-05-06")
 
     class FakeDateTime(real_datetime):
@@ -569,6 +615,27 @@ def test_daily_update_falls_back_when_same_day_snapshot_is_unavailable(tmp_path,
     fetcher = AKShareFetcher(str(tmp_path))
 
     monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", lambda *args, **kwargs: {})
+    slow_calls = []
+
+    def fake_slow_path(code, days_to_fetch, market_cap_map, prefer_fast_fallback=False):
+        slow_calls.append((code, days_to_fetch, prefer_fast_fallback))
+        df = pd.DataFrame([
+            {
+                "date": pd.Timestamp("2026-05-07"),
+                "open": 11.0,
+                "high": 11.8,
+                "low": 10.9,
+                "close": 11.5,
+                "volume": 2000,
+                "amount": 2300000.0,
+                "turnover": 1.5,
+                "market_cap": market_cap_map.get(code, 0),
+            },
+        ])
+        fetcher.csv_manager.update_stock(code, df)
+        return True, df
+
+    monkeypatch.setattr(fetcher, "_update_single_stock", fake_slow_path)
 
     summary = fetcher.daily_update(date="2026-05-07", allow_intraday_fast=False)
 
@@ -577,6 +644,8 @@ def test_daily_update_falls_back_when_same_day_snapshot_is_unavailable(tmp_path,
     assert summary["to_update"] == 0
     assert summary["fast_path_total"] == 0
     assert summary["slow_path_total"] == 0
+    assert summary["updated"] == 0
+    assert slow_calls == []
 
 
 def test_daily_update_does_not_wait_for_expired_market_cap_cache_when_cached_values_exist(tmp_path, monkeypatch):

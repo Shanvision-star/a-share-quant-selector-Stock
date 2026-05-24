@@ -187,7 +187,8 @@ class CSVManager:
             amount_values = pd.to_numeric(combined['amount'], errors='coerce').fillna(0)
             estimated_amount = close_values * volume_values * 100
             amount_missing = (amount_values <= 0) & (estimated_amount > 0)
-            combined.loc[amount_missing, 'amount'] = estimated_amount[amount_missing]
+            if amount_missing.any():
+                combined.loc[amount_missing, 'amount'] = estimated_amount.loc[amount_missing].astype(float)
 
         if all(column in combined.columns for column in ['amount', 'turnover', 'market_cap']):
             amount_values = pd.to_numeric(combined['amount'], errors='coerce').fillna(0)
@@ -195,7 +196,8 @@ class CSVManager:
             market_cap_values = pd.to_numeric(combined['market_cap'], errors='coerce').fillna(0)
             estimated_turnover = (amount_values / market_cap_values.replace(0, pd.NA) * 100).fillna(0)
             turnover_missing = (turnover_values <= 0) & (estimated_turnover > 0)
-            combined.loc[turnover_missing, 'turnover'] = estimated_turnover[turnover_missing]
+            if turnover_missing.any():
+                combined.loc[turnover_missing, 'turnover'] = estimated_turnover.loc[turnover_missing].astype(float)
 
         return self.write_stock(stock_code, combined)
     

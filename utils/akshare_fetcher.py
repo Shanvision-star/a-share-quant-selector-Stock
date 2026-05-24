@@ -1313,24 +1313,26 @@ class AKShareFetcher:
         # 降级: 使用模拟数据
         return self._generate_mock_data(stock_code, years)
     
-    def fetch_stock_update(self, stock_code, days=10, prefetched_market_cap=None):
+    def fetch_stock_update(self, stock_code, days=10, prefetched_market_cap=None, prefer_fast_fallback=False):
         """
         抓取近期数据用于增量更新
         优化：直接指定天数，避免计算误差
         :param prefetched_market_cap: 预先批量获取的市值，传入则跳过每股单独API调用（大幅提速）
+        :param prefer_fast_fallback: 已确认 EastMoney 不稳定时，优先使用新浪/Baostock 兜底，避免重复等待失败源
         """
         lookback_days = max(days * 4, 30)
         end_date = datetime.now()
         start_date = end_date - timedelta(days=lookback_days)
 
-        df = self._fetch_stock_history_eastmoney(
-            stock_code,
-            start_date.strftime("%Y%m%d"),
-            end_date.strftime("%Y%m%d"),
-            prefetched_market_cap=prefetched_market_cap,
-        )
-        if df is not None and not df.empty:
-            return df.head(max(days + 5, 20)).copy()
+        if not prefer_fast_fallback:
+            df = self._fetch_stock_history_eastmoney(
+                stock_code,
+                start_date.strftime("%Y%m%d"),
+                end_date.strftime("%Y%m%d"),
+                prefetched_market_cap=prefetched_market_cap,
+            )
+            if df is not None and not df.empty:
+                return df.head(max(days + 5, 20)).copy()
 
         # ── 备选1: 新浪财经（HTTP链路，避免每股登录/登出开销）────────────
         df = self._fetch_update_sina(stock_code, days, prefetched_market_cap)
@@ -2292,6 +2294,7 @@ class AKShareFetcher:
 
         # ── 短窗快补：缺 2-5 个真实交易日，按精确日期窗口拉日 K ───────
         short_total = len(short_gap_stocks)
+        short_requeue_code_set: set = set()
         if short_gap_stocks:
             short_requeue_stocks: list = []
             emit_progress(
@@ -2365,8 +2368,9 @@ class AKShareFetcher:
                             pass
             if short_requeue_stocks:
                 # 短窗快补只依赖 EastMoney；网络或接口短暂失败时回到旧增量链路，
-                # 让新浪/Baostock 兜底继续尝试，避免把可恢复的数据源抖动算成最终失败。
+                # 且后续慢路径跳过已失败的 EastMoney，优先用新浪/Baostock 快速兜底。
                 slow_path_stocks.extend(short_requeue_stocks)
+                short_requeue_code_set = set(short_requeue_stocks)
                 slow_path_total = len(slow_path_stocks)
             emit_progress(
                 44,
@@ -2417,6 +2421,7 @@ class AKShareFetcher:
                         code,
                         slow_path_fetch_days_map.get(code, self._slow_path_min_fetch_days),
                         market_cap_map,
+                        code in short_requeue_code_set,
                     ): code
                     for code in slow_path_stocks
                 }
@@ -2572,7 +2577,7 @@ class AKShareFetcher:
         emit_progress(100, final_message, phase='complete')
         return build_summary('partial', final_message)
 
-    def _update_single_stock(self, code, days_to_fetch, market_cap_map):
+    def _update_single_stock(self, code, days_to_fetch, market_cap_map, prefer_fast_fallback=False):
         """单只股票更新任务（给线程池调用）
         传入预先批量获取的 market_cap_map，跳过每股单独 API 调用，大幅提速。
         返回 (success: bool, df_or_None)：成功时 df 可用于 pipeline 模式内联策略扫描。
@@ -2580,12 +2585,13 @@ class AKShareFetcher:
         try:
             prefetched_cap = market_cap_map.get(code)  # None if not in map
             df = self.fetch_stock_update(code, days=days_to_fetch,
-                                         prefetched_market_cap=prefetched_cap)
+                                         prefetched_market_cap=prefetched_cap,
+                                         prefer_fast_fallback=prefer_fast_fallback)
             if df is not None and not df.empty:
                 self.csv_manager.update_stock(code, df)
                 return (True, df)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("单股更新失败 %s: %s: %s", code, type(exc).__name__, str(exc)[:120])
         return (False, None)
 
 

@@ -191,6 +191,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 短窗快补只依赖 EastMoney 精确窗口，属于快通道而不是最终真值通道；如果短窗返回空、连接失败或接口抖动，必须转入旧增量慢路径继续用新浪/Baostock 兜底，不能在短窗阶段直接记为最终失败。
 - 短窗失败转慢路径时，后续单股更新必须跳过已失败的 EastMoney 重试，优先使用新浪快通道，再用 Baostock 兜底；否则 5000 只股票会重复等待同一个失败源，页面表现为长时间更新。
 - CSV 合并补字段时必须 guard 空布尔 mask，例如没有任何可估算换手率时不能执行 `combined.loc[empty_mask, 'turnover'] = empty_series`；pandas 新版本会抛 `Invalid value '[]' for dtype 'float64'`，导致单股更新被记失败。
+- 慢路径批量更新出现 `TimeoutError` 后，不能继续使用 `with ThreadPoolExecutor(...)` 的默认退出语义；必须取消未完成 future 并 `shutdown(wait=False, cancel_futures=True)`，否则后端 SSE 会继续等待少数挂起任务，前端表现为“一直在更新”。
 - 如果缺口大于 5 个真实交易日，不能只写当天，也不能用短窗覆盖历史，必须走慢路径补齐历史。
 - 当天快照尚未就绪并自动回退到最近已完成交易日时，必须重新加载回退日快照，不能因为之前的当天快照为空就把全市场打入慢路径。
 

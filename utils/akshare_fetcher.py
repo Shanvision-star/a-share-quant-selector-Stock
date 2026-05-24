@@ -2413,77 +2413,93 @@ class AKShareFetcher:
         else:
             emit_progress(44, "慢路径无需更新，直接进入抽样验证...", phase='update')
         all_done = total == 0
+        executor = None
+        timed_out = False
         try:
-            with ThreadPoolExecutor(max_workers=16) as executor:
-                futures = {
-                    executor.submit(
-                        self._update_single_stock,
-                        code,
-                        slow_path_fetch_days_map.get(code, self._slow_path_min_fetch_days),
-                        market_cap_map,
-                        code in short_requeue_code_set,
-                    ): code
-                    for code in slow_path_stocks
-                }
-                emit_step = 1 if total <= 20 else 10
-                try:
-                    for future in as_completed(futures, timeout=TIMEOUT_SECONDS):
-                        code = futures[future]
-                        try:
-                            result_tuple = future.result()
-                            # _update_single_stock now returns (bool, df_or_None)
-                            if isinstance(result_tuple, tuple):
-                                success, stock_df = result_tuple
-                            else:
-                                success, stock_df = bool(result_tuple), None
-                        except Exception:
-                            success, stock_df = False, None
-                        with lock:
-                            completed += 1
-                            slow_completed += 1
-                            if success:
-                                updated += 1
-                            else:
-                                failed += 1
-                            pct = slow_completed / total * 100
-                            print(
-                                f"\r进度: {slow_completed:4d}/{total} | {pct:5.1f}% | 更新: {updated} | 失败: {failed:3d} | 代码:{code}",
-                                end='', flush=True
+            executor = ThreadPoolExecutor(max_workers=16)
+            futures = {
+                executor.submit(
+                    self._update_single_stock,
+                    code,
+                    slow_path_fetch_days_map.get(code, self._slow_path_min_fetch_days),
+                    market_cap_map,
+                    code in short_requeue_code_set,
+                ): code
+                for code in slow_path_stocks
+            }
+            emit_step = 1 if total <= 20 else 10
+            try:
+                for future in as_completed(futures, timeout=TIMEOUT_SECONDS):
+                    code = futures[future]
+                    try:
+                        result_tuple = future.result()
+                        # _update_single_stock now returns (bool, df_or_None)
+                        if isinstance(result_tuple, tuple):
+                            success, stock_df = result_tuple
+                        else:
+                            success, stock_df = bool(result_tuple), None
+                    except Exception:
+                        success, stock_df = False, None
+                    with lock:
+                        completed += 1
+                        slow_completed += 1
+                        if success:
+                            updated += 1
+                        else:
+                            failed += 1
+                        pct = slow_completed / total * 100
+                        print(
+                            f"\r进度: {slow_completed:4d}/{total} | {pct:5.1f}% | 更新: {updated} | 失败: {failed:3d} | 代码:{code}",
+                            end='', flush=True
+                        )
+                        if slow_completed == 1 or slow_completed % emit_step == 0 or slow_completed == total:
+                            emit_progress(
+                                44 + int(slow_completed / total * 48),
+                                (
+                                    f"并发更新中：慢路径 {slow_completed}/{total}，"
+                                    f"累计完成 {completed}/{total_to_update_all}，成功 {updated}，失败 {failed}"
+                                ),
+                                phase='update',
+                                current_code=code,
                             )
-                            if slow_completed == 1 or slow_completed % emit_step == 0 or slow_completed == total:
-                                emit_progress(
-                                    44 + int(slow_completed / total * 48),
-                                    (
-                                        f"并发更新中：慢路径 {slow_completed}/{total}，"
-                                        f"累计完成 {completed}/{total_to_update_all}，成功 {updated}，失败 {failed}"
-                                    ),
-                                    phase='update',
-                                    current_code=code,
-                                )
-                        # pipeline 回调：股票更新成功后立即用内存 df 通知调用方
-                        if on_stock_ready and success and stock_df is not None:
-                            try:
-                                on_stock_ready(code, stock_df)
-                            except Exception:
-                                pass
-                    all_done = True
-                except TimeoutError:
-                    elapsed = time.time() - start_time
-                    print(
-                        f"\n[更新] 超时({elapsed:.0f}s)，慢路径已完成 {slow_completed}/{total}，"
-                        f"累计完成 {completed}/{total_to_update_all}，取消剩余任务，继续使用本地数据..."
-                    )
-                    emit_progress(
-                        92,
-                        (
-                            f"更新超时：慢路径已执行 {slow_completed}/{total}，"
-                            f"累计完成 {completed}/{total_to_update_all}，成功 {updated}，失败 {failed}"
-                        ),
-                        phase='update',
-                    )
+                    # pipeline 回调：股票更新成功后立即用内存 df 通知调用方
+                    if on_stock_ready and success and stock_df is not None:
+                        try:
+                            on_stock_ready(code, stock_df)
+                        except Exception:
+                            pass
+                all_done = True
+            except TimeoutError:
+                timed_out = True
+                for future in futures:
+                    future.cancel()
+                elapsed = time.time() - start_time
+                print(
+                    f"\n[更新] 超时({elapsed:.0f}s)，慢路径已完成 {slow_completed}/{total}，"
+                    f"累计完成 {completed}/{total_to_update_all}，取消剩余任务，继续使用本地数据..."
+                )
+                emit_progress(
+                    92,
+                    (
+                        f"更新超时：慢路径已执行 {slow_completed}/{total}，"
+                        f"累计完成 {completed}/{total_to_update_all}，成功 {updated}，失败 {failed}"
+                    ),
+                    phase='update',
+                )
         except Exception as e:
             logger.exception("[更新] 并发执行异常")
             emit_progress(92, f"并发更新异常：{e}", phase='update')
+        finally:
+            if executor is not None:
+                if timed_out:
+                    # 超时后不能使用 ThreadPoolExecutor 上下文的默认等待语义，
+                    # 否则 SSE 会继续挂在少数慢任务上，前端看起来“一直在更新”。
+                    try:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        executor.shutdown(wait=False)
+                else:
+                    executor.shutdown(wait=True)
 
         print()  # 换行
 

@@ -576,6 +576,55 @@ def test_daily_update_keeps_large_gap_on_slow_path(tmp_path, monkeypatch):
     assert slow_calls == [("000001", 10, False)]
 
 
+def test_daily_update_timeout_returns_without_waiting_for_hung_executor(tmp_path, monkeypatch):
+    """慢路径超时后应尽快返回，不能被 ThreadPoolExecutor 上下文继续等待挂起任务。"""
+    _write_stock_csv(tmp_path, "000001", date_text="2026-04-30")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 14, 16, 0, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {"000001": 1000000000}
+    fetcher._market_cap_cache_date = "2026-05-14"
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", lambda target_date_str, stock_codes=None: {})
+
+    def slow_update(*args, **kwargs):
+        time.sleep(0.7)
+        return True, pd.DataFrame([
+            {
+                "date": pd.Timestamp("2026-05-14"),
+                "open": 12.0,
+                "high": 12.5,
+                "low": 11.8,
+                "close": 12.2,
+                "volume": 2200,
+                "amount": 2684000.0,
+                "turnover": 1.8,
+                "market_cap": 1000000000,
+            },
+        ])
+
+    monkeypatch.setattr(fetcher, "_update_single_stock", slow_update)
+
+    def timeout_as_completed(*args, **kwargs):
+        raise TimeoutError()
+        yield
+
+    monkeypatch.setattr(akshare_fetcher, "as_completed", timeout_as_completed)
+
+    started_at = time.perf_counter()
+    summary = fetcher.daily_update(date="2026-05-14", allow_intraday_fast=False)
+    elapsed = time.perf_counter() - started_at
+
+    assert elapsed < 0.4
+    assert summary["status"] == "partial"
+    assert summary["completed"] == 0
+
+
 def test_daily_update_downgrades_same_day_selection_before_close_without_intraday_fast(tmp_path, monkeypatch):
     _write_stock_csv(tmp_path, "000001", date_text="2026-05-06")
 

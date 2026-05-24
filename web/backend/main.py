@@ -97,6 +97,14 @@ async def lifespan(_app: FastAPI):
         raise
 
     try:
+        from web.backend.services.data_service import mark_stale_update_runs_interrupted
+        marked = mark_stale_update_runs_interrupted()
+        if marked:
+            logger.warning("已标记 %d 个旧数据更新任务为中断", marked)
+    except Exception:
+        logger.exception("启动时清理旧数据更新任务失败")
+
+    try:
         stock.trigger_metric_snapshot_prewarm()
     except Exception:
         # 预热失败不阻断启动，但要保留完整 traceback 便于排查

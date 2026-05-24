@@ -48,3 +48,46 @@
 
 - 新浪快通道成交额/换手率字段可能为空；当前 CSV 层会用 `close * volume * 100` 估算成交额，换手率在缺市值时保持 0。
 - 如果未来策略强依赖换手率，建议单独做“市值派生股本 + 换手率估算”任务，而不是阻塞每日 K 线更新。
+
+## 2026-05-25 追加复盘：重复启动导致批量失败
+
+### 现象
+
+- 页面再次显示：慢路径 `4600/4612`，成功 `171`，失败 `4429`。
+- 页面同时显示“市值缓存初始化中，K线更新会继续推进”。
+
+### 新证据
+
+1. 单独调用 `fetch_stock_update('688800', prefer_fast_fallback=True)` 能拿到 `2026-05-22` 的 20 行日 K。
+2. 单独调用 `_update_single_stock('688800', 10, {}, prefer_fast_fallback=True)` 能成功写入 CSV。
+3. SQLite `strategy_runs` 中同时存在多个 `status='running'` 的 `update_and_rebuild` run，例如 `20260525_003931_0e21f156` 与 `20260525_010310_8ed9e85f`。
+4. 启动清理后，旧 running 更新任务被统一标记为 `error`，`running update count = 0`。
+
+### 结论
+
+失败 4429 不是市值更新导致。市值缓存只是后台维护状态，K 线更新会先用缓存继续推进。
+
+更直接的根因是：页面允许重复启动全市场更新，旧 run 和新 run 会同时抓取并写入同一批 CSV。多 run 叠加后会造成：
+
+- 同一个 CSV 文件被多个任务抢写。
+- 新浪/Baostock/EastMoney 请求被并发放大，触发超时或限流。
+- 前端只展示当前 run 的计数，容易误判为单个任务内部失败。
+
+### 补充修复
+
+1. `web/backend/services/data_service.py` 增加 `_UPDATE_JOB_LOCK` 和 `_UPDATE_JOB_STATE`，同一进程只允许一个 `/api/update` 运行。
+2. 重复启动时后端返回 `status='busy'`，并带上 `active_run_id`。
+3. `web/frontend/src/stores/updateJob.ts` 把 `busy` 当作终止态处理，停止本地转圈并显示错误信息。
+4. `web/backend/main.py` 启动时调用 `mark_stale_update_runs_interrupted()`，把旧进程遗留的 running 更新任务标记为中断。
+
+### 补充验证
+
+- 红灯测试：
+  - `tests/test_data_service_update_date.py::test_run_data_update_rejects_overlapping_jobs`
+  - `tests/test_data_service_update_date.py::test_mark_stale_update_runs_interrupted`
+  - `web/frontend/src/stores/__tests__/updateJob.spec.ts`
+- 修复后验证：
+  - `python -m pytest tests/test_csv_manager.py tests/test_daily_update_fast_path.py tests/test_data_service_update_date.py tests/test_strategy_cache_status.py -q`，结果 `20 passed`。
+  - `npm run test -- updateJob --run`，结果 `1 passed`。
+  - `npm run build` 通过。
+  - `start_dev.bat` 启动后，`/api/health` 返回 `ok`；SQLite 中 running 更新任务数量为 `0`。

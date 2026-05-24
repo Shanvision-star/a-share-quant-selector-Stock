@@ -4,6 +4,7 @@ import sys
 import random
 import asyncio
 import concurrent.futures
+import threading
 from pathlib import Path
 from datetime import datetime, time as dt_time, timedelta
 from typing import Any, Dict
@@ -21,6 +22,50 @@ fetcher = AKShareFetcher(str(project_root / "data"))
 
 _INTRADAY_FAST_START = dt_time(9, 0)
 _INTRADAY_FAST_END = dt_time(15, 0)
+_PROCESS_STARTED_AT = datetime.now()
+_UPDATE_JOB_LOCK = threading.Lock()
+_UPDATE_JOB_STATE: Dict[str, Any] = {}
+_UPDATE_RUN_TYPES = {'update_and_rebuild', 'update_only'}
+
+
+def _parse_repo_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def mark_stale_update_runs_interrupted() -> int:
+    """把后端重启前遗留的 running 更新任务标记为中断。
+
+    这些 run 只存在于 SQLite 记录里，真实线程已经随旧进程退出；如果不清理，
+    页面会误以为仍有更新任务运行，并可能诱导用户重复启动全市场更新。
+    """
+    try:
+        running = repo.list_runs(status='running', page=1, per_page=500).get('items', [])
+    except Exception:
+        return 0
+
+    marked = 0
+    message = '后端进程已重启，旧数据更新任务已中断；请重新执行本次更新。'
+    for run in running:
+        if run.get('run_type') not in _UPDATE_RUN_TYPES:
+            continue
+        started_at = _parse_repo_datetime(run.get('started_at'))
+        if not started_at or started_at >= _PROCESS_STARTED_AT:
+            continue
+        run_id = run.get('run_id')
+        if not run_id:
+            continue
+        try:
+            repo.finish_run(run_id, 'error', message)
+            repo.insert_event(run_id, 'error', message=message)
+            marked += 1
+        except Exception:
+            pass
+    return marked
 
 
 def _resolve_update_trade_date(allow_intraday_fast: bool = False) -> str:
@@ -122,6 +167,68 @@ async def run_data_update(
     init_if_empty: bool = True,
     strategies: list = None,
 ):
+    """数据更新统一入口：同一进程内只允许一个全市场更新任务运行。"""
+    effective_date = target_date if target_date else _resolve_update_trade_date(
+        allow_intraday_fast=allow_intraday_fast
+    )
+
+    if not _UPDATE_JOB_LOCK.acquire(blocking=False):
+        active_state = dict(_UPDATE_JOB_STATE)
+        active_run_id = active_state.get('run_id', '')
+        active_date = active_state.get('trade_date', '')
+        yield {
+            "event": "error",
+            "data": {
+                "status": "busy",
+                "progress": 100,
+                "message": (
+                    f"已有数据更新任务正在运行（run_id: {active_run_id or '-'}，"
+                    f"日期: {active_date or '-'}），请等待完成后再启动。"
+                ),
+                "active_run_id": active_run_id,
+                "active_trade_date": active_date,
+                "stage": "update",
+                "trade_date": effective_date,
+            },
+        }
+        return
+
+    run_id = repo.generate_run_id()
+    _UPDATE_JOB_STATE.clear()
+    _UPDATE_JOB_STATE.update({
+        'is_running': True,
+        'run_id': run_id,
+        'trade_date': effective_date,
+        'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    })
+
+    try:
+        async for msg in _run_data_update_unlocked(
+            auto_rebuild=auto_rebuild,
+            target_date=target_date,
+            pipeline=pipeline,
+            allow_intraday_fast=allow_intraday_fast,
+            init_if_empty=init_if_empty,
+            strategies=strategies,
+            _run_id=run_id,
+            _effective_date=effective_date,
+        ):
+            yield msg
+    finally:
+        _UPDATE_JOB_STATE.clear()
+        _UPDATE_JOB_LOCK.release()
+
+
+async def _run_data_update_unlocked(
+    auto_rebuild: bool = True,
+    target_date: str = None,
+    pipeline: bool = False,
+    allow_intraday_fast: bool = False,
+    init_if_empty: bool = True,
+    strategies: list = None,
+    _run_id: str = None,
+    _effective_date: str = None,
+):
     """
     异步执行数据更新，通过 yield 返回进度消息（SSE）
     auto_rebuild=True 时，更新完成后自动执行策略缓存重建
@@ -132,9 +239,11 @@ async def run_data_update(
         build_strategy_result_snapshot,
     )
 
-    run_id = repo.generate_run_id()
+    run_id = _run_id or repo.generate_run_id()
     run_type = 'update_and_rebuild' if auto_rebuild else 'update_only'
-    if target_date:
+    if _effective_date:
+        effective_date = _effective_date
+    elif target_date:
         effective_date = target_date
     else:
         effective_date = _resolve_update_trade_date(allow_intraday_fast=allow_intraday_fast)

@@ -120,3 +120,72 @@ def test_run_data_update_preopen_intraday_fast_uses_latest_completed_trade_date(
         and event["data"]["trade_date"] == "2026-05-13"
         for event in events
     )
+
+
+def test_run_data_update_rejects_overlapping_jobs(monkeypatch):
+    """已有更新任务运行时，后端必须拒绝重复启动，避免多个任务并发写同一批 CSV。"""
+    acquired = data_service._UPDATE_JOB_LOCK.acquire(blocking=False)
+    assert acquired
+    data_service._UPDATE_JOB_STATE.update({
+        "is_running": True,
+        "run_id": "run-active",
+        "trade_date": "2026-05-22",
+    })
+
+    async def collect_events():
+        return [
+            event
+            async for event in data_service.run_data_update(
+                auto_rebuild=True,
+                target_date="2026-05-22",
+                pipeline=False,
+                init_if_empty=True,
+            )
+        ]
+
+    try:
+        events = asyncio.run(collect_events())
+    finally:
+        data_service._UPDATE_JOB_STATE.clear()
+        data_service._UPDATE_JOB_LOCK.release()
+
+    assert len(events) == 1
+    assert events[0]["event"] == "error"
+    assert events[0]["data"]["status"] == "busy"
+    assert events[0]["data"]["active_run_id"] == "run-active"
+    assert "已有数据更新任务正在运行" in events[0]["data"]["message"]
+
+
+def test_mark_stale_update_runs_interrupted(monkeypatch):
+    """后端重启后遗留的 running 更新任务应标记中断，避免页面误判仍在运行。"""
+    monkeypatch.setattr(
+        data_service.repo,
+        "list_runs",
+        lambda **kwargs: {
+            "items": [
+                {
+                    "run_id": "old-update",
+                    "run_type": "update_and_rebuild",
+                    "started_at": "2000-01-01 00:00:00",
+                    "status": "running",
+                },
+                {
+                    "run_id": "old-rebuild",
+                    "run_type": "rebuild_only",
+                    "started_at": "2000-01-01 00:00:00",
+                    "status": "running",
+                },
+            ]
+        },
+    )
+    finished = []
+    events = []
+    monkeypatch.setattr(data_service.repo, "finish_run", lambda *args, **kwargs: finished.append(args))
+    monkeypatch.setattr(data_service.repo, "insert_event", lambda *args, **kwargs: events.append(args))
+
+    marked = data_service.mark_stale_update_runs_interrupted()
+
+    assert marked == 1
+    assert finished[0][0] == "old-update"
+    assert finished[0][1] == "error"
+    assert events[0][0] == "old-update"

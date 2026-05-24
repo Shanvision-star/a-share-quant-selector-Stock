@@ -292,7 +292,7 @@ export const useUpdateJobStore = defineStore('updateJob', () => {
       isRunning.value = false
       jobCompleted.value = true
     }
-    if (data.status === 'error') {
+    if (data.status === 'error' || data.status === 'busy') {
       jobError.value = data.message || '作业失败'
       isRunning.value = false
     }

@@ -292,9 +292,19 @@ export const useUpdateJobStore = defineStore('updateJob', () => {
       isRunning.value = false
       jobCompleted.value = true
     }
-    if (data.status === 'error' || data.status === 'busy') {
+    const isTerminalError = eventName === 'error' || data.status === 'error' || data.status === 'busy' || data.status === 'partial'
+    if (isTerminalError) {
       jobError.value = data.message || '作业失败'
       isRunning.value = false
+      if (currentStage.value === 'rebuild' || rebuildStage.value.status === 'running') {
+        rebuildStage.value.status = 'error'
+        rebuildStage.value.progress = Math.max(rebuildStage.value.progress, 100)
+        rebuildStage.value.message = data.message || rebuildStage.value.message
+      } else if (currentStage.value === 'update' || updateStage.value.status === 'running') {
+        updateStage.value.status = 'error'
+        updateStage.value.progress = Math.max(updateStage.value.progress, 100)
+        updateStage.value.message = data.message || updateStage.value.message
+      }
     }
   }
 

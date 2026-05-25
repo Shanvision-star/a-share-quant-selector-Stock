@@ -98,3 +98,47 @@ def test_update_stock_drops_malformed_existing_date_rows(tmp_path):
     assert refreshed.iloc[0]["date"] == "2026-05-22"
     assert "001" not in refreshed["date"].astype(str).tolist()
     assert pd.to_datetime(refreshed["date"], errors="coerce").notna().all()
+
+
+def test_update_stock_accepts_mixed_existing_datetime_formats(tmp_path):
+    """旧数据里同时存在纯日期和带微秒时间戳时，应全部按合法日期处理。"""
+    csv_manager = CSVManager(tmp_path)
+    stock_code = "600106"
+    path = csv_manager.get_stock_path(stock_code)
+    path.write_text(
+        "\n".join(
+            [
+                "date,open,high,low,close,volume,amount,turnover,market_cap",
+                "2026-04-23,6.17,6.24,6.04,6.11,218151,133204442.0,1.64,8120343129",
+                "2026-04-22 00:00:00.000000,6.09,6.35,6.09,6.25,22897505,14310940625.0,177.68,8053891875",
+                "2026-04-20 09:01:53.578508,11.96,12.09,11.8,11.9,2886702,72114597.0,8.48,8280000000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    csv_manager.update_stock(
+        stock_code,
+        pd.DataFrame(
+            [
+                {
+                    "date": "2026-05-22",
+                    "open": 6.2,
+                    "high": 6.3,
+                    "low": 6.1,
+                    "close": 6.25,
+                    "volume": 1000,
+                    "amount": 625000.0,
+                    "turnover": 0.1,
+                    "market_cap": 8120343129,
+                }
+            ]
+        ),
+    )
+
+    refreshed = pd.read_csv(path)
+    assert refreshed.iloc[0]["date"] == "2026-05-22"
+    parsed = pd.to_datetime(refreshed["date"], errors="coerce", format="mixed")
+    assert parsed.notna().all()
+    assert len(refreshed) == 4

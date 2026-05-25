@@ -8,6 +8,20 @@ import pandas as pd
 from pathlib import Path
 
 
+def _parse_mixed_dates(values):
+    """兼容历史 CSV 中混合存在纯日期和时间戳的 date 列。"""
+    value_text = values.astype(str).str.strip()
+    try:
+        parsed = pd.to_datetime(value_text, errors='coerce', format='mixed')
+    except TypeError:
+        # pandas 1.x 没有 format='mixed'，保留旧解析能力，避免低版本环境启动失败。
+        parsed = pd.to_datetime(value_text, errors='coerce')
+
+    # 日线 CSV 只接受 YYYY-MM-DD 开头的日期；像 "001" 这类错列值不能被 mixed 误判成年份。
+    date_like = value_text.str.match(r'^\d{4}-\d{2}-\d{2}', na=False)
+    return parsed.where(date_like, pd.NaT)
+
+
 class CSVManager:
     """CSV文件管理器"""
     
@@ -168,20 +182,20 @@ class CSVManager:
         existing_df = existing_df.copy()
         new_df = new_df.copy()
 
-        existing_dates = pd.to_datetime(existing_df['date'], errors='coerce')
+        existing_dates = _parse_mixed_dates(existing_df['date'])
         if existing_dates.isna().any():
             # 历史 CSV 可能混入半行/错列数据；更新时丢弃坏日期行，避免整只股票被记为失败。
             existing_df = existing_df.loc[existing_dates.notna()].copy()
             existing_dates = existing_dates.loc[existing_dates.notna()]
 
-        new_dates = pd.to_datetime(new_df['date'], errors='coerce')
+        new_dates = _parse_mixed_dates(new_df['date'])
         new_df = new_df.loc[new_dates.notna()].copy()
         new_dates = new_dates.loc[new_dates.notna()]
         if new_df.empty:
             return self.write_stock(stock_code, existing_df)
 
-        existing_df['date'] = existing_dates.to_numpy()
-        new_df['date'] = new_dates.to_numpy()
+        existing_df['date'] = existing_dates.dt.normalize().dt.strftime('%Y-%m-%d').to_numpy()
+        new_df['date'] = new_dates.dt.normalize().dt.strftime('%Y-%m-%d').to_numpy()
 
         existing_by_date = existing_df.set_index('date')
         incoming_by_date = new_df.set_index('date')

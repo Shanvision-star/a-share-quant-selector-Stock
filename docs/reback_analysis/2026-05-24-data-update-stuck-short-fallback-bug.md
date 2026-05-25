@@ -161,3 +161,51 @@
   - 上述 2 个测试通过。
   - 更新链路回归：`python -m pytest tests/test_csv_manager.py tests/test_daily_update_fast_path.py tests/test_data_service_update_date.py tests/test_strategy_cache_status.py -q`，结果 `25 passed`。
   - 临时复制 80 只 `2026-05-19` stale CSV 完整跑 `daily_update(date='2026-05-22')`：`80/80` 成功，耗时约 `11.8s`，并写入 `2026-05-22`。
+
+## 2026-05-25 追加复盘：混合日期格式导致合法历史行被误删
+
+### 现象
+
+- 页面仍显示：`检查 5157/5157`、`执行 4168/4168`、`成功 93`、`失败 4075`。
+- 本地真实文件 `data/60/600106.csv` 同时存在：
+  - `2026-04-23`
+  - `2026-04-22 00:00:00.000000`
+  - `2026-04-20 09:01:53.578508`
+- 用 pandas 默认 `pd.to_datetime(..., errors='coerce')` 解析该文件时，`2212` 行里有 `2211` 行被误判为坏日期；使用 `format='mixed'` 后坏日期为 `0`。
+
+### 根因
+
+上一轮只处理了 `001` 这类明显坏日期，但没有处理“同一列混合纯日期和时间戳”的历史 CSV。pandas 会根据首行推断日期格式，如果首行是 `YYYY-MM-DD`，后面带微秒的合法时间戳可能被当成 `NaT`。
+
+这会在批量更新时产生两个连锁问题：
+
+1. 合法历史行被当成坏行清掉，导致 CSV 合并结果异常。
+2. 单股数据源即使已经返回可用 K 线，写入层仍可能失败或变慢，前端就会看到几千只失败。
+
+### 修复
+
+1. `CSVManager` 新增混合日期解析逻辑：先把 date 转成字符串并要求以 `YYYY-MM-DD` 开头，再调用 `pd.to_datetime(..., format='mixed', errors='coerce')`。
+2. pandas 低版本不支持 `format='mixed'` 时回退到旧解析，避免环境启动失败。
+3. 写回 CSV 前统一归一化为 `YYYY-MM-DD`，避免日线文件继续混入 `00:00:00.000000`。
+4. 保留 `001`、空值、错列数字的清洗规则，避免 mixed 解析把 `001` 误判成公元 1 年。
+
+### 验证
+
+- 红灯测试：
+  - `tests/test_csv_manager.py::test_update_stock_accepts_mixed_existing_datetime_formats` 先失败，原因是旧逻辑只保留 2 行，丢掉合法时间戳行。
+- 修复后验证：
+  - `python -m pytest tests/test_csv_manager.py -q`，结果 `3 passed`。
+  - `python -m pytest tests/test_csv_manager.py tests/test_daily_update_fast_path.py tests/test_data_service_update_date.py tests/test_strategy_cache_status.py -q`，结果 `26 passed`。
+  - import smoke：`utils.csv_manager`、`utils.akshare_fetcher`、`web.backend.main` 均导入成功。
+  - 真实数据样本：`600106` 默认解析坏行 `2211`，mixed 解析坏行 `0`；`000838` 的 `001` 仍被识别为坏行。
+  - 临时复制 20 只真实 mixed/stale CSV 跑 `daily_update(date='2026-05-22')`：`20/20` 成功，抽样验证 `9/9`，耗时约 `39.7s`。
+
+### 结论
+
+这轮失败不是市值缓存导致。市值接口在当前网络下仍可能失败，但 K 线更新可以继续使用缓存或缺省市值推进。真正会把批量更新放大成几千只失败的是：
+
+1. 短窗批量逐股打 EastMoney。
+2. 历史 CSV 中明显坏日期行未清洗。
+3. 历史 CSV 中混合日期格式未按 mixed 解析。
+
+后续如果还要继续提速，应单独做“短窗 1-5 天批量快补直接走新浪/Baostock 并头插缺失行”，减少全量 `update_stock` 合并成本。

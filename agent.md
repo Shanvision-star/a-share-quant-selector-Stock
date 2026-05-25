@@ -192,7 +192,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 当短窗快补股票数量达到全市场批量级别时，不能逐股调用 EastMoney 精确短窗；该接口一旦网络不稳定会让 4000+ 股票排队超时。大批量短窗应直接整批转入新浪/Baostock 快兜底慢路径，小批量才尝试 EastMoney 精确窗口。
 - 短窗失败转慢路径时，后续单股更新必须跳过已失败的 EastMoney 重试，优先使用新浪快通道，再用 Baostock 兜底；否则 5000 只股票会重复等待同一个失败源，页面表现为长时间更新。
 - CSV 合并补字段时必须 guard 空布尔 mask，例如没有任何可估算换手率时不能执行 `combined.loc[empty_mask, 'turnover'] = empty_series`；pandas 新版本会抛 `Invalid value '[]' for dtype 'float64'`，导致单股更新被记失败。
-- CSV 历史文件可能因旧脚本或中断写入混入坏日期行，例如 `001`、空值或错列数字。`CSVManager.update_stock` 合并前必须用 `errors='coerce'` 清洗坏日期行，不能让单个坏行阻断整只股票更新。
+- CSV 历史文件可能因旧脚本或中断写入混入坏日期行，例如 `001`、空值或错列数字。`CSVManager.update_stock` 合并前必须先要求日线日期以 `YYYY-MM-DD` 开头，再用 `errors='coerce'` 清洗坏日期行，不能让单个坏行阻断整只股票更新。
+- CSV 历史文件还可能混合 `YYYY-MM-DD` 与 `YYYY-MM-DD HH:mm:ss.ffffff`。解析日线日期必须优先使用 `format='mixed'`，再统一写回 `YYYY-MM-DD`，否则 pandas 会按第一行格式误判后续合法时间戳，导致几千只股票在批量更新中被放大成失败或慢路径。
 - 慢路径批量更新出现 `TimeoutError` 后，不能继续使用 `with ThreadPoolExecutor(...)` 的默认退出语义；必须取消未完成 future 并 `shutdown(wait=False, cancel_futures=True)`，否则后端 SSE 会继续等待少数挂起任务，前端表现为“一直在更新”。
 - `/api/update` 必须保持单飞：同一进程内只允许一个全市场数据更新任务运行。重复启动会让多个 run 同时抓取和写入同一批 CSV，造成网络限流、文件写入竞争和前端失败数暴涨；后端应返回 `busy`，前端必须停止本地运行态。
 - 后端启动时必须把进程启动前遗留的 `running` 数据更新 run 标记为中断；旧 SQLite 状态不是活任务，不能让页面误判还在运行。

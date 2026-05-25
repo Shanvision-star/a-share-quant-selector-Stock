@@ -834,7 +834,7 @@ class AKShareFetcher:
         print(f"[OK] 加载默认列表: {len(DEFAULT_STOCK_LIST)} 只股票")
         return DEFAULT_STOCK_LIST.copy()
     
-    def _fetch_stock_history_http(self, stock_code, years=6):
+    def _fetch_stock_history_http(self, stock_code, years=6, max_days=None):
         """使用腾讯接口获取股票历史数据"""
         try:
             import requests
@@ -845,9 +845,10 @@ class AKShareFetcher:
             else:
                 market_code = 'sz' + stock_code
             
-            # 腾讯财经接口 - 获取日K线数据
-            # 腾讯接口最多返回约1000条数据，所以分批获取或限制年限
-            max_days = min(years * 365, 1000)  # 最多1000天
+            # 腾讯财经接口 - 获取日K线数据。
+            # 短窗补数只需要最近几十根，避免为 1-5 天缺口拉取近千根历史 K 线。
+            max_days = int(max_days) if max_days is not None else min(years * 365, 1000)
+            max_days = max(1, min(max_days, 1000))
             url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={market_code},day,,,{max_days},qfq"
             
             resp = requests.get(url, timeout=15, headers={
@@ -1341,7 +1342,17 @@ class AKShareFetcher:
         if df is not None and not df.empty:
             return df
 
-        # ── 备选2: Baostock（TCP协议，网络异常时兜底）──────────────────
+        # ── 备选2: 腾讯 HTTP 历史日 K（无登录开销，适合批量兜底）──────
+        df = self._fetch_update_http(stock_code, days, prefetched_market_cap)
+        if df is not None and not df.empty:
+            return df
+
+        if prefer_fast_fallback:
+            # 短窗快兜底用于大批量补最近几天数据；如果快源都失败，直接返回失败，
+            # 不再进入 Baostock 登录式慢兜底，避免几千只股票把后端拖到超时。
+            return None
+
+        # ── 备选3: Baostock（TCP协议，网络异常时兜底）──────────────────
         df = self._fetch_update_baostock(stock_code, days, prefetched_market_cap)
         if df is not None and not df.empty:
             return df
@@ -1464,6 +1475,21 @@ class AKShareFetcher:
             return df.head(max(days + 5, 20)).copy()
         except Exception as e:
             logger.warning("新浪备选失败(%s): %s", stock_code, e)
+            return None
+
+    def _fetch_update_http(self, stock_code, days=10, prefetched_market_cap=None):
+        """备选2: 腾讯 HTTP 历史日 K，无登录开销，适合批量短窗兜底。"""
+        try:
+            fetch_days = max(days + 5, 20)
+            df = self._fetch_stock_history_http(stock_code, years=3, max_days=fetch_days)
+            if df is None or df.empty:
+                return None
+            if prefetched_market_cap is not None:
+                df = df.copy()
+                df['market_cap'] = prefetched_market_cap
+            return df.head(fetch_days).copy()
+        except Exception as e:
+            logger.warning("HTTP 备选失败(%s): %s", stock_code, e)
             return None
     
     def init_full_data(self, max_stocks=None, skip_failed=True, progress_callback=None):
@@ -1746,6 +1772,8 @@ class AKShareFetcher:
         stocks_to_update = []
         updated = 0
         failed = 0
+        no_target_bar = 0
+        no_target_bar_codes: set = set()
         completed = 0
         verify_total = 0
         verify_reached = 0
@@ -1788,6 +1816,7 @@ class AKShareFetcher:
                 'completed': completed,
                 'updated': updated,
                 'failed': failed,
+                'no_target_bar': no_target_bar,
                 'remaining': max(total_to_update - completed, 0),
                 'verify_total': verify_total,
                 'verify_reached': verify_reached,
@@ -1828,6 +1857,7 @@ class AKShareFetcher:
                 'completed': completed,
                 'updated': updated,
                 'failed': failed,
+                'no_target_bar': no_target_bar,
                 'remaining': max(total_to_update - completed, 0),
                 'verify_total': verify_total,
                 'verify_reached': verify_reached,
@@ -1859,11 +1889,12 @@ class AKShareFetcher:
                     stocks_to_update.append(code)
 
         def finalize_no_update(message):
-            update_cache['last_update_date'] = target_date_str
-            with open(update_cache_file, 'w') as f:
-                json.dump(update_cache, f)
             nonlocal cache_written
-            cache_written = True
+            if not max_stocks:
+                update_cache['last_update_date'] = target_date_str
+                with open(update_cache_file, 'w') as f:
+                    json.dump(update_cache, f)
+                cache_written = True
             emit_progress(100, message, phase='complete')
             return build_summary('done', message)
 
@@ -1914,6 +1945,18 @@ class AKShareFetcher:
                 f"已自动回退到最近已完成交易日 {target_date_str}（{detail}）"
             )
             return True
+
+        def stock_df_reaches_target(stock_df) -> bool:
+            """判断返回数据是否真的包含目标交易日；停牌股可能只有更早的最后一根 K 线。"""
+            try:
+                if stock_df is None or stock_df.empty or 'date' not in stock_df.columns:
+                    return False
+                _dates = pd.to_datetime(stock_df['date'], errors='coerce')
+                if _dates.empty or _dates.isna().all():
+                    return False
+                return _dates.max().date() >= target_date
+            except Exception:
+                return False
 
         if not existing_stocks:
             print("没有找到已有数据，请先执行 init")
@@ -2399,8 +2442,8 @@ class AKShareFetcher:
                             except Exception:
                                 pass
             if short_requeue_stocks:
-                # 短窗快补只依赖 EastMoney；网络或接口短暂失败时回到旧增量链路，
-                # 且后续慢路径跳过已失败的 EastMoney，优先用新浪/Baostock 快速兜底。
+                # 短窗快补只依赖 EastMoney；网络或接口短暂失败时回到增量链路，
+                # 且后续慢路径跳过已失败的 EastMoney，优先用新浪/Tencent HTTP 快速兜底。
                 slow_path_stocks.extend(short_requeue_stocks)
                 short_requeue_code_set = set(short_requeue_stocks)
                 slow_path_total = len(slow_path_stocks)
@@ -2434,9 +2477,9 @@ class AKShareFetcher:
 
         slow_path_workers = 16
         if short_requeue_code_set and len(short_requeue_code_set) >= _SHORT_GAP_HEALTH_PROBE_MIN_TOTAL:
-            # 短窗整批转慢路径时，新浪不可用后通常会落到 Baostock。
-            # Baostock login/query 不适合高并发；限流能避免把兜底源打入熔断。
-            slow_path_workers = min(_SHORT_GAP_FALLBACK_SLOW_WORKERS, max(1, total))
+            # 短窗批量兜底现在只走新浪/Tencent HTTP 快源；失败即终止，不再落到 Baostock。
+            # 因此这里使用快路径并发，避免几千只股票 4 路慢跑拖到超时。
+            slow_path_workers = min(self._fast_path_workers, max(1, total))
 
         if total > 0:
             print(f"\n开始并发更新 {total} 只股票（慢路径）...")
@@ -2483,7 +2526,11 @@ class AKShareFetcher:
                         completed += 1
                         slow_completed += 1
                         if success:
-                            updated += 1
+                            if stock_df_reaches_target(stock_df):
+                                updated += 1
+                            else:
+                                no_target_bar += 1
+                                no_target_bar_codes.add(code)
                         else:
                             failed += 1
                             failed_slow_codes.append(code)
@@ -2497,7 +2544,8 @@ class AKShareFetcher:
                                 44 + int(slow_completed / total * 48),
                                 (
                                     f"并发更新中：慢路径 {slow_completed}/{total}，"
-                                    f"累计完成 {completed}/{total_to_update_all}，成功 {updated}，失败 {failed}"
+                                    f"累计完成 {completed}/{total_to_update_all}，成功 {updated}，"
+                                    f"无目标日K线 {no_target_bar}，失败 {failed}"
                                 ),
                                 phase='update',
                                 current_code=code,
@@ -2587,7 +2635,11 @@ class AKShareFetcher:
 
                     if success:
                         retry_success += 1
-                        updated += 1
+                        if stock_df_reaches_target(stock_df):
+                            updated += 1
+                        else:
+                            no_target_bar += 1
+                            no_target_bar_codes.add(code)
                         failed = max(0, failed - 1)
                     else:
                         retry_failed += 1
@@ -2639,6 +2691,8 @@ class AKShareFetcher:
         if all_done and failed == 0:
             _prefix_buckets: dict = {}
             for _sc in stocks_to_update:
+                if _sc in no_target_bar_codes:
+                    continue
                 _pfx = _sc[:2]
                 _prefix_buckets.setdefault(_pfx, []).append(_sc)
             _verify_codes = []
@@ -2671,12 +2725,14 @@ class AKShareFetcher:
 
             _threshold = max(1, int(len(_verify_codes) * 0.5))
             if _reached >= _threshold:
-                update_cache['last_update_date'] = target_date_str
-                with open(update_cache_file, 'w') as f:
-                    json.dump(update_cache, f)
-                cache_written = True
+                if not max_stocks:
+                    update_cache['last_update_date'] = target_date_str
+                    with open(update_cache_file, 'w') as f:
+                        json.dump(update_cache, f)
+                    cache_written = True
                 verification_passed = True
-                print(f"[更新] 抽样验证通过 ({_reached}/{len(_verify_codes)})，缓存已写入")
+                _cache_note = "缓存已写入" if cache_written else "抽样运行不写全局缓存"
+                print(f"[更新] 抽样验证通过 ({_reached}/{len(_verify_codes)})，{_cache_note}")
             else:
                 print(
                     f"[更新] 抽样验证：{_reached}/{len(_verify_codes)} 只到达 {target_date_str}，"
@@ -2721,14 +2777,16 @@ class AKShareFetcher:
         if update_complete:
             final_message = (
                 f"{target_date_str} 数据更新完成：扫描 {scan_total} 只，"
-                f"需更新 {total_to_update_all} 只，成功 {updated} 只，失败 {failed} 只"
+                f"需更新 {total_to_update_all} 只，成功 {updated} 只，"
+                f"无目标日K线 {no_target_bar} 只，失败 {failed} 只"
             )
             emit_progress(100, final_message, phase='complete')
             return build_summary('done', final_message)
 
         final_message = (
             f"{target_date_str} 数据更新未全量完成：已执行 {completed}/{total_to_update_all}，"
-            f"成功 {updated} 只，失败 {failed} 只，验证 {verify_reached}/{verify_total}"
+            f"成功 {updated} 只，无目标日K线 {no_target_bar} 只，"
+            f"失败 {failed} 只，验证 {verify_reached}/{verify_total}"
         )
         emit_progress(100, final_message, phase='complete')
         return build_summary('partial', final_message)

@@ -534,8 +534,8 @@ def test_daily_update_short_gap_health_gate_skips_bulk_eastmoney_failures(tmp_pa
     assert all(prefer_fast_fallback for _, prefer_fast_fallback in slow_calls)
 
 
-def test_daily_update_throttles_bulk_short_gap_fallback_concurrency(tmp_path, monkeypatch):
-    """短窗整批转慢路径后要降低并发，避免把 Baostock 兜底登录打入熔断。"""
+def test_daily_update_bulk_short_gap_fast_fallback_uses_fast_workers(tmp_path, monkeypatch):
+    """短窗整批转快兜底后应使用快路径并发，避免 4 路慢跑拖到超时。"""
     codes = [f"002{idx:03d}" for idx in range(60)]
     for code in codes:
         _write_stock_csv(tmp_path, code, date_text="2026-05-19")
@@ -592,7 +592,62 @@ def test_daily_update_throttles_bulk_short_gap_fallback_concurrency(tmp_path, mo
     assert summary["status"] == "done"
     assert summary["short_path_failed"] == 60
     assert summary["slow_path_total"] == 60
-    assert max_active <= 4
+    assert 4 < max_active <= fetcher._fast_path_workers
+
+
+def test_daily_update_bulk_short_gap_uses_http_before_baostock(tmp_path, monkeypatch):
+    """短窗整批转慢路径时，应先用无登录 HTTP 兜底，不能直接把全市场压到 Baostock。"""
+    codes = [f"002{idx:03d}" for idx in range(60)]
+    for code in codes:
+        _write_stock_csv(tmp_path, code, date_text="2026-05-19")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 25, 8, 30, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {code: 1000000000 for code in codes}
+    fetcher._market_cap_cache_date = "2026-05-25"
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", lambda *args, **kwargs: {})
+    monkeypatch.setattr(fetcher, "_fetch_update_sina", lambda *args, **kwargs: None)
+
+    http_calls = []
+
+    def fake_http(stock_code, years=3, max_days=None):
+        http_calls.append((stock_code, max_days))
+        return pd.DataFrame(
+            [
+                {
+                    "date": pd.Timestamp("2026-05-22"),
+                    "open": 12.0,
+                    "high": 12.5,
+                    "low": 11.8,
+                    "close": 12.2,
+                    "volume": 2200,
+                    "amount": 0.0,
+                    "turnover": 0.0,
+                    "market_cap": 1000000000,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(fetcher, "_fetch_stock_history_http", fake_http)
+
+    def fail_baostock(*args, **kwargs):
+        raise AssertionError("HTTP 兜底成功时不应进入 Baostock")
+
+    monkeypatch.setattr(fetcher, "_fetch_update_baostock", fail_baostock)
+
+    summary = fetcher.daily_update(date="2026-05-22", allow_intraday_fast=False)
+
+    assert summary["status"] == "done"
+    assert summary["updated"] == 60
+    assert summary["failed"] == 0
+    assert len(http_calls) == 60
+    assert all(max_days == 20 for _, max_days in http_calls)
 
 
 def test_fetch_stock_update_prefer_fast_fallback_skips_eastmoney(tmp_path, monkeypatch):
@@ -639,6 +694,58 @@ def test_fetch_stock_update_prefer_fast_fallback_skips_eastmoney(tmp_path, monke
 
     assert len(df) == 1
     assert sina_calls == [("000001", 10, 1230000000)]
+
+
+def test_fetch_stock_update_uses_http_before_baostock_when_sina_fails(tmp_path, monkeypatch):
+    """新浪失败时应先用 Tencent/HTTP 历史接口，减少 Baostock 登录压力。"""
+    fetcher = AKShareFetcher(str(tmp_path))
+    monkeypatch.setattr(fetcher, "_fetch_update_sina", lambda *args, **kwargs: None)
+
+    http_calls = []
+
+    def fake_http(stock_code, years=3, max_days=None):
+        http_calls.append((stock_code, years, max_days))
+        return pd.DataFrame(
+            [
+                {
+                    "date": pd.Timestamp("2026-05-25"),
+                    "open": 12.0,
+                    "high": 12.5,
+                    "low": 11.8,
+                    "close": 12.2,
+                    "volume": 2200,
+                    "amount": 0.0,
+                    "turnover": 0.0,
+                    "market_cap": 1000000000,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(fetcher, "_fetch_stock_history_http", fake_http)
+
+    def fail_baostock(*args, **kwargs):
+        raise AssertionError("HTTP 兜底成功时不应进入 Baostock")
+
+    monkeypatch.setattr(fetcher, "_fetch_update_baostock", fail_baostock)
+
+    df = fetcher.fetch_stock_update("000001", days=10, prefer_fast_fallback=True)
+
+    assert len(df) == 1
+    assert http_calls == [("000001", 3, 20)]
+
+
+def test_fetch_stock_update_prefer_fast_fallback_does_not_enter_baostock(tmp_path, monkeypatch):
+    """短窗快兜底必须保持快路径语义，新浪/HTTP 都失败时不能继续进入 Baostock。"""
+    fetcher = AKShareFetcher(str(tmp_path))
+    monkeypatch.setattr(fetcher, "_fetch_update_sina", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fetcher, "_fetch_update_http", lambda *args, **kwargs: None)
+
+    def fail_baostock(*args, **kwargs):
+        raise AssertionError("短窗快兜底失败后不应继续进入 Baostock")
+
+    monkeypatch.setattr(fetcher, "_fetch_update_baostock", fail_baostock)
+
+    assert fetcher.fetch_stock_update("000001", days=10, prefer_fast_fallback=True) is None
 
 
 def test_daily_update_keeps_large_gap_on_slow_path(tmp_path, monkeypatch):
@@ -802,6 +909,76 @@ def test_daily_update_retries_transient_slow_path_failures_before_partial(tmp_pa
     assert summary["failed"] == 0
     assert summary["retry_total"] == 1
     assert summary["retry_success"] == 1
+
+
+def test_daily_update_tracks_no_target_bar_without_marking_failure(tmp_path, monkeypatch):
+    """数据源确认没有目标日 K 线时，应单独计数，不应误报失败或冒充已更新。"""
+    _write_stock_csv(tmp_path, "000001", date_text="2026-05-12")
+    _write_stock_csv(tmp_path, "000002", date_text="2026-05-12")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 15, 8, 30, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {"000001": 1000000000, "000002": 1000000000}
+    fetcher._market_cap_cache_date = "2026-05-14"
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", lambda *args, **kwargs: {})
+
+    def fake_slow_path(code, days_to_fetch, market_cap_map, prefer_fast_fallback=False):
+        target_date = "2026-05-14" if code == "000001" else "2026-05-13"
+        df = pd.DataFrame([
+            {
+                "date": pd.Timestamp(target_date),
+                "open": 12.0,
+                "high": 12.5,
+                "low": 11.8,
+                "close": 12.2,
+                "volume": 2200,
+                "amount": 2684000.0,
+                "turnover": 1.8,
+                "market_cap": market_cap_map.get(code, 0),
+            },
+        ])
+        fetcher.csv_manager.update_stock(code, df)
+        return True, df
+
+    monkeypatch.setattr(fetcher, "_update_single_stock", fake_slow_path)
+
+    summary = fetcher.daily_update(date="2026-05-14", allow_intraday_fast=False)
+
+    assert summary["status"] == "done"
+    assert summary["updated"] == 1
+    assert summary["no_target_bar"] == 1
+    assert summary["failed"] == 0
+    assert summary["verification_passed"] is True
+
+
+def test_daily_update_max_stocks_does_not_overwrite_global_update_cache(tmp_path, monkeypatch):
+    """max_stocks 是调试/抽样运行，不能覆盖全市场更新缓存日期。"""
+    _write_stock_csv(tmp_path, "000001", date_text="2026-05-22")
+    (tmp_path / ".update_cache.json").write_text(
+        json.dumps({"last_update_date": "2026-05-25"}),
+        encoding="utf-8",
+    )
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 25, 16, 0, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    summary = fetcher.daily_update(max_stocks=1, date="2026-05-22", allow_intraday_fast=False)
+
+    assert summary["status"] == "done"
+    assert summary["cache_written"] is False
+    cache = json.loads((tmp_path / ".update_cache.json").read_text(encoding="utf-8"))
+    assert cache["last_update_date"] == "2026-05-25"
 
 
 def test_daily_update_timeout_returns_without_waiting_for_hung_executor(tmp_path, monkeypatch):

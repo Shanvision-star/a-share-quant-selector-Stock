@@ -188,17 +188,18 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 9:00-15:00 只有用户手动勾选“盘中也允许极速快路径”才尝试写当天快照，避免未收盘数据污染日线。
 - 15:00 后自动快路径，因为日线已基本完整。
 - 如果缺口为 2-5 个真实交易日，优先走“短窗快补”：按 `last_date + 1` 到 `target_date` 的精确日期窗口拉取日 K，写入缺失区间，避免直接进入长慢路径。
-- 短窗快补只依赖 EastMoney 精确窗口，属于快通道而不是最终真值通道；如果短窗返回空、连接失败或接口抖动，必须转入旧增量慢路径继续用新浪/Baostock 兜底，不能在短窗阶段直接记为最终失败。
-- 当短窗快补股票数量达到全市场批量级别时，不能逐股调用 EastMoney 精确短窗；该接口一旦网络不稳定会让 4000+ 股票排队超时。大批量短窗应直接整批转入新浪/Baostock 快兜底慢路径，小批量才尝试 EastMoney 精确窗口。
-- 短窗失败转慢路径时，后续单股更新必须跳过已失败的 EastMoney 重试，优先使用新浪快通道，再用 Baostock 兜底；否则 5000 只股票会重复等待同一个失败源，页面表现为长时间更新。
-- 短窗整批转慢路径后，如果新浪接口返回非 JSON 或空数据，最终会落到 Baostock。Baostock 登录/查询不适合 16 路高并发，必须降到低并发兜底，避免单股能成功、批量却被登录熔断打成几千只失败。
+- 短窗快补只依赖 EastMoney 精确窗口，属于快通道而不是最终真值通道；如果短窗返回空、连接失败或接口抖动，必须转入增量链路继续用新浪/Tencent HTTP 兜底，不能在短窗阶段直接记为最终失败。
+- 当短窗快补股票数量达到全市场批量级别时，不能逐股调用 EastMoney 精确短窗；该接口一旦网络不稳定会让 4000+ 股票排队超时。大批量短窗应直接整批转入新浪/Tencent HTTP 快兜底，小批量才尝试 EastMoney 精确窗口。
+- 短窗失败转增量链路时，后续单股更新必须跳过已失败的 EastMoney 重试，优先使用新浪快通道，再使用 Tencent HTTP 历史日 K；Tencent HTTP 只拉最近短窗所需 K 线，避免为 1-5 天缺口拉近千根历史。
+- 短窗快兜底必须保持“快”语义：新浪和 Tencent HTTP 都失败时直接计入失败集合并走低成本重试，不再落到 Baostock。Baostock 登录/查询只保留给真实大缺口慢路径，不能被几千只短窗股票批量触发。
 - CSV 合并补字段时必须 guard 空布尔 mask，例如没有任何可估算换手率时不能执行 `combined.loc[empty_mask, 'turnover'] = empty_series`；pandas 新版本会抛 `Invalid value '[]' for dtype 'float64'`，导致单股更新被记失败。
 - CSV 历史文件可能因旧脚本或中断写入混入坏日期行，例如 `001`、空值或错列数字。`CSVManager.update_stock` 合并前必须先要求日线日期以 `YYYY-MM-DD` 开头，再用 `errors='coerce'` 清洗坏日期行，不能让单个坏行阻断整只股票更新。
 - CSV 历史文件还可能混合 `YYYY-MM-DD` 与 `YYYY-MM-DD HH:mm:ss.ffffff`。解析日线日期必须优先使用 `format='mixed'`，再统一写回 `YYYY-MM-DD`，否则 pandas 会按第一行格式误判后续合法时间戳，导致几千只股票在批量更新中被放大成失败或慢路径。
 - 慢路径批量更新出现 `TimeoutError` 后，不能继续使用 `with ThreadPoolExecutor(...)` 的默认退出语义；必须取消未完成 future 并 `shutdown(wait=False, cancel_futures=True)`，否则后端 SSE 会继续等待少数挂起任务，前端表现为“一直在更新”。
 - `/api/update` 必须保持单飞：同一进程内只允许一个全市场数据更新任务运行。重复启动会让多个 run 同时抓取和写入同一批 CSV，造成网络限流、文件写入竞争和前端失败数暴涨；后端应返回 `busy`，前端必须停止本地运行态。
 - 后端启动时必须把进程启动前遗留的 `running` 数据更新 run 标记为中断；旧 SQLite 状态不是活任务，不能让页面误判还在运行。
-- 数据更新的 `done` 只能表示“最终失败数为 0 且抽样验证通过”。所有 future 都返回只代表线程池执行完，不代表 CSV 已完整补齐；若仍有失败或抽样验证不达标，必须返回 `partial`，不写 `.update_cache.json`，也不能继续策略重建。
+- 数据更新的 `done` 只能表示“最终失败数为 0 且抽样验证通过”。所有 future 都返回只代表线程池执行完，不代表 CSV 已完整补齐；若仍有失败或抽样验证不达标，必须返回 `partial`，不写 `.update_cache.json`，也不能继续策略重建。数据源确认没有目标日 K 线的停牌/ST 类股票应计入 `no_target_bar`，从验证样本中排除，但不能冒充成功更新。
+- `max_stocks` 只用于调试或抽样验证，不能写全市场 `.update_cache.json`，否则会把局部样本日期误当成全局已更新日期。
 - 慢路径批量失败集合要低并发重试一次。外部数据源可能瞬时断连或限流，第一轮高并发保效率，失败股票再用小并发补跑；重试后仍失败才进入 `partial`。
 - `data_service` 收到 `partial` 必须把统一作业终止为错误态并透出 `update_status='partial'`；不能触发自动策略重建，否则会用不完整 CSV 生成误导性的策略结果。
 - 前端更新页收到 `event: error`、`status='error'`、`status='busy'` 或 `status='partial'` 都必须作为终止态处理；即使整体 `isRunning=false`，当前阶段也要从 `running` 改成 `error`，不能停留在“阶段一进行中/更新完成 100%”的混合状态。

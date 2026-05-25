@@ -254,3 +254,43 @@ fetch_stock_update(code, days=10, prefer_fast_fallback=True)
 ### 后续提速方向
 
 这个修复优先解决“批量失败”。如果要继续压缩全市场补数时间，下一步应做 Baostock 单连接批量查询或短窗缺口批量写入，而不是重新把并发提高。
+
+## 2026-05-25 追加复盘：短窗批量不应再落到 Baostock
+
+### 现象
+
+- 页面继续出现“更新完成 100% 但阶段仍显示进行中”的混合状态。
+- 典型 run 显示：`需更新 3877`、`执行 972/3877`、`成功 948`、`失败 24`、剩余仍有 `2905`。
+- 后端运行时 `/api/health` 也会超时，说明不是前端单独卡住，而是更新任务把后端线程池拖住。
+
+### 根因修正
+
+上一轮把短窗批量转慢路径后降到 4 路，只解决了 Baostock 高并发失败；但真正问题是“短窗快兜底”不应该再落到 Baostock。
+
+Baostock 是登录式 TCP 兜底源，每只股票都会经历 login/query/logout。几千只短窗股票即使 4 路执行，也会拖到超时。短窗补数只差 1-5 个交易日，应该保持快路径语义：新浪失败后走 Tencent HTTP 历史日 K；Tencent 也失败时直接进入失败集合与低成本重试，不再落 Baostock。
+
+### 修复
+
+1. `fetch_stock_update(..., prefer_fast_fallback=True)` 的顺序改为：跳过 EastMoney -> 新浪 -> Tencent HTTP -> 失败返回，不再进入 Baostock。
+2. Tencent HTTP 增加 `max_days` 参数，短窗兜底只拉最近 `max(days + 5, 20)` 根 K 线。
+3. 短窗批量转增量链路后恢复快路径并发，不再用 4 路慢跑。
+4. 数据源没有目标日 K 线的停牌/ST 类股票单独计入 `no_target_bar`，不冒充成功，也不误报失败；抽样验证会排除这类股票。
+5. `max_stocks` 调试运行不再写全市场 `.update_cache.json`，避免局部样本污染真实更新缓存。
+6. 前端 `/update` 统计新增“无目标日K线”，让用户知道剩余旧日期来自数据源没有目标日记录，而不是更新失败。
+
+### 验证
+
+- 红灯测试：
+  - `tests/test_daily_update_fast_path.py::test_fetch_stock_update_prefer_fast_fallback_does_not_enter_baostock`
+  - `tests/test_daily_update_fast_path.py::test_daily_update_bulk_short_gap_fast_fallback_uses_fast_workers`
+  - `tests/test_daily_update_fast_path.py::test_daily_update_tracks_no_target_bar_without_marking_failure`
+  - `tests/test_daily_update_fast_path.py::test_daily_update_max_stocks_does_not_overwrite_global_update_cache`
+- 修复后验证：
+  - `python -m pytest tests/test_daily_update_fast_path.py tests/test_csv_manager.py tests/test_data_service_update_date.py tests/test_strategy_cache_status.py -q`，结果 `32 passed`。
+  - `npm run build`，前端构建通过。
+  - import smoke：`utils.akshare_fetcher`、`web.backend.main` 均导入成功。
+  - 真实本地数据直跑 `daily_update(date='2026-05-25')`：待更新 `2118` 只，耗时约 `229s`；完成后 `5141/5157` 到达 `2026-05-25`，剩余 `16` 只逐个查 Tencent 最新 K 线，均无 `2026-05-25` 记录，多数为 ST/停牌类。
+
+### 结论
+
+这次“还是没有解决”的真正原因不是市值缓存，也不是前端重复转圈本身，而是短窗快兜底的兜底源选错了：短窗批量进入 Baostock 后，即使降低并发也只是把失败变成超时。后续同类问题先检查数据源链路是否仍为“短窗 -> 新浪/Tencent HTTP”，不要再把几千只短窗股票批量压到 Baostock。

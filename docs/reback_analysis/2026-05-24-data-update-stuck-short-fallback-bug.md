@@ -209,3 +209,48 @@
 3. 历史 CSV 中混合日期格式未按 mixed 解析。
 
 后续如果还要继续提速，应单独做“短窗 1-5 天批量快补直接走新浪/Baostock 并头插缺失行”，减少全量 `update_stock` 合并成本。
+
+## 2026-05-25 追加复盘：Baostock 兜底被高并发打入失败
+
+### 现象
+
+- 页面最新 run `20260525_211224_ecb9599f` 显示：
+  - 快路径：`1107/1107` 成功。
+  - 短窗快补：`0/3994`，整批转慢路径。
+  - 慢路径累计失败超过 `3000` 只。
+- 此时服务已经是新代码，因为快路径和短窗批量分流都生效了。
+
+### 新证据
+
+单独抽样 `002674`、`300001`、`600000`、`688088` 执行：
+
+```python
+fetch_stock_update(code, days=10, prefer_fast_fallback=True)
+```
+
+均可拿到 `2026-05-25` 的 20 行数据。日志显示新浪接口先返回非 JSON，随后 Baostock 登录/查询成功。
+
+### 根因
+
+这次不是“没有数据”，而是短窗整批转慢路径后仍使用默认 `16` 路并发。当前网络下新浪快通道会先失败，批量任务就集中落到 Baostock；Baostock 每股 `login/query/logout` 不适合高并发，16 路会放大登录失败和熔断，形成“单股成功、批量失败”的现象。
+
+### 修复
+
+1. 短窗整批转慢路径且数量达到全市场批量级别时，将慢路径并发从 `16` 降为 `4`。
+2. 普通大缺口慢路径仍保留原并发，避免把所有场景都拖慢。
+3. 进度文案显示实际慢路径并发，方便以后从页面判断是否进入 Baostock 保护模式。
+4. `agent.md` 写入规则：Baostock 是兜底源，不是高并发源。
+
+### 验证
+
+- 红灯测试：
+  - `tests/test_daily_update_fast_path.py::test_daily_update_throttles_bulk_short_gap_fallback_concurrency`
+  - 旧代码下 `max_active == 16`，测试失败。
+- 修复后验证：
+  - 上述测试通过，`max_active <= 4`。
+  - 更新链路回归：`python -m pytest tests/test_daily_update_fast_path.py tests/test_csv_manager.py tests/test_data_service_update_date.py tests/test_strategy_cache_status.py -q`，结果 `27 passed`。
+  - import smoke：`utils.akshare_fetcher`、`web.backend.main` 均导入成功。
+
+### 后续提速方向
+
+这个修复优先解决“批量失败”。如果要继续压缩全市场补数时间，下一步应做 Baostock 单连接批量查询或短窗缺口批量写入，而不是重新把并发提高。

@@ -34,6 +34,7 @@ _SLOW_PATH_BUFFER_DAYS = 3
 _SLOW_PATH_MIN_FETCH_DAYS = 10
 _SLOW_PATH_MAX_FETCH_DAYS = 60
 _FAST_PATH_WORKERS = 24
+_SHORT_GAP_FALLBACK_SLOW_WORKERS = 4
 _MARKET_CAP_WAIT_SECONDS = 0
 _INTRADAY_FAST_START = dt_time(9, 0)
 _INTRADAY_FAST_END = dt_time(15, 0)
@@ -2431,13 +2432,19 @@ class AKShareFetcher:
         )
         _max_fetch_days = max(slow_path_fetch_days_map.values()) if slow_path_fetch_days_map else 0
 
+        slow_path_workers = 16
+        if short_requeue_code_set and len(short_requeue_code_set) >= _SHORT_GAP_HEALTH_PROBE_MIN_TOTAL:
+            # 短窗整批转慢路径时，新浪不可用后通常会落到 Baostock。
+            # Baostock login/query 不适合高并发；限流能避免把兜底源打入熔断。
+            slow_path_workers = min(_SHORT_GAP_FALLBACK_SLOW_WORKERS, max(1, total))
+
         if total > 0:
             print(f"\n开始并发更新 {total} 只股票（慢路径）...")
             emit_progress(
                 44,
                 (
                     f"开始并发更新 {total} 只股票（慢路径，平均抓取 {_avg_fetch_days} 天，"
-                    f"最大 {_max_fetch_days} 天）..."
+                    f"最大 {_max_fetch_days} 天，并发 {slow_path_workers}）..."
                 ),
                 phase='update',
             )
@@ -2448,7 +2455,7 @@ class AKShareFetcher:
         timed_out = False
         failed_slow_codes: list = []
         try:
-            executor = ThreadPoolExecutor(max_workers=16)
+            executor = ThreadPoolExecutor(max_workers=slow_path_workers)
             futures = {
                 executor.submit(
                     self._update_single_stock,

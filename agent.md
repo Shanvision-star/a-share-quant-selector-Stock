@@ -191,6 +191,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 短窗快补只依赖 EastMoney 精确窗口，属于快通道而不是最终真值通道；如果短窗返回空、连接失败或接口抖动，必须转入旧增量慢路径继续用新浪/Baostock 兜底，不能在短窗阶段直接记为最终失败。
 - 当短窗快补股票数量达到全市场批量级别时，不能逐股调用 EastMoney 精确短窗；该接口一旦网络不稳定会让 4000+ 股票排队超时。大批量短窗应直接整批转入新浪/Baostock 快兜底慢路径，小批量才尝试 EastMoney 精确窗口。
 - 短窗失败转慢路径时，后续单股更新必须跳过已失败的 EastMoney 重试，优先使用新浪快通道，再用 Baostock 兜底；否则 5000 只股票会重复等待同一个失败源，页面表现为长时间更新。
+- 短窗整批转慢路径后，如果新浪接口返回非 JSON 或空数据，最终会落到 Baostock。Baostock 登录/查询不适合 16 路高并发，必须降到低并发兜底，避免单股能成功、批量却被登录熔断打成几千只失败。
 - CSV 合并补字段时必须 guard 空布尔 mask，例如没有任何可估算换手率时不能执行 `combined.loc[empty_mask, 'turnover'] = empty_series`；pandas 新版本会抛 `Invalid value '[]' for dtype 'float64'`，导致单股更新被记失败。
 - CSV 历史文件可能因旧脚本或中断写入混入坏日期行，例如 `001`、空值或错列数字。`CSVManager.update_stock` 合并前必须先要求日线日期以 `YYYY-MM-DD` 开头，再用 `errors='coerce'` 清洗坏日期行，不能让单个坏行阻断整只股票更新。
 - CSV 历史文件还可能混合 `YYYY-MM-DD` 与 `YYYY-MM-DD HH:mm:ss.ffffff`。解析日线日期必须优先使用 `format='mixed'`，再统一写回 `YYYY-MM-DD`，否则 pandas 会按第一行格式误判后续合法时间戳，导致几千只股票在批量更新中被放大成失败或慢路径。

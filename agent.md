@@ -201,6 +201,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 数据更新的 `done` 只能表示“最终失败数为 0 且抽样验证通过”。所有 future 都返回只代表线程池执行完，不代表 CSV 已完整补齐；若仍有失败或抽样验证不达标，必须返回 `partial`，不写 `.update_cache.json`，也不能继续策略重建。
 - 慢路径批量失败集合要低并发重试一次。外部数据源可能瞬时断连或限流，第一轮高并发保效率，失败股票再用小并发补跑；重试后仍失败才进入 `partial`。
 - `data_service` 收到 `partial` 必须把统一作业终止为错误态并透出 `update_status='partial'`；不能触发自动策略重建，否则会用不完整 CSV 生成误导性的策略结果。
+- 前端更新页收到 `event: error`、`status='error'`、`status='busy'` 或 `status='partial'` 都必须作为终止态处理；即使整体 `isRunning=false`，当前阶段也要从 `running` 改成 `error`，不能停留在“阶段一进行中/更新完成 100%”的混合状态。
 - 如果缺口大于 5 个真实交易日，不能只写当天，也不能用短窗覆盖历史，必须走慢路径补齐历史。
 - 当天快照尚未就绪并自动回退到最近已完成交易日时，必须重新加载回退日快照，不能因为之前的当天快照为空就把全市场打入慢路径。
 

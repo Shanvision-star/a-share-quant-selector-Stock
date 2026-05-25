@@ -47,6 +47,7 @@ export const useUpdateJobStore = defineStore('updateJob', () => {
     completed: 0,
     updated: 0,
     failed: 0,
+    noTargetBar: 0,
     remaining: 0,
     currentCode: '',
     verifyTotal: 0,
@@ -135,6 +136,7 @@ export const useUpdateJobStore = defineStore('updateJob', () => {
       completed: 0,
       updated: 0,
       failed: 0,
+      noTargetBar: 0,
       remaining: 0,
       currentCode: '',
       verifyTotal: 0,
@@ -196,6 +198,7 @@ export const useUpdateJobStore = defineStore('updateJob', () => {
       if (typeof data.completed === 'number') updateStats.value.completed = data.completed
       if (typeof data.updated === 'number') updateStats.value.updated = data.updated
       if (typeof data.failed === 'number') updateStats.value.failed = data.failed
+      if (typeof data.no_target_bar === 'number') updateStats.value.noTargetBar = data.no_target_bar
       if (typeof data.remaining === 'number') updateStats.value.remaining = data.remaining
       if (typeof data.current_code === 'string') updateStats.value.currentCode = data.current_code
       if (typeof data.verify_total === 'number') updateStats.value.verifyTotal = data.verify_total
@@ -333,6 +336,7 @@ export const useUpdateJobStore = defineStore('updateJob', () => {
       completed: 0,
       updated: 0,
       failed: 0,
+      noTargetBar: 0,
       remaining: 0,
       currentCode: '',
       verifyTotal: 0,

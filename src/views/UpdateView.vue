@@ -455,6 +455,9 @@ function getUpdatePhaseLabel(phase: string) {
                 执行：<b>{{ updateJobStore.updateStats?.completed }}/{{ updateJobStore.updateStats?.toUpdate }}</b>
               </span>
               <span>成功：<b class="stat-success">{{ updateJobStore.updateStats?.updated ?? 0 }}</b></span>
+              <span v-if="(updateJobStore.updateStats?.noTargetBar ?? 0) > 0">
+                无目标日K线：<b class="stat-muted">{{ updateJobStore.updateStats?.noTargetBar }}</b>
+              </span>
               <span v-if="(updateJobStore.updateStats?.failed ?? 0) > 0">失败：<b class="stat-fail">{{ updateJobStore.updateStats?.failed }}</b></span>
               <span v-if="(updateJobStore.updateStats?.remaining ?? 0) > 0">剩余：{{ updateJobStore.updateStats?.remaining }}</span>
               <span v-if="updateJobStore.updateStats?.cacheHit" class="stat-cache">✓ 缓存命中跳过</span>

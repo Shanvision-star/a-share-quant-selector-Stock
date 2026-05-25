@@ -556,6 +556,7 @@ async def _run_data_update_unlocked(
             'remaining',
             'verify_total',
             'verify_reached',
+            'verification_passed',
             'cache_written',
             'cache_hit',
             'allow_intraday_fast',
@@ -571,6 +572,9 @@ async def _run_data_update_unlocked(
             'short_path_failed',
             'slow_path_total',
             'slow_path_reasons',
+            'retry_total',
+            'retry_success',
+            'retry_failed',
         )
         if key in update_summary
     }
@@ -583,8 +587,11 @@ async def _run_data_update_unlocked(
         except Exception:
             pass
 
-    if update_summary.get('status') == 'error':
-        message = update_summary.get('message') or '数据更新失败'
+    update_status = update_summary.get('status')
+    if update_status in {'error', 'partial'}:
+        message = update_summary.get('message') or (
+            '数据更新未全量完成' if update_status == 'partial' else '数据更新失败'
+        )
         try:
             repo.finish_run(run_id, 'error', message)
             repo.insert_event(run_id, 'error', message=message)
@@ -597,6 +604,7 @@ async def _run_data_update_unlocked(
                 "message": message,
                 "run_id": run_id, "stage": "update",
                 "trade_date": effective_date,
+                "update_status": update_status,
                 **update_metrics,
             },
         }

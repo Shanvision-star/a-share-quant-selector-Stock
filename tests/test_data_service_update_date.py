@@ -189,3 +189,55 @@ def test_mark_stale_update_runs_interrupted(monkeypatch):
     assert finished[0][0] == "old-update"
     assert finished[0][1] == "error"
     assert events[0][0] == "old-update"
+
+
+def test_run_data_update_stops_rebuild_when_update_is_partial(monkeypatch):
+    """数据更新只完成部分股票时，统一作业必须终止，不能继续重建策略缓存。"""
+    monkeypatch.setattr(data_service.csv_manager, "list_all_stocks", lambda: ["000001", "600000"])
+    monkeypatch.setattr(strategy_service, "get_latest_trade_date", lambda: "2026-05-14")
+
+    def fake_daily_update(**kwargs):
+        return {
+            "status": "partial",
+            "message": "2026-05-14 数据更新未全量完成：成功 1 只，失败 1 只",
+            "target_date": "2026-05-14",
+            "completed": 2,
+            "updated": 1,
+            "failed": 1,
+            "cache_hit": False,
+            "cache_written": False,
+        }
+
+    monkeypatch.setattr(data_service.fetcher, "daily_update", fake_daily_update)
+
+    def should_not_rebuild(*args, **kwargs):
+        raise AssertionError("数据更新 partial 时不能继续策略重建")
+
+    monkeypatch.setattr(strategy_service, "build_strategy_result_snapshot", should_not_rebuild)
+
+    finished = []
+    monkeypatch.setattr(data_service.repo, "generate_run_id", lambda: "run-partial")
+    monkeypatch.setattr(data_service.repo, "create_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(data_service.repo, "update_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(data_service.repo, "finish_run", lambda *args, **kwargs: finished.append(args))
+    monkeypatch.setattr(data_service.repo, "insert_event", lambda *args, **kwargs: None)
+
+    async def collect_events():
+        return [
+            event
+            async for event in data_service.run_data_update(
+                auto_rebuild=True,
+                target_date="2026-05-14",
+                pipeline=False,
+                init_if_empty=True,
+            )
+        ]
+
+    events = asyncio.run(collect_events())
+
+    assert finished[-1][0] == "run-partial"
+    assert finished[-1][1] == "error"
+    assert events[-1]["event"] == "error"
+    assert events[-1]["data"]["status"] == "error"
+    assert events[-1]["data"]["update_status"] == "partial"
+    assert events[-1]["data"]["failed"] == 1

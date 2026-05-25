@@ -91,3 +91,41 @@
   - `npm run test -- updateJob --run`，结果 `1 passed`。
   - `npm run build` 通过。
   - `start_dev.bat` 启动后，`/api/health` 返回 `ok`；SQLite 中 running 更新任务数量为 `0`。
+
+## 2026-05-25 追加复盘：执行完不等于数据完整
+
+### 现象
+
+- 最新 `/api/update` run 在 SQLite 中显示 `status='done'`，并进入策略重建。
+- 但 `/api/data/status` 仍显示大量股票停留在 `2026-05-19`，只有部分 CSV 到达 `2026-05-22`。
+- `.update_cache.json` 仍停留在旧日期，说明缓存并没有确认全量完成。
+
+### 根因
+
+`utils/akshare_fetcher.py::daily_update()` 原来的完成判定把 `all_done` 当成成功：
+
+- `all_done=True` 只表示慢路径线程池里的 future 都已经返回。
+- 如果 future 返回 `False`，`failed` 会增加，但最终仍可能进入 `return build_summary('done', ...)`。
+- 抽样验证不达标时只是不写缓存，最终状态仍可能是 `done`。
+- `web/backend/services/data_service.py` 只把 `status='error'` 当失败，收到 `partial` 时仍会继续自动策略重建。
+
+因此前端会看到“统一作业完成”，但本地 CSV 实际只更新了部分股票，策略结果也可能基于不完整数据。
+
+### 修复
+
+1. 慢路径记录第一轮失败股票集合，全部 future 返回后对失败集合进行一次低并发重试，降低外部接口瞬时断连造成的大批量失败。
+2. `daily_update` 的成功条件收紧为：`all_done and failed == 0 and verification_passed`。
+3. 只要仍有最终失败或抽样验证未通过，就返回 `status='partial'`，不写 `.update_cache.json`。
+4. `data_service` 把 `partial` 当成终止态，写入 run `error`，SSE 返回 `event='error'` 和 `update_status='partial'`，不进入策略重建。
+5. `agent.md` 写入长期规则：以后不能把“线程池执行完”当成“数据完整”。
+
+### 验证
+
+- 红灯测试：
+  - `tests/test_daily_update_fast_path.py::test_daily_update_returns_partial_when_completed_tasks_still_have_failures`
+  - `tests/test_daily_update_fast_path.py::test_daily_update_retries_transient_slow_path_failures_before_partial`
+  - `tests/test_data_service_update_date.py::test_run_data_update_stops_rebuild_when_update_is_partial`
+- 修复后验证：
+  - 上述 3 个测试通过。
+  - `python -m pytest tests/test_csv_manager.py tests/test_daily_update_fast_path.py tests/test_data_service_update_date.py tests/test_strategy_cache_status.py -q`，结果 `23 passed`。
+  - `python -c "import web.backend.main as main; print(type(main.app).__name__)"`，结果 `FastAPI`。

@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 import time
 from datetime import datetime as real_datetime
@@ -552,7 +553,7 @@ def test_daily_update_keeps_large_gap_on_slow_path(tmp_path, monkeypatch):
 
     def fake_slow_path(code, days_to_fetch, market_cap_map, prefer_fast_fallback=False):
         slow_calls.append((code, days_to_fetch, prefer_fast_fallback))
-        return True, pd.DataFrame([
+        df = pd.DataFrame([
             {
                 "date": pd.Timestamp("2026-05-14"),
                 "open": 12.0,
@@ -565,6 +566,8 @@ def test_daily_update_keeps_large_gap_on_slow_path(tmp_path, monkeypatch):
                 "market_cap": market_cap_map.get(code, 0),
             },
         ])
+        fetcher.csv_manager.update_stock(code, df)
+        return True, df
 
     monkeypatch.setattr(fetcher, "_update_single_stock", fake_slow_path)
 
@@ -574,6 +577,106 @@ def test_daily_update_keeps_large_gap_on_slow_path(tmp_path, monkeypatch):
     assert summary["short_path_total"] == 0
     assert summary["slow_path_total"] == 1
     assert slow_calls == [("000001", 10, False)]
+
+
+def test_daily_update_returns_partial_when_completed_tasks_still_have_failures(tmp_path, monkeypatch):
+    """所有慢路径任务都返回了也不能直接算完成；仍有失败时必须保留 partial，避免策略重建误用缺口数据。"""
+    _write_stock_csv(tmp_path, "000001", date_text="2026-05-06")
+    _write_stock_csv(tmp_path, "600000", date_text="2026-05-06")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 15, 16, 0, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {"000001": 1000000000, "600000": 1000000000}
+    fetcher._market_cap_cache_date = "2026-05-14"
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", lambda *args, **kwargs: {})
+
+    def fake_slow_path(code, days_to_fetch, market_cap_map, prefer_fast_fallback=False):
+        if code == "000001":
+            df = pd.DataFrame([
+                {
+                    "date": pd.Timestamp("2026-05-14"),
+                    "open": 12.0,
+                    "high": 12.5,
+                    "low": 11.8,
+                    "close": 12.2,
+                    "volume": 2200,
+                    "amount": 2684000.0,
+                    "turnover": 1.8,
+                    "market_cap": market_cap_map.get(code, 0),
+                },
+            ])
+            fetcher.csv_manager.update_stock(code, df)
+            return True, df
+        return False, None
+
+    monkeypatch.setattr(fetcher, "_update_single_stock", fake_slow_path)
+
+    summary = fetcher.daily_update(date="2026-05-14", allow_intraday_fast=False)
+
+    assert summary["status"] == "partial"
+    assert summary["completed"] == 2
+    assert summary["updated"] == 1
+    assert summary["failed"] == 1
+    assert summary["cache_written"] is False
+
+    cache_path = tmp_path / ".update_cache.json"
+    if cache_path.exists():
+        assert json.loads(cache_path.read_text(encoding="utf-8")).get("last_update_date") != "2026-05-14"
+
+
+def test_daily_update_retries_transient_slow_path_failures_before_partial(tmp_path, monkeypatch):
+    """批量慢路径常见的是临时接口失败；失败集合应低并发重试一次，能恢复就不进入 partial。"""
+    _write_stock_csv(tmp_path, "000001", date_text="2026-05-06")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 15, 16, 0, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {"000001": 1000000000}
+    fetcher._market_cap_cache_date = "2026-05-14"
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", lambda *args, **kwargs: {})
+    calls = []
+
+    def flaky_slow_path(code, days_to_fetch, market_cap_map, prefer_fast_fallback=False):
+        calls.append((code, prefer_fast_fallback))
+        if len(calls) == 1:
+            return False, None
+        df = pd.DataFrame([
+            {
+                "date": pd.Timestamp("2026-05-14"),
+                "open": 12.0,
+                "high": 12.5,
+                "low": 11.8,
+                "close": 12.2,
+                "volume": 2200,
+                "amount": 2684000.0,
+                "turnover": 1.8,
+                "market_cap": market_cap_map.get(code, 0),
+            },
+        ])
+        fetcher.csv_manager.update_stock(code, df)
+        return True, df
+
+    monkeypatch.setattr(fetcher, "_update_single_stock", flaky_slow_path)
+
+    summary = fetcher.daily_update(date="2026-05-14", allow_intraday_fast=False)
+
+    assert calls == [("000001", False), ("000001", False)]
+    assert summary["status"] == "done"
+    assert summary["updated"] == 1
+    assert summary["failed"] == 0
+    assert summary["retry_total"] == 1
+    assert summary["retry_success"] == 1
 
 
 def test_daily_update_timeout_returns_without_waiting_for_hung_executor(tmp_path, monkeypatch):

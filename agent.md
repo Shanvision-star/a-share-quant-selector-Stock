@@ -194,6 +194,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 慢路径批量更新出现 `TimeoutError` 后，不能继续使用 `with ThreadPoolExecutor(...)` 的默认退出语义；必须取消未完成 future 并 `shutdown(wait=False, cancel_futures=True)`，否则后端 SSE 会继续等待少数挂起任务，前端表现为“一直在更新”。
 - `/api/update` 必须保持单飞：同一进程内只允许一个全市场数据更新任务运行。重复启动会让多个 run 同时抓取和写入同一批 CSV，造成网络限流、文件写入竞争和前端失败数暴涨；后端应返回 `busy`，前端必须停止本地运行态。
 - 后端启动时必须把进程启动前遗留的 `running` 数据更新 run 标记为中断；旧 SQLite 状态不是活任务，不能让页面误判还在运行。
+- 数据更新的 `done` 只能表示“最终失败数为 0 且抽样验证通过”。所有 future 都返回只代表线程池执行完，不代表 CSV 已完整补齐；若仍有失败或抽样验证不达标，必须返回 `partial`，不写 `.update_cache.json`，也不能继续策略重建。
+- 慢路径批量失败集合要低并发重试一次。外部数据源可能瞬时断连或限流，第一轮高并发保效率，失败股票再用小并发补跑；重试后仍失败才进入 `partial`。
+- `data_service` 收到 `partial` 必须把统一作业终止为错误态并透出 `update_status='partial'`；不能触发自动策略重建，否则会用不完整 CSV 生成误导性的策略结果。
 - 如果缺口大于 5 个真实交易日，不能只写当天，也不能用短窗覆盖历史，必须走慢路径补齐历史。
 - 当天快照尚未就绪并自动回退到最近已完成交易日时，必须重新加载回退日快照，不能因为之前的当天快照为空就把全市场打入慢路径。
 

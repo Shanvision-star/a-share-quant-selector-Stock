@@ -1747,6 +1747,7 @@ class AKShareFetcher:
         completed = 0
         verify_total = 0
         verify_reached = 0
+        verification_passed = False
         cache_written = False
         cache_hit = False
         fast_path_total = 0
@@ -1756,6 +1757,9 @@ class AKShareFetcher:
         short_path_success = 0
         short_path_failed = 0
         slow_path_total = 0
+        retry_total = 0
+        retry_success = 0
+        retry_failed = 0
         slow_path_reason_counts = {
             'time_gate': 0,
             'missing_local_data': 0,
@@ -1785,6 +1789,7 @@ class AKShareFetcher:
                 'remaining': max(total_to_update - completed, 0),
                 'verify_total': verify_total,
                 'verify_reached': verify_reached,
+                'verification_passed': verification_passed,
                 'cache_written': cache_written,
                 'cache_hit': cache_hit,
                 'allow_intraday_fast': allow_intraday_fast,
@@ -1796,6 +1801,9 @@ class AKShareFetcher:
                 'short_path_failed': short_path_failed,
                 'slow_path_total': slow_path_total,
                 'slow_path_reasons': dict(slow_path_reason_counts),
+                'retry_total': retry_total,
+                'retry_success': retry_success,
+                'retry_failed': retry_failed,
             }
             if current_code:
                 payload['current_code'] = current_code
@@ -1821,6 +1829,7 @@ class AKShareFetcher:
                 'remaining': max(total_to_update - completed, 0),
                 'verify_total': verify_total,
                 'verify_reached': verify_reached,
+                'verification_passed': verification_passed,
                 'cache_written': cache_written,
                 'cache_hit': cache_hit,
                 'allow_intraday_fast': allow_intraday_fast,
@@ -1832,6 +1841,9 @@ class AKShareFetcher:
                 'short_path_failed': short_path_failed,
                 'slow_path_total': slow_path_total,
                 'slow_path_reasons': dict(slow_path_reason_counts),
+                'retry_total': retry_total,
+                'retry_success': retry_success,
+                'retry_failed': retry_failed,
             }
 
         def recalc_stocks_to_update():
@@ -2415,6 +2427,7 @@ class AKShareFetcher:
         all_done = total == 0
         executor = None
         timed_out = False
+        failed_slow_codes: list = []
         try:
             executor = ThreadPoolExecutor(max_workers=16)
             futures = {
@@ -2447,6 +2460,7 @@ class AKShareFetcher:
                             updated += 1
                         else:
                             failed += 1
+                            failed_slow_codes.append(code)
                         pct = slow_completed / total * 100
                         print(
                             f"\r进度: {slow_completed:4d}/{total} | {pct:5.1f}% | 更新: {updated} | 失败: {failed:3d} | 代码:{code}",
@@ -2503,8 +2517,100 @@ class AKShareFetcher:
 
         print()  # 换行
 
+        if all_done and failed_slow_codes:
+            # 批量更新失败经常来自外部数据源的瞬时限流/断连。
+            # 第一轮保留并发效率，失败集合再用低并发补一次，避免单次抖动造成大批量 partial。
+            retry_codes = list(dict.fromkeys(failed_slow_codes))
+            retry_total = len(retry_codes)
+            retry_workers = min(4, max(1, retry_total))
+            retry_timeout_seconds = min(900, max(60, retry_total * 20))
+            emit_progress(
+                92,
+                f"慢路径失败重试：{retry_total} 只，低并发 {retry_workers} 路补跑一次...",
+                phase='retry',
+            )
+
+            retry_executor = None
+            retry_timed_out = False
+            try:
+                retry_executor = ThreadPoolExecutor(max_workers=retry_workers)
+                retry_futures = {
+                    retry_executor.submit(
+                        self._update_single_stock,
+                        code,
+                        slow_path_fetch_days_map.get(code, self._slow_path_min_fetch_days),
+                        market_cap_map,
+                        code in short_requeue_code_set,
+                    ): code
+                    for code in retry_codes
+                }
+                retry_emit_step = 1 if retry_total <= 20 else 10
+                for retry_index, future in enumerate(
+                    as_completed(retry_futures, timeout=retry_timeout_seconds),
+                    start=1,
+                ):
+                    code = retry_futures[future]
+                    try:
+                        result_tuple = future.result()
+                        if isinstance(result_tuple, tuple):
+                            success, stock_df = result_tuple
+                        else:
+                            success, stock_df = bool(result_tuple), None
+                    except Exception:
+                        success, stock_df = False, None
+
+                    if success:
+                        retry_success += 1
+                        updated += 1
+                        failed = max(0, failed - 1)
+                    else:
+                        retry_failed += 1
+
+                    if retry_index == 1 or retry_index % retry_emit_step == 0 or retry_index == retry_total:
+                        emit_progress(
+                            92 + int(retry_index / max(retry_total, 1) * 2),
+                            (
+                                f"慢路径失败重试中：{retry_index}/{retry_total}，"
+                                f"重试成功 {retry_success}，仍失败 {retry_failed}，最终失败 {failed}"
+                            ),
+                            phase='retry',
+                            current_code=code,
+                        )
+
+                    if on_stock_ready and success and stock_df is not None:
+                        try:
+                            on_stock_ready(code, stock_df)
+                        except Exception:
+                            pass
+            except TimeoutError:
+                retry_timed_out = True
+                retry_failed += max(retry_total - retry_success - retry_failed, 0)
+                if retry_executor is not None:
+                    try:
+                        for future in retry_futures:
+                            future.cancel()
+                    except Exception:
+                        pass
+                emit_progress(
+                    94,
+                    (
+                        f"慢路径失败重试超时：重试成功 {retry_success}，"
+                        f"仍失败 {retry_failed}，最终失败 {failed}"
+                    ),
+                    phase='retry',
+                )
+            finally:
+                if retry_executor is not None:
+                    if retry_timed_out:
+                        try:
+                            retry_executor.shutdown(wait=False, cancel_futures=True)
+                        except TypeError:
+                            retry_executor.shutdown(wait=False)
+                    else:
+                        retry_executor.shutdown(wait=True)
+
         # ── 完成后抽样验证，决定是否写缓存 ─────────────────────────────
-        if all_done:
+        if all_done and failed == 0:
             _prefix_buckets: dict = {}
             for _sc in stocks_to_update:
                 _pfx = _sc[:2]
@@ -2543,12 +2649,18 @@ class AKShareFetcher:
                 with open(update_cache_file, 'w') as f:
                     json.dump(update_cache, f)
                 cache_written = True
+                verification_passed = True
                 print(f"[更新] 抽样验证通过 ({_reached}/{len(_verify_codes)})，缓存已写入")
             else:
                 print(
                     f"[更新] 抽样验证：{_reached}/{len(_verify_codes)} 只到达 {target_date_str}，"
                     f"低于50%阈值，暂不写缓存，下次启动将重新检查（可能是数据发布延迟）"
                 )
+        elif all_done:
+            print(
+                f"[更新] 所有任务已返回但仍有 {failed} 只最终失败，不写入缓存，"
+                "不进入策略重建；下次启动将继续补齐失败股票"
+            )
         else:
             print(
                 f"[更新] 未全量完成，不写入缓存，下次启动将重新检查并补全剩余 "
@@ -2578,7 +2690,9 @@ class AKShareFetcher:
         elif _bg_cap_error[0]:
             logger.warning("[市值] 后台刷新失败: %s", _bg_cap_error[0])
 
-        if all_done:
+        update_complete = all_done and failed == 0 and (verify_total == 0 or verification_passed)
+
+        if update_complete:
             final_message = (
                 f"{target_date_str} 数据更新完成：扫描 {scan_total} 只，"
                 f"需更新 {total_to_update_all} 只，成功 {updated} 只，失败 {failed} 只"
@@ -2588,7 +2702,7 @@ class AKShareFetcher:
 
         final_message = (
             f"{target_date_str} 数据更新未全量完成：已执行 {completed}/{total_to_update_all}，"
-            f"成功 {updated} 只，失败 {failed} 只"
+            f"成功 {updated} 只，失败 {failed} 只，验证 {verify_reached}/{verify_total}"
         )
         emit_progress(100, final_message, phase='complete')
         return build_summary('partial', final_message)

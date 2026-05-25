@@ -470,6 +470,69 @@ def test_daily_update_requeues_short_gap_failures_to_slow_path(tmp_path, monkeyp
     assert refreshed["date"].tolist() == ["2026-05-14", "2026-05-13"]
 
 
+def test_daily_update_short_gap_health_gate_skips_bulk_eastmoney_failures(tmp_path, monkeypatch):
+    """大批短窗快补前应先做健康探测；EastMoney 不可用时整批转慢路径，不能逐股打满超时。"""
+    codes = [f"002{idx:03d}" for idx in range(60)]
+    for code in codes:
+        _write_stock_csv(tmp_path, code, date_text="2026-05-19")
+
+    class FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls):
+            return cls(2026, 5, 25, 8, 30, 0)
+
+    monkeypatch.setattr(akshare_fetcher, "datetime", FakeDateTime)
+
+    fetcher = AKShareFetcher(str(tmp_path))
+    fetcher._market_cap_cache = {code: 1000000000 for code in codes}
+    fetcher._market_cap_cache_date = "2026-05-25"
+    monkeypatch.setattr(fetcher, "_fetch_spot_snapshot_map", lambda *args, **kwargs: {})
+
+    eastmoney_calls = []
+
+    def unavailable_eastmoney(stock_code, start_date, end_date, prefetched_market_cap=None, fqt=1):
+        eastmoney_calls.append(stock_code)
+        return None
+
+    monkeypatch.setattr(fetcher, "_fetch_stock_history_eastmoney", unavailable_eastmoney)
+    slow_calls = []
+
+    def fake_slow_path(code, days_to_fetch, market_cap_map, prefer_fast_fallback=False):
+        slow_calls.append((code, prefer_fast_fallback))
+        df = pd.DataFrame(
+            [
+                {
+                    "date": pd.Timestamp("2026-05-22"),
+                    "open": 12.0,
+                    "high": 12.5,
+                    "low": 11.8,
+                    "close": 12.2,
+                    "volume": 2200,
+                    "amount": 2684000.0,
+                    "turnover": 1.8,
+                    "market_cap": market_cap_map.get(code, 0),
+                },
+            ]
+        )
+        fetcher.csv_manager.update_stock(code, df)
+        return True, df
+
+    monkeypatch.setattr(fetcher, "_update_single_stock", fake_slow_path)
+
+    summary = fetcher.daily_update(date="2026-05-22", allow_intraday_fast=False)
+
+    assert summary["status"] == "done"
+    assert summary["short_path_total"] == 60
+    assert summary["short_path_failed"] == 60
+    assert summary["slow_path_total"] == 60
+    assert summary["slow_path_reasons"]["short_gap_fallback"] == 60
+    assert summary["updated"] == 60
+    assert summary["failed"] == 0
+    assert len(eastmoney_calls) <= 3
+    assert len(slow_calls) == 60
+    assert all(prefer_fast_fallback for _, prefer_fast_fallback in slow_calls)
+
+
 def test_fetch_stock_update_prefer_fast_fallback_skips_eastmoney(tmp_path, monkeypatch):
     """短窗已确认 EastMoney 失败后，慢路径应优先使用新浪快通道。"""
     fetcher = AKShareFetcher(str(tmp_path))

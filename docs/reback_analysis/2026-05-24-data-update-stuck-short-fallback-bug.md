@@ -129,3 +129,35 @@
   - 上述 3 个测试通过。
   - `python -m pytest tests/test_csv_manager.py tests/test_daily_update_fast_path.py tests/test_data_service_update_date.py tests/test_strategy_cache_status.py -q`，结果 `23 passed`。
   - `python -c "import web.backend.main as main; print(type(main.app).__name__)"`，结果 `FastAPI`。
+
+## 2026-05-25 追加复盘：短窗批量 EastMoney 与坏 CSV 行
+
+### 现象
+
+- 页面显示：`短窗快补 0/4096`、`慢路径 4168`、`成功 93`、`失败 4075`。
+- 抽样单股 `002529`、`002534`、`300001`、`600000`、`688800` 走 `prefer_fast_fallback=True` 都能在约 `0.05-0.13s` 内拿到 `2026-05-22` 并写入。
+- `000838` 单股写入失败，异常为 `time data "001" doesn't match format "%Y-%m-%d"`。
+- 扫描本地 CSV 后发现 `93` 个文件存在坏日期行，约 `4080` 个文件仍落后于 `2026-05-22`。
+
+### 根因
+
+1. EastMoney 精确短窗接口在当前网络下不稳定；全市场 4000+ 股票逐股先尝试短窗，会把时间浪费在同一失败源上。
+2. 即使后续新浪兜底可用，前面的大批 EastMoney 失败会造成更新时间过长、状态混乱和失败放大。
+3. 部分历史 CSV 混入坏日期行，`CSVManager.update_stock()` 原来直接 `pd.to_datetime(existing_df['date'])`，遇到坏行就抛异常，导致该股票更新失败。
+
+### 修复
+
+1. 大批量短窗缺口直接跳过 EastMoney 精确短窗，整批转入新浪/Baostock 快兜底慢路径。
+2. 小批量短窗仍保留 EastMoney 精确窗口，避免完全丢掉原来的高质量通道。
+3. `CSVManager.update_stock()` 合并前用 `errors='coerce'` 清洗坏日期行；新数据若日期无效则不写，历史坏行不再阻断整只股票更新。
+4. `agent.md` 写入规则：短窗批量不能逐股打 EastMoney；CSV 合并必须清洗坏日期行。
+
+### 验证
+
+- 红灯测试：
+  - `tests/test_csv_manager.py::test_update_stock_drops_malformed_existing_date_rows`
+  - `tests/test_daily_update_fast_path.py::test_daily_update_short_gap_health_gate_skips_bulk_eastmoney_failures`
+- 修复后验证：
+  - 上述 2 个测试通过。
+  - 更新链路回归：`python -m pytest tests/test_csv_manager.py tests/test_daily_update_fast_path.py tests/test_data_service_update_date.py tests/test_strategy_cache_status.py -q`，结果 `25 passed`。
+  - 临时复制 80 只 `2026-05-19` stale CSV 完整跑 `daily_update(date='2026-05-22')`：`80/80` 成功，耗时约 `11.8s`，并写入 `2026-05-22`。

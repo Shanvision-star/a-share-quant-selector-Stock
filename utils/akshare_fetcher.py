@@ -38,6 +38,7 @@ _MARKET_CAP_WAIT_SECONDS = 0
 _INTRADAY_FAST_START = dt_time(9, 0)
 _INTRADAY_FAST_END = dt_time(15, 0)
 _SHORT_GAP_FAST_MAX_DAYS = 5
+_SHORT_GAP_HEALTH_PROBE_MIN_TOTAL = 50
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -2309,6 +2310,7 @@ class AKShareFetcher:
         short_requeue_code_set: set = set()
         if short_gap_stocks:
             short_requeue_stocks: list = []
+            short_bulk_bypassed = False
             emit_progress(
                 39,
                 f"短窗快补 {short_total} 只股票（缺口 2-{_SHORT_GAP_FAST_MAX_DAYS} 个交易日）...",
@@ -2317,6 +2319,22 @@ class AKShareFetcher:
             short_lock = threading.Lock()
             short_emit_step = 1 if short_total <= 20 else 10
             short_workers = min(self._fast_path_workers, max(1, short_total))
+
+            if short_total >= _SHORT_GAP_HEALTH_PROBE_MIN_TOTAL:
+                # EastMoney 精确短窗是小批量加速通道，不是唯一真值源。
+                # 全市场短窗缺口时直接走新浪/Baostock 快兜底，避免 4000+ 股票逐个等待同一慢源。
+                short_bulk_bypassed = True
+                short_path_failed += short_total
+                short_requeue_stocks.extend(short_gap_stocks)
+                slow_path_reason_counts['short_gap_fallback'] += short_total
+                emit_progress(
+                    40,
+                    (
+                        f"短窗快补批量过大：已将 {short_total} 只直接转入慢路径快兜底，"
+                        "跳过 EastMoney 逐股短窗"
+                    ),
+                    phase='short_update',
+                )
 
             def _write_short_gap_stock(_code):
                 _last_date = latest_date_map.get(_code)
@@ -2342,42 +2360,43 @@ class AKShareFetcher:
                 self.csv_manager.update_stock(_code, _df)
                 return _code, True, _df
 
-            with ThreadPoolExecutor(max_workers=short_workers) as short_executor:
-                futures = {
-                    short_executor.submit(_write_short_gap_stock, _code): _code
-                    for _code in short_gap_stocks
-                }
-                for short_index, future in enumerate(as_completed(futures), start=1):
-                    _code = futures[future]
-                    try:
-                        _code, _ok, _stock_df = future.result()
-                    except Exception:
-                        _ok, _stock_df = False, None
-                    with short_lock:
-                        if _ok:
-                            completed += 1
-                            updated += 1
-                            short_path_success += 1
-                        else:
-                            short_path_failed += 1
-                            short_requeue_stocks.append(_code)
-                            slow_path_reason_counts['short_gap_fallback'] += 1
-                        if short_index == 1 or short_index % short_emit_step == 0 or short_index == short_total:
-                            emit_progress(
-                                39 + int(short_index / max(short_total, 1) * 5),
-                                (
-                                    f"短窗快补中：{short_index}/{short_total}，"
-                                    f"累计完成 {completed}/{len(stocks_to_update)}，成功 {updated}，"
-                                    f"最终失败 {failed}，转慢路径 {len(short_requeue_stocks)}"
-                                ),
-                                phase='short_update',
-                                current_code=_code,
-                            )
-                    if on_stock_ready and _ok and _stock_df is not None:
+            if not short_bulk_bypassed:
+                with ThreadPoolExecutor(max_workers=short_workers) as short_executor:
+                    futures = {
+                        short_executor.submit(_write_short_gap_stock, _code): _code
+                        for _code in short_gap_stocks
+                    }
+                    for short_index, future in enumerate(as_completed(futures), start=1):
+                        _code = futures[future]
                         try:
-                            on_stock_ready(_code, _stock_df)
+                            _code, _ok, _stock_df = future.result()
                         except Exception:
-                            pass
+                            _ok, _stock_df = False, None
+                        with short_lock:
+                            if _ok:
+                                completed += 1
+                                updated += 1
+                                short_path_success += 1
+                            else:
+                                short_path_failed += 1
+                                short_requeue_stocks.append(_code)
+                                slow_path_reason_counts['short_gap_fallback'] += 1
+                            if short_index == 1 or short_index % short_emit_step == 0 or short_index == short_total:
+                                emit_progress(
+                                    39 + int(short_index / max(short_total, 1) * 5),
+                                    (
+                                        f"短窗快补中：{short_index}/{short_total}，"
+                                        f"累计完成 {completed}/{len(stocks_to_update)}，成功 {updated}，"
+                                        f"最终失败 {failed}，转慢路径 {len(short_requeue_stocks)}"
+                                    ),
+                                    phase='short_update',
+                                    current_code=_code,
+                                )
+                        if on_stock_ready and _ok and _stock_df is not None:
+                            try:
+                                on_stock_ready(_code, _stock_df)
+                            except Exception:
+                                pass
             if short_requeue_stocks:
                 # 短窗快补只依赖 EastMoney；网络或接口短暂失败时回到旧增量链路，
                 # 且后续慢路径跳过已失败的 EastMoney，优先用新浪/Baostock 快速兜底。

@@ -168,8 +168,20 @@ class CSVManager:
         existing_df = existing_df.copy()
         new_df = new_df.copy()
 
-        existing_df['date'] = pd.to_datetime(existing_df['date'])
-        new_df['date'] = pd.to_datetime(new_df['date'])
+        existing_dates = pd.to_datetime(existing_df['date'], errors='coerce')
+        if existing_dates.isna().any():
+            # 历史 CSV 可能混入半行/错列数据；更新时丢弃坏日期行，避免整只股票被记为失败。
+            existing_df = existing_df.loc[existing_dates.notna()].copy()
+            existing_dates = existing_dates.loc[existing_dates.notna()]
+
+        new_dates = pd.to_datetime(new_df['date'], errors='coerce')
+        new_df = new_df.loc[new_dates.notna()].copy()
+        new_dates = new_dates.loc[new_dates.notna()]
+        if new_df.empty:
+            return self.write_stock(stock_code, existing_df)
+
+        existing_df['date'] = existing_dates.to_numpy()
+        new_df['date'] = new_dates.to_numpy()
 
         existing_by_date = existing_df.set_index('date')
         incoming_by_date = new_df.set_index('date')

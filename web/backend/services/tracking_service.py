@@ -66,6 +66,11 @@ def _default_daily_loader(code: str) -> pd.DataFrame:
     return _load_price_frame(code)
 
 
+# P5：评估服务的模块级占位，供 batch_from_selection 自动级联使用，也便于测试 monkeypatch。
+# 真正的单例延迟在调用点 import，避免与 tracking_evaluation_service 形成循环导入。
+tracking_evaluation_service = None
+
+
 class TrackingService:
     """管理单股跟踪记录、事件流和每日评估。"""
 
@@ -259,12 +264,37 @@ class TrackingService:
                 # 单条失败不阻塞其他条；记入 failed
                 failed.append(code)
 
-        return {
+        result = {
             "created": created,
             "skipped": len(skipped_codes),
             "skipped_codes": skipped_codes,
             "failed": failed,
         }
+
+        # P5：自动级联开关（默认 OFF）。开启后立即对本批新增的代码做一次规则评估。
+        # 单独捕获异常：评估失败不应回滚导入结果。
+        try:
+            from web.backend.services.sqlite_service import get_app_meta
+
+            cascade_flag = (get_app_meta("tracking_auto_cascade", "off") or "off").lower()
+        except Exception:
+            cascade_flag = "off"
+
+        if cascade_flag in ("on", "1", "true", "yes") and created > 0:
+            try:
+                svc = tracking_evaluation_service
+                if svc is None:
+                    from web.backend.services.tracking_evaluation_service import (
+                        tracking_evaluation_service as svc,  # type: ignore
+                    )
+                only = [
+                    code for code in target_codes if code not in skipped_codes and code not in failed
+                ]
+                result["evaluation"] = svc.evaluate_active_items(only_codes=only)
+            except Exception as exc:  # 评估异常仅记录，避免吞掉导入结果
+                result["evaluation_error"] = str(exc)
+
+        return result
 
     def get_item(self, tracking_id: str) -> dict | None:
         row = self._conn().execute("SELECT * FROM tracking_items WHERE tracking_id = ?", (tracking_id,)).fetchone()

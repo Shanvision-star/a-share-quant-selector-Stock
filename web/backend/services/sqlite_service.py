@@ -11,6 +11,26 @@ _local = threading.local()
 SCHEMA_VERSION = 5
 
 
+def get_app_meta(key: str, default: str | None = None) -> str | None:
+    """读取 app_meta 表中的单个键值；表不存在或缺失时返回 default。"""
+    try:
+        row = get_connection().execute(
+            "SELECT value FROM app_meta WHERE key = ?", (key,)
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return default
+    return row["value"] if row else default
+
+
+def set_app_meta(key: str, value: str) -> None:
+    """写入 app_meta 表中的单个键值（UPSERT）。"""
+    conn = get_connection()
+    conn.execute(
+        "INSERT OR REPLACE INTO app_meta(key, value) VALUES (?, ?)", (key, value)
+    )
+    conn.commit()
+
+
 def get_connection() -> sqlite3.Connection:
     """获取当前线程的 SQLite 连接（线程安全，每线程一个连接）"""
     conn = getattr(_local, 'conn', None)

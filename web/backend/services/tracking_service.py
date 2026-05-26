@@ -340,6 +340,51 @@ class TrackingService:
             evaluated.append(self.evaluate_item(item["tracking_id"], eval_date))
         return {"total": len(items), "items": evaluated}
 
+    def confirm_intent(self, tracking_id: str, intent: dict | None = None) -> dict:
+        """确认 LLM/系统建议的 OrderIntent：只落事件，不接入真实交易。
+
+        - 未知 tracking_id 抛 KeyError，避免 404 路径误命中数据库 None；
+        - 传入 intent 覆盖现有 latest_intent，便于前端编辑确认；
+        - action 字段使用 intent.side 作为审计语义，默认 CONFIRM。
+        """
+        item = self.get_item(tracking_id)
+        if not item:
+            raise KeyError(tracking_id)
+        effective_intent = intent if intent is not None else item.get("latest_intent") or {}
+        action = str(effective_intent.get("side") or "CONFIRM").upper()
+        self.add_event(
+            tracking_id,
+            event_type="intent_confirmed",
+            event_date=item.get("last_eval_date"),
+            action=action,
+            message="操盘手确认 OrderIntent",
+            payload={"intent": effective_intent},
+        )
+        if intent is not None:
+            self._update_item(tracking_id, latest_intent=effective_intent)
+        return self.get_item(tracking_id) or item
+
+    def reject_intent(self, tracking_id: str, reason: str = "") -> dict:
+        """否决建议：写入 intent_rejected 事件，next_action 回落到 HOLD。
+
+        - 未知 tracking_id 抛 KeyError；
+        - reason 落入 payload，方便复盘“为什么不下单”；
+        - 不清空 latest_intent，留作历史证据。
+        """
+        item = self.get_item(tracking_id)
+        if not item:
+            raise KeyError(tracking_id)
+        self.add_event(
+            tracking_id,
+            event_type="intent_rejected",
+            event_date=item.get("last_eval_date"),
+            action="HOLD",
+            message="操盘手否决 OrderIntent",
+            payload={"reason": reason},
+        )
+        self._update_item(tracking_id, next_action="HOLD")
+        return self.get_item(tracking_id) or item
+
     def add_event(
         self,
         tracking_id: str,

@@ -70,6 +70,7 @@ from web.backend.routers import (
     tracking_alert,
     tracking_evaluation,
     tracking_llm,
+    tracking_intent,
 )
 
 
@@ -155,6 +156,7 @@ app.include_router(tracking_rule_template.router)
 app.include_router(tracking_alert.router)
 app.include_router(tracking_evaluation.router)
 app.include_router(tracking_llm.router)
+app.include_router(tracking_intent.router)
 
 
 @app.get("/api/health")

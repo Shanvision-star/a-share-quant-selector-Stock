@@ -8,7 +8,7 @@ DB_PATH = project_root / "data" / "web_strategy_cache.db"
 
 _local = threading.local()
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def get_connection() -> sqlite3.Connection:
@@ -248,6 +248,48 @@ def init_database():
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracking_events_tracking_id ON tracking_events(tracking_id)")
+
+    # 表 12: tracking_rule_templates - P3 跟踪告警规则模板（覆盖参数/启用开关）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tracking_rule_templates (
+            template_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            params_json TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_rule_templates_rule_id ON tracking_rule_templates(rule_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_rule_templates_enabled ON tracking_rule_templates(enabled)")
+
+    # 表 13: tracking_alert_events - P4 跟踪告警事件（按 dedup_key 幂等写入 + 钉钉分发状态）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tracking_alert_events (
+            alert_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tracking_id TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            code TEXT NOT NULL,
+            eval_date TEXT NOT NULL,
+            priority INTEGER NOT NULL,
+            category TEXT,
+            action_label TEXT,
+            name TEXT,
+            message TEXT,
+            evidence_json TEXT,
+            dedup_key TEXT NOT NULL UNIQUE,
+            dingtalk_slot TEXT,
+            ui_status TEXT DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            dispatched_at TEXT
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_events_tracking_id ON tracking_alert_events(tracking_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_events_eval_date ON tracking_alert_events(eval_date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_events_priority ON tracking_alert_events(priority)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_events_dingtalk_slot ON tracking_alert_events(dingtalk_slot)")
 
     # 记录 schema version
     cursor.execute(

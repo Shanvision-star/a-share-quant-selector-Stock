@@ -16,11 +16,14 @@ class _FakePath:
         return True
 
     def stat(self):
+        # 同时补齐 st_size，避免后台指标快照线程（stock.py:_read_stock_preview）
+        # 借道 csv_manager.get_stock_path 拿到本假 Path 时抛 AttributeError 噪声。
         class _Stat:
             pass
 
         stat = _Stat()
         stat.st_mtime_ns = self.mtime_ns
+        stat.st_size = 1
         return stat
 
 

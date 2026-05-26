@@ -38,6 +38,12 @@ const routes = [
     name: 'Backtest',
     component: () => import('@/views/BacktestView.vue'),
   },
+  {
+    // P1.5 跟踪运营面板：列表 / 告警 / LLM 建议 / OrderIntent 确认否决
+    path: '/tracking',
+    name: 'Tracking',
+    component: () => import('@/views/TrackingView.vue'),
+  },
 ]
 
 const router = createRouter({

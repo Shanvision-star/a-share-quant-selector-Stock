@@ -609,4 +609,39 @@ export const evaluateTrackingItems = (date?: string) =>
 export const getTrackingEvents = (trackingId: string, limit = 200) =>
   api.get(`/tracking/${encodeURIComponent(trackingId)}/events`, { params: { limit } })
 
+// 跟踪告警事件（P4）
+export interface TrackingAlertItem {
+  alert_id?: number
+  tracking_id: string
+  code?: string
+  name?: string
+  eval_date?: string
+  priority?: number
+  rule_id?: string
+  message?: string
+  ui_status?: string
+  payload?: Record<string, any>
+}
+
+export const listTrackingAlerts = (
+  params?: { tracking_id?: string; eval_date?: string; ui_status?: string; limit?: number },
+) => api.get('/tracking/alerts', { params })
+
+// P5 批量按规则模板评估
+export const evaluateTrackingRules = (payload?: { eval_date?: string; only_codes?: string[] }) =>
+  api.post('/tracking/evaluate-rules', payload ?? {})
+
+// P6 LLM 操盘建议
+export const getTrackingLLMAdvice = (trackingId: string) =>
+  api.post(`/tracking/${encodeURIComponent(trackingId)}/llm-advice`)
+
+// P7 OrderIntent 确认 / 否决
+export const confirmTrackingIntent = (
+  trackingId: string,
+  intent?: Record<string, any> | null,
+) => api.post(`/tracking/${encodeURIComponent(trackingId)}/confirm-intent`, { intent: intent ?? null })
+
+export const rejectTrackingIntent = (trackingId: string, reason = '') =>
+  api.post(`/tracking/${encodeURIComponent(trackingId)}/reject-intent`, { reason })
+
 export default api

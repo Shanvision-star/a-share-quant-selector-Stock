@@ -192,6 +192,156 @@ class TrackingService:
         ).fetchall()
         return [self._row_to_item(row) for row in rows]
 
+    # ---------- P-D: 单条与批量删除 ----------
+    # 关键边界：
+    # 1. tracking_events 通过 tracking_id 关联，删除主记录时必须级联清空事件，
+    #    否则会留下孤儿事件流，影响后续审计；
+    # 2. 不存在的 tracking_id 不抛错，返回 False / 写入 not_found，便于前端批量场景。
+    def delete_item(self, tracking_id: str) -> bool:
+        """删除单条跟踪记录及其事件流。
+
+        Returns:
+            True 表示已删除；False 表示记录不存在。
+        """
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT tracking_id FROM tracking_items WHERE tracking_id = ?",
+            (tracking_id,),
+        ).fetchone()
+        if not row:
+            return False
+        # 关键路径：先删事件再删主记录，事务内保证一致性
+        conn.execute("DELETE FROM tracking_events WHERE tracking_id = ?", (tracking_id,))
+        conn.execute("DELETE FROM tracking_items WHERE tracking_id = ?", (tracking_id,))
+        conn.commit()
+        return True
+
+    def batch_delete(self, tracking_ids: list[str]) -> dict:
+        """批量删除跟踪记录。
+
+        Returns:
+            {"deleted": [...], "not_found": [...]}，已去重，前端可直接展示
+        """
+        deleted: list[str] = []
+        not_found: list[str] = []
+        # 去重避免同一 id 重复处理；保持入参顺序方便前端定位
+        seen: set[str] = set()
+        for tid in tracking_ids:
+            tid = str(tid or "").strip()
+            if not tid or tid in seen:
+                continue
+            seen.add(tid)
+            if self.delete_item(tid):
+                deleted.append(tid)
+            else:
+                not_found.append(tid)
+        return {"deleted": deleted, "not_found": not_found}
+
+    # ---------- P-D: 批量代码导入（TXT/粘贴） ----------
+    # 关键边界：
+    # 1. 输入代码可能来自 TXT 文件或剪贴板，按行 + 逗号 + 空白分割再清洗；
+    # 2. 仅保留 6 位纯数字代码，其余进入 failed；
+    # 3. 已有活跃跟踪记录的代码进入 skipped，避免重复跟踪；
+    # 4. 创建成功后立即评估一次：将 watch_buy 推进到 holding，落 entry_price 与
+    #    latest_return_pct，解决前端"看不到买入点/跟踪收益"的问题。
+    _CODE_PATTERN = __import__("re").compile(r"^\d{6}$")
+
+    @classmethod
+    def parse_codes(cls, text: str) -> tuple[list[str], list[str]]:
+        """从粗放文本中解析股票代码列表。
+
+        Returns:
+            (valid_codes, invalid_tokens)，valid_codes 已去重保序
+        """
+        import re as _re
+
+        if not text:
+            return [], []
+        # 按换行/逗号/分号/空白统一切分
+        tokens = [t.strip() for t in _re.split(r"[\s,;，；]+", text) if t.strip()]
+        valid: list[str] = []
+        invalid: list[str] = []
+        seen: set[str] = set()
+        for tok in tokens:
+            # 兼容 "sh600000" / "SZ000001" / "600000.SH" 这类前后缀写法
+            digits = _re.sub(r"\D", "", tok)
+            if len(digits) == 6 and cls._CODE_PATTERN.match(digits):
+                if digits not in seen:
+                    seen.add(digits)
+                    valid.append(digits)
+            else:
+                invalid.append(tok)
+        return valid, invalid
+
+    def batch_create_codes(
+        self,
+        codes: list[str],
+        signal_date: str | None = None,
+        strategy_name: str = "manual_batch",
+        source: str = "manual_batch",
+        evaluate_now: bool = True,
+    ) -> dict:
+        """批量创建跟踪记录（来源：TXT/粘贴）。
+
+        Args:
+            codes: 已分词的代码列表，由路由层调用 parse_codes 解析
+            signal_date: 信号日；缺省取今天，作为 watch_buy 的起点
+            strategy_name: 标签，便于前端区分批量导入
+            evaluate_now: 是否在创建后立即评估，把 entry_price/latest_return_pct
+                          填充出来；测试可关掉避免依赖行情数据
+
+        Returns:
+            {"created": [..tracking_id..], "skipped": [{code, reason}], "failed": [{code, reason}]}
+        """
+        signal_date = signal_date or datetime.now().strftime("%Y-%m-%d")
+
+        # 一次取出活跃代码，避免循环里 N 次 SELECT
+        placeholders = ",".join(["?"] * len(self._ACTIVE_TRACKING_STATUS))
+        active_rows = self._conn().execute(
+            f"SELECT code FROM tracking_items WHERE status IN ({placeholders})",
+            self._ACTIVE_TRACKING_STATUS,
+        ).fetchall()
+        active_codes = {row["code"] for row in active_rows}
+
+        created: list[dict] = []
+        skipped: list[dict] = []
+        failed: list[dict] = []
+        seen: set[str] = set()
+        for code in codes:
+            code = str(code or "").strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            if not self._CODE_PATTERN.match(code):
+                failed.append({"code": code, "reason": "格式非法（需 6 位数字）"})
+                continue
+            if code in active_codes:
+                skipped.append({"code": code, "reason": "已存在活跃跟踪记录"})
+                continue
+            try:
+                item = self.create_item(
+                    {
+                        "code": code,
+                        "name": "",
+                        "strategy_name": strategy_name,
+                        "source": source,
+                        "source_date": signal_date,
+                        "signal_date": signal_date,
+                    }
+                )
+                # 立即评估：尝试把 watch_buy → holding，让前端能看到 entry_price 与
+                # 当前收益；evaluate 失败（无行情等）不阻塞本次导入
+                if evaluate_now:
+                    try:
+                        item = self.evaluate_item(item["tracking_id"]) or item
+                    except Exception:
+                        pass
+                created.append(item)
+                active_codes.add(code)
+            except (ValueError, KeyError) as exc:
+                failed.append({"code": code, "reason": str(exc)})
+        return {"created": created, "skipped": skipped, "failed": failed}
+
     # ---------- P1: 从人工选股池批量加入跟踪 ----------
     # 关键边界：
     # 1. 复用 create_item，不再单独写 INSERT；保证 tracking_events 自动落 "created" 事件

@@ -38,6 +38,24 @@ _FIXED_GET_PATHS = [
 ]
 
 
+# POST 类固定子路径同样需要避让 catch-all；用空 body 触发 422/400 也比 404 健康。
+_FIXED_POST_PATHS = [
+    "/api/tracking/batch-create",
+    "/api/tracking/batch-delete",
+    "/api/tracking/batch-from-selection",
+]
+
+
+@pytest.mark.parametrize("path", _FIXED_POST_PATHS)
+def test_fixed_post_subpaths_not_shadowed(client: TestClient, path: str) -> None:
+    """POST 固定子路径不能被 /tracking/{tracking_id} catch-all 吞掉。"""
+    resp = client.post(path, json={})
+    assert resp.status_code != 404, (
+        f"{path} 返回 404，路由顺序被破坏：tracking.router 把固定段当成 tracking_id 吞掉了。"
+    )
+    assert resp.headers.get("content-type", "").startswith("application/json")
+
+
 @pytest.mark.parametrize("path", _FIXED_GET_PATHS)
 def test_fixed_subpaths_not_shadowed_by_tracking_id(client: TestClient, path: str) -> None:
     """固定子路径不能被 /tracking/{tracking_id} catch-all 吞掉。"""

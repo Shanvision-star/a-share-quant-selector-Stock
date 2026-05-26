@@ -11,6 +11,14 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _force_mock_provider(monkeypatch):
+    """这里强制走 mock provider：本测试套件断言确定性行为，不应触发真实网络。"""
+    from web.backend.services import tracking_llm_service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "load_llm_config", lambda: {"provider": "mock"})
+
+
 @pytest.fixture
 def llm_service():
     from web.backend.services.tracking_llm_service import TrackingLLMService

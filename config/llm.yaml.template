@@ -1,0 +1,16 @@
+# ============================================
+# LLM 配置模板（复制为 config/llm.yaml 后填入真实密钥）
+# ============================================
+# provider:
+#   mock     —— 上线初期使用，本地确定性建议，无任何外部依赖
+#   deepseek —— DeepSeek 官方接口（OpenAI 兼容），生产环境推荐
+
+provider: mock
+
+deepseek:
+  api_key: ""              # 从 DeepSeek 控制台获取
+  base_url: "https://api.deepseek.com/v1"
+  model: "deepseek-chat"
+  temperature: 0.2
+  timeout_seconds: 20
+  max_output_tokens: 600

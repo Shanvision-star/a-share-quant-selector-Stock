@@ -24,6 +24,16 @@ class TrackingCreateRequest(BaseModel):
     note: str = ""
 
 
+class TrackingBatchFromSelectionRequest(BaseModel):
+    """从人工选股池批量加入跟踪。
+
+    codes 留空 → 全部入选；提供 codes → 仅勾选导入，便于前端"全选/部分选"两路场景。
+    """
+
+    selection_date: str = Field(..., pattern=DATE_PATTERN)
+    codes: Optional[list[str]] = Field(default=None, max_length=500)
+
+
 def _payload_to_dict(payload: TrackingCreateRequest) -> dict:
     if hasattr(payload, "model_dump"):
         return payload.model_dump()
@@ -38,6 +48,19 @@ async def create_tracking_item(payload: TrackingCreateRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"success": True, "data": item}
+
+
+@router.post("/tracking/batch-from-selection")
+async def batch_tracking_from_selection(payload: TrackingBatchFromSelectionRequest):
+    """从人工选股池批量加入跟踪。
+
+    返回结构与 service.batch_from_selection 保持一致，前端按 created/skipped/failed 三段展示。
+    """
+    result = tracking_service.batch_from_selection(
+        selection_date=payload.selection_date,
+        codes=payload.codes,
+    )
+    return {"success": True, "data": result}
 
 
 @router.get("/tracking")

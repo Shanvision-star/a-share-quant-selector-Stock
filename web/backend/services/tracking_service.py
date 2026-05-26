@@ -187,6 +187,85 @@ class TrackingService:
         ).fetchall()
         return [self._row_to_item(row) for row in rows]
 
+    # ---------- P1: 从人工选股池批量加入跟踪 ----------
+    # 关键边界：
+    # 1. 复用 create_item，不再单独写 INSERT；保证 tracking_events 自动落 "created" 事件
+    # 2. 同 code 已存在 watch_buy / holding / partial_sold 的活跃记录 → 跳过，
+    #    避免一只股票在跟踪表里出现多条互相干扰的记录
+    # 3. 单条失败（如代码非法）不影响其他条；统一收集到 failed 列表
+    _ACTIVE_TRACKING_STATUS = ("watch_buy", "holding", "partial_sold")
+
+    def batch_from_selection(
+        self,
+        selection_date: str,
+        codes: list[str] | None = None,
+    ) -> dict:
+        """从 manual_selections 批量创建 tracking_items。
+
+        Args:
+            selection_date: 人工选股池的入池日期
+            codes: 可选；若提供，则仅导入指定代码（前端勾选场景）。
+                   未在 selection 中的 code 进入 failed 列表
+        Returns:
+            {"created": int, "skipped": int, "skipped_codes": list[str], "failed": list[str]}
+        """
+        # 延迟导入以避免循环依赖：manual_selection_service 在测试中会被 monkeypatch
+        from web.backend.services import manual_selection_service
+
+        selections = manual_selection_service.list_selections(selection_date=selection_date)
+        selection_by_code = {row["code"]: row for row in selections}
+
+        if codes is None:
+            target_codes = list(selection_by_code.keys())
+            failed: list[str] = []
+        else:
+            target_codes = []
+            failed = []
+            for code in codes:
+                if code in selection_by_code:
+                    target_codes.append(code)
+                else:
+                    # 前端勾选了未入池的代码 → 提示前端，不静默丢弃
+                    failed.append(code)
+
+        # 一次性查出所有"活跃"跟踪记录的 code，避免循环里逐条 SELECT
+        active_rows = self._conn().execute(
+            f"SELECT code FROM tracking_items WHERE status IN ({','.join(['?'] * len(self._ACTIVE_TRACKING_STATUS))})",
+            self._ACTIVE_TRACKING_STATUS,
+        ).fetchall()
+        active_codes = {row["code"] for row in active_rows}
+
+        created = 0
+        skipped_codes: list[str] = []
+        for code in target_codes:
+            if code in active_codes:
+                skipped_codes.append(code)
+                continue
+            row = selection_by_code[code]
+            try:
+                self.create_item(
+                    {
+                        "code": code,
+                        "name": row.get("name") or "",
+                        "strategy_name": row.get("strategy_name") or "",
+                        # source 标记为 manual_selection，区别于 backtest 入口，便于回溯
+                        "source": "manual_selection",
+                        "source_date": row.get("source_trade_date") or selection_date,
+                        "signal_date": row.get("source_signal_date") or selection_date,
+                    }
+                )
+                created += 1
+            except (ValueError, KeyError):
+                # 单条失败不阻塞其他条；记入 failed
+                failed.append(code)
+
+        return {
+            "created": created,
+            "skipped": len(skipped_codes),
+            "skipped_codes": skipped_codes,
+            "failed": failed,
+        }
+
     def get_item(self, tracking_id: str) -> dict | None:
         row = self._conn().execute("SELECT * FROM tracking_items WHERE tracking_id = ?", (tracking_id,)).fetchone()
         return self._row_to_item(row) if row else None

@@ -609,6 +609,25 @@ export const evaluateTrackingItems = (date?: string) =>
 export const getTrackingEvents = (trackingId: string, limit = 200) =>
   api.get(`/tracking/${encodeURIComponent(trackingId)}/events`, { params: { limit } })
 
+// 批量导入（TXT/粘贴）：text 与 codes 至少传一个；后端会去重 + 校验 6 位数字
+export interface TrackingBatchCreatePayload {
+  text?: string
+  codes?: string[]
+  signal_date?: string
+  strategy_name?: string
+  evaluate_now?: boolean
+}
+export const batchCreateTrackingItems = (payload: TrackingBatchCreatePayload) =>
+  api.post('/tracking/batch-create', payload)
+
+// 批量删除：传入 tracking_id 列表；返回 deleted / not_found
+export const batchDeleteTrackingItems = (trackingIds: string[]) =>
+  api.post('/tracking/batch-delete', { tracking_ids: trackingIds })
+
+// 单条删除（幂等：不存在返回 404）
+export const deleteTrackingItem = (trackingId: string) =>
+  api.delete(`/tracking/${encodeURIComponent(trackingId)}`)
+
 // 跟踪告警事件（P4）
 export interface TrackingAlertItem {
   alert_id?: number

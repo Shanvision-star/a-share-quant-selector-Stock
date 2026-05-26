@@ -62,6 +62,12 @@
 
 详细计划见：[QMT 预留与 20 万资金实盘执行计划](docs/QMT/qmt_backtest_live_execution_plan.md)。
 
+### Tracking-Agent（单股跟踪 + 规则告警 + OrderIntent）
+
+- 跟踪记录、规则评估、LLM 建议、OrderIntent 确认/否决的完整闭环。
+- 接口清单、路由顺序契约（`/api/tracking/*` 子路由必须先于通配 `tracking.router`）、LLM mock 决策表与 OrderIntent 流转图：见 [`docs/TRACKING_AGENT.md`](docs/TRACKING_AGENT.md)。
+- 前端入口：`web/frontend/src/views/TrackingView.vue`。
+
 ### 推送与通知
 - 🔔 **钉钉自动推送** — 选股结果 + K线图 + B1匹配排名结果自动推送到钉钉群
 - ⏱️ **智能限流保护** — 内置每分钟20条上限与2秒最小间隔，触发限速后自动指数退避重试（1s→4s→8s），避免触发钉钉错误码660026

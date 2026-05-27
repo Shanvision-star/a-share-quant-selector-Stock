@@ -15,6 +15,7 @@ import {
   batchCreateTrackingItems,
   batchDeleteTrackingItems,
   deleteTrackingItem,
+  syncCloseTracking,
   type TrackingItem,
   type TrackingAlertItem,
 } from '@/api'
@@ -44,7 +45,11 @@ const importDialogVisible = ref(false)
 const importText = ref('')          // 粘贴框文本：支持空格/换行/逗号/分号分隔
 const importSignalDate = ref('')    // 可选信号日；为空则后端默认今天
 const importEvaluateNow = ref(true) // 默认建仓后立即评估，才能在列表里看到 entry_price
+const importRefreshData = ref(true) // 默认勾选：导入前先刷行情，确保 evaluate_now 能落 entry_price
 const importLoading = ref(false)
+
+// —— 收盘同步状态 ——
+const syncCloseLoading = ref(false)
 
 // —— 删除中状态（用于 loading 反馈） ——
 const deletingBatch = ref(false)
@@ -122,7 +127,31 @@ function openImportDialog() {
   importText.value = ''
   importSignalDate.value = ''
   importEvaluateNow.value = true
+  importRefreshData.value = true
   importDialogVisible.value = true
+}
+
+// —— 收盘同步：更新活跃跟踪股票行情并推进评估状态 ——
+async function runSyncClose() {
+  syncCloseLoading.value = true
+  try {
+    const resp = await syncCloseTracking()
+    const d = resp.data?.data ?? {}
+    const updatedCnt = (d.updated ?? []).length
+    const skippedCnt = (d.skipped ?? []).length
+    const errorCnt = (d.errors ?? []).length
+    const evalTotal = d.evaluation?.total ?? 0
+    const statusChangeCnt = (d.evaluation?.status_changes ?? []).length
+    ElMessage.success(
+      `收盘同步完成：行情更新 ${updatedCnt} 只 / 跳过 ${skippedCnt} / 失败 ${errorCnt}；` +
+      `已评估 ${evalTotal} 条，状态推进 ${statusChangeCnt} 条`,
+    )
+    await refreshItems()
+  } catch (e: any) {
+    ElMessage.error(`收盘同步失败：${e?.message || e}`)
+  } finally {
+    syncCloseLoading.value = false
+  }
 }
 
 // —— 批量导入：从 TXT 文件读取并填充粘贴框 ——
@@ -156,7 +185,7 @@ async function submitImport() {
   }
   importLoading.value = true
   try {
-    const payload: any = { text, evaluate_now: importEvaluateNow.value }
+    const payload: any = { text, evaluate_now: importEvaluateNow.value, refresh_data: importRefreshData.value }
     if (importSignalDate.value) payload.signal_date = importSignalDate.value
     const resp = await batchCreateTrackingItems(payload)
     const data = resp.data?.data ?? {}
@@ -366,6 +395,9 @@ onMounted(refreshItems)
       <el-button type="success" :loading="batchLoading" @click="runBatchEvaluate">
         批量规则评估
       </el-button>
+      <el-button type="info" :loading="syncCloseLoading" @click="runSyncClose">
+        收盘同步
+      </el-button>
       <el-button type="warning" @click="openImportDialog">批量导入</el-button>
       <el-button
         type="danger"
@@ -531,6 +563,11 @@ onMounted(refreshItems)
           <label class="import-label">导入后立即评估：</label>
           <el-switch v-model="importEvaluateNow" />
           <span class="muted">开启可立刻看到买入点 / 跟踪收益</span>
+        </div>
+        <div class="import-row">
+          <label class="import-label">导入前刷新行情：</label>
+          <el-switch v-model="importRefreshData" />
+          <span class="muted">推荐开启；若 CSV 陈旧则评估无法落 entry_price</span>
         </div>
       </div>
       <template #footer>

@@ -616,9 +616,16 @@ export interface TrackingBatchCreatePayload {
   signal_date?: string
   strategy_name?: string
   evaluate_now?: boolean
+  // 导入前先刷新行情 CSV；推荐开启，确保 evaluate_now 能落 entry_price
+  refresh_data?: boolean
 }
 export const batchCreateTrackingItems = (payload: TrackingBatchCreatePayload) =>
   api.post('/tracking/batch-create', payload)
+
+// 收盘同步：仅更新活跃跟踪股票行情 CSV，再批量评估推进状态
+// 返回 {total_codes, updated, skipped, errors, evaluation{total, status_changes}}
+export const syncCloseTracking = (params?: { date?: string }) =>
+  api.post('/tracking/sync-close', {}, { params })
 
 // 批量删除：传入 tracking_id 列表；返回 deleted / not_found
 export const batchDeleteTrackingItems = (trackingIds: string[]) =>

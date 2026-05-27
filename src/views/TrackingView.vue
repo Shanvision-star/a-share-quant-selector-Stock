@@ -18,6 +18,7 @@ import {
   syncCloseTracking,
   createTrackingItem,
   getStockNameByCode,
+  getSignalClose,
   patchTrackingEntryPrice,
   type TrackingItem,
   type TrackingAlertItem,
@@ -67,12 +68,54 @@ const singleAddForm = ref({
 const singleAddLoading = ref(false)
 const singleNameLoading = ref(false)
 let stockNameTimer: ReturnType<typeof setTimeout> | null = null
+// 是否手动修过买入价：一旦用户改动过 entry_priceー不再自动覆盖。
+// 重置表单、或者 code/signal_date 变化时清零。
+const entryPriceManuallyEdited = ref(false)
+let signalCloseTimer: ReturnType<typeof setTimeout> | null = null
+
+// 根据 code+signal_date 拉信号日收盘价，填为买入价默认值。
+// 设计反应：只在未被手动修过且 code 合法、signal_date 非空时执行，
+// 并且后端返回的 close 为有效数字才赋值，避免抹掊用户的输入。
+function tryFillEntryPriceFromSignal() {
+  if (entryPriceManuallyEdited.value) return
+  const code = (singleAddForm.value.code || '').trim()
+  const date = singleAddForm.value.signal_date
+  if (!/^\d{6}$/.test(code) || !date) return
+  if (signalCloseTimer) {
+    clearTimeout(signalCloseTimer)
+    signalCloseTimer = null
+  }
+  signalCloseTimer = setTimeout(async () => {
+    try {
+      const resp = await getSignalClose(code, date)
+      const close = resp.data?.data?.close
+      if (typeof close === 'number' && close > 0 && !entryPriceManuallyEdited.value) {
+        singleAddForm.value.entry_price = close
+      }
+    } catch (e) {
+      // 静默失败：用户可手填买入价
+    }
+  }, 300)
+}
+
+function onSingleSignalDateChange(value: string | null) {
+  singleAddForm.value.signal_date = value || ''
+  entryPriceManuallyEdited.value = false
+  tryFillEntryPriceFromSignal()
+}
+
+function onSingleEntryPriceChange(_value: number | undefined) {
+  // 任何手动改动（含清空）都视为“用户接接控”，不再自动覆盖
+  entryPriceManuallyEdited.value = true
+}
 
 // 防抖：用户输入 6 位代码后 300ms 自动查询名称；避免每次按键都打后端
 function onSingleCodeChange(value: string) {
   // el-input-number / el-input 可能传入非字符串；统一字符串化
   const code = String(value ?? '').trim()
   singleAddForm.value.code = code
+  // code 变动时重置“手动改过买入价”标记，以便新 code 能重新拉默认价
+  entryPriceManuallyEdited.value = false
   if (stockNameTimer) {
     clearTimeout(stockNameTimer)
     stockNameTimer = null
@@ -88,6 +131,8 @@ function onSingleCodeChange(value: string) {
       const resp = await getStockNameByCode(code)
       const name = resp.data?.data?.name || '未知'
       singleAddForm.value.name = name
+      // 名称拉到后，顺带拉信号日收盘价默认买入价
+      tryFillEntryPriceFromSignal()
     } catch (e: any) {
       // 后端 400/500 都吞掉：用户可手填名称
       singleAddForm.value.name = '未知'
@@ -156,6 +201,7 @@ async function submitSingleAdd() {
       quantity: undefined,
       signal_date: '',
     }
+    entryPriceManuallyEdited.value = false
     await refreshItems()
   } catch (e: any) {
     if (e?.response?.status === 400) {
@@ -588,9 +634,10 @@ onMounted(refreshItems)
         :precision="3"
         :min="0"
         :step="0.01"
-        placeholder="买入价(可选)"
+        placeholder="买入价(默认信号日收盘)"
         controls-position="right"
-        style="width: 160px"
+        style="width: 180px"
+        @change="onSingleEntryPriceChange"
       />
       <el-input-number
         v-model="singleAddForm.quantity"
@@ -606,6 +653,7 @@ onMounted(refreshItems)
         value-format="YYYY-MM-DD"
         placeholder="信号日(默认今天)"
         style="width: 180px"
+        @change="onSingleSignalDateChange"
       />
       <el-button type="primary" :loading="singleAddLoading" @click="submitSingleAdd">
         添加跟踪
@@ -754,6 +802,13 @@ onMounted(refreshItems)
         </template>
       </el-table-column>
       <el-table-column prop="last_eval_date" label="最近评估" width="110" />
+      <el-table-column label="跟踪交易日" width="100" align="right">
+        <!-- 后端基于 CSV 计算从 signal_date/entry_date 到 last_eval_date/今天的真实交易日计数，
+             跳过周末与停牌；为 0 时表示还未评估过或 CSV 中查不到区间行。 -->
+        <template #default="{ row }">
+          <span>{{ row.tracked_trading_days ?? '-' }}</span>
+        </template>
+      </el-table-column>
       <el-table-column label="跟踪收益" width="110">
         <template #default="{ row }">
           <span :class="(row.latest_return_pct ?? 0) >= 0 ? 'pos' : 'neg'">

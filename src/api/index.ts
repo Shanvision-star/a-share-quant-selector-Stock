@@ -581,6 +581,8 @@ export interface TrackingItem {
   latest_intent?: Record<string, any> | null
   params?: Record<string, any>
   updated_at?: string
+  // 跟踪交易日数：后端基于 CSV 行情，从 entry_date/signal_date 到 last_eval_date/今日的真实交易日数量
+  tracked_trading_days?: number
 }
 
 export interface TrackingEvent {
@@ -631,6 +633,12 @@ export const syncCloseTracking = (params?: { date?: string }) =>
 // 返回 {success, data: {code, name}}；查不到时 name = '未知'
 export const getStockNameByCode = (code: string) =>
   api.get(`/tracking/stock-name/${encodeURIComponent(code)}`)
+
+// 查询指定 code 在指定 signal_date（含之前最近交易日）的收盘价
+// 用途：单股加入跟踪时，选定信号日后把买入价默认填为信号日收盘价
+// 返回 {success, data: {code, name, signal_date, matched_date, close}}
+export const getSignalClose = (code: string, date: string) =>
+  api.get(`/tracking/signal-close/${encodeURIComponent(code)}`, { params: { date } })
 
 // 手动修改买入价（可同步修改买入日期/数量），后端会自动 force=True 重算 latest_return_pct
 export interface TrackingEntryPricePayload {

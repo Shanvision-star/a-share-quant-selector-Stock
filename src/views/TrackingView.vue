@@ -16,6 +16,9 @@ import {
   batchDeleteTrackingItems,
   deleteTrackingItem,
   syncCloseTracking,
+  createTrackingItem,
+  getStockNameByCode,
+  patchTrackingEntryPrice,
   type TrackingItem,
   type TrackingAlertItem,
 } from '@/api'
@@ -50,6 +53,159 @@ const importLoading = ref(false)
 
 // —— 收盘同步状态 ——
 const syncCloseLoading = ref(false)
+
+// —— 单股添加状态 ——
+// 设计原因：批量导入对运营是高频路径；但调试/补单/试加单股票时弹窗+粘贴框过重，
+// 因此提供 toolbar 上的极简单股入口，并自动按代码查询名称。
+const singleAddForm = ref({
+  code: '',
+  name: '',
+  entry_price: undefined as number | undefined,
+  quantity: undefined as number | undefined,
+  signal_date: '',
+})
+const singleAddLoading = ref(false)
+const singleNameLoading = ref(false)
+let stockNameTimer: ReturnType<typeof setTimeout> | null = null
+
+// 防抖：用户输入 6 位代码后 300ms 自动查询名称；避免每次按键都打后端
+function onSingleCodeChange(value: string) {
+  // el-input-number / el-input 可能传入非字符串；统一字符串化
+  const code = String(value ?? '').trim()
+  singleAddForm.value.code = code
+  if (stockNameTimer) {
+    clearTimeout(stockNameTimer)
+    stockNameTimer = null
+  }
+  // 不足 6 位 / 含非数字时清空名称
+  if (!/^\d{6}$/.test(code)) {
+    singleAddForm.value.name = ''
+    return
+  }
+  singleNameLoading.value = true
+  stockNameTimer = setTimeout(async () => {
+    try {
+      const resp = await getStockNameByCode(code)
+      const name = resp.data?.data?.name || '未知'
+      singleAddForm.value.name = name
+    } catch (e: any) {
+      // 后端 400/500 都吞掉：用户可手填名称
+      singleAddForm.value.name = '未知'
+    } finally {
+      singleNameLoading.value = false
+    }
+  }, 300)
+}
+
+async function submitSingleAdd() {
+  const code = singleAddForm.value.code.trim()
+  if (!/^\d{6}$/.test(code)) {
+    ElMessage.warning('请输入 6 位股票代码')
+    return
+  }
+  // signal_date 缺省时用今天，确保后端能立刻找到 buy_row
+  const today = new Date()
+  const yyyy = today.getFullYear()
+  const mm = String(today.getMonth() + 1).padStart(2, '0')
+  const dd = String(today.getDate()).padStart(2, '0')
+  const signalDate = singleAddForm.value.signal_date || `${yyyy}-${mm}-${dd}`
+
+  const params: Record<string, any> = {}
+  if (singleAddForm.value.entry_price && singleAddForm.value.entry_price > 0) {
+    params.intent_entry_price = singleAddForm.value.entry_price
+  }
+  if (singleAddForm.value.quantity && singleAddForm.value.quantity > 0) {
+    params.intent_quantity = singleAddForm.value.quantity
+  }
+
+  singleAddLoading.value = true
+  try {
+    await createTrackingItem({
+      code,
+      name: singleAddForm.value.name || undefined,
+      strategy_name: 'manual_single',
+      signal_date: signalDate,
+      params: Object.keys(params).length ? params : undefined,
+    })
+    ElMessage.success(`已添加跟踪：${code} ${singleAddForm.value.name || ''}`)
+    // 添加成功后若用户填了买入价，则立刻 PATCH 触发 force 评估；
+    // 因为 createTrackingItem 仅落 params.intent_*，不会写 entry_price 列。
+    if (singleAddForm.value.entry_price && singleAddForm.value.entry_price > 0) {
+      try {
+        // 先刷新列表拿到 tracking_id
+        const resp = await listTrackingItems({ code, limit: 5 })
+        const newItem = (resp.data?.data?.items ?? [])
+          .find((it: TrackingItem) => it.code === code)
+        if (newItem) {
+          await patchTrackingEntryPrice(newItem.tracking_id, {
+            entry_price: singleAddForm.value.entry_price,
+            entry_date: signalDate,
+            quantity: singleAddForm.value.quantity,
+          })
+        }
+      } catch (e) {
+        // 仅在控制台提示；主流程不阻断
+        console.warn('单股添加后自动写入买入价失败：', e)
+      }
+    }
+    // 重置表单
+    singleAddForm.value = {
+      code: '',
+      name: '',
+      entry_price: undefined,
+      quantity: undefined,
+      signal_date: '',
+    }
+    await refreshItems()
+  } catch (e: any) {
+    if (e?.response?.status === 400) {
+      ElMessage.error(e.response?.data?.detail || '添加失败：参数错误')
+    } else {
+      ElMessage.error(`添加失败：${e?.message || e}`)
+    }
+  } finally {
+    singleAddLoading.value = false
+  }
+}
+
+// —— 行内编辑买入价状态 ——
+// 设计原因：买入价是运营场景下最常需要回填/修正的字段（手工成交价 vs 理论开盘价不一致），
+// 因此提供 popover 单字段快编，避免开二级页面。
+const entryPriceEditing = ref<Record<string, { value: number | undefined; loading: boolean }>>({})
+function openEntryPriceEditor(row: TrackingItem) {
+  entryPriceEditing.value[row.tracking_id] = {
+    value: row.entry_price ?? undefined,
+    loading: false,
+  }
+}
+async function saveEntryPrice(row: TrackingItem) {
+  const state = entryPriceEditing.value[row.tracking_id]
+  if (!state) return
+  const newPrice = Number(state.value)
+  if (!newPrice || newPrice <= 0) {
+    ElMessage.warning('买入价必须大于 0')
+    return
+  }
+  state.loading = true
+  try {
+    await patchTrackingEntryPrice(row.tracking_id, { entry_price: newPrice })
+    ElMessage.success(`已更新 ${row.code} 买入价为 ${newPrice.toFixed(3)}，已自动重算收益`)
+    delete entryPriceEditing.value[row.tracking_id]
+    await refreshItems()
+  } catch (e: any) {
+    if (e?.response?.status === 400) {
+      ElMessage.error(e.response?.data?.detail || '修改失败：当前状态不支持')
+    } else if (e?.response?.status === 404) {
+      ElMessage.error('记录不存在')
+    } else {
+      ElMessage.error(`修改失败：${e?.message || e}`)
+    }
+  } finally {
+    if (entryPriceEditing.value[row.tracking_id]) {
+      entryPriceEditing.value[row.tracking_id].loading = false
+    }
+  }
+}
 
 // —— 删除中状态（用于 loading 反馈） ——
 const deletingBatch = ref(false)
@@ -410,6 +566,52 @@ onMounted(refreshItems)
       <span class="hint">共 {{ items.length }} 条</span>
     </div>
 
+    <!-- 单股添加表单：代码 → 自动补全名称 → 可选买入价/数量 → 添加 -->
+    <div class="toolbar single-add-bar">
+      <span class="single-add-label">单股添加：</span>
+      <el-input
+        :model-value="singleAddForm.code"
+        @update:model-value="onSingleCodeChange"
+        placeholder="6 位代码"
+        style="width: 130px"
+        maxlength="6"
+        clearable
+      />
+      <el-input
+        v-model="singleAddForm.name"
+        placeholder="名称（自动）"
+        style="width: 140px"
+        :loading="singleNameLoading"
+      />
+      <el-input-number
+        v-model="singleAddForm.entry_price"
+        :precision="3"
+        :min="0"
+        :step="0.01"
+        placeholder="买入价(可选)"
+        controls-position="right"
+        style="width: 160px"
+      />
+      <el-input-number
+        v-model="singleAddForm.quantity"
+        :min="0"
+        :step="100"
+        placeholder="数量(可选)"
+        controls-position="right"
+        style="width: 140px"
+      />
+      <el-date-picker
+        v-model="singleAddForm.signal_date"
+        type="date"
+        value-format="YYYY-MM-DD"
+        placeholder="信号日(默认今天)"
+        style="width: 180px"
+      />
+      <el-button type="primary" :loading="singleAddLoading" @click="submitSingleAdd">
+        添加跟踪
+      </el-button>
+    </div>
+
     <el-empty v-if="!loading && !hasItems" description="暂无跟踪记录" />
 
     <el-table
@@ -503,13 +705,52 @@ onMounted(refreshItems)
         </template>
       </el-table-column>
       <el-table-column prop="signal_date" label="信号日" width="110" />
-      <el-table-column label="买入点" width="140">
+      <el-table-column label="买入点" width="170">
         <template #default="{ row }">
-          <div v-if="row.entry_price != null">
-            <div>{{ Number(row.entry_price).toFixed(2) }}</div>
-            <div class="muted" v-if="row.entry_date">{{ row.entry_date }}</div>
-          </div>
-          <span v-else class="muted">未触发</span>
+          <!-- 行内编辑买入价：点击"修改"打开 popover -->
+          <el-popover
+            placement="top"
+            :width="260"
+            trigger="click"
+            @show="openEntryPriceEditor(row)"
+          >
+            <template #reference>
+              <div v-if="row.entry_price != null" class="entry-price-cell">
+                <div>
+                  <span>{{ Number(row.entry_price).toFixed(3) }}</span>
+                  <el-button link size="small" type="primary">改</el-button>
+                </div>
+                <div class="muted" v-if="row.entry_date">{{ row.entry_date }}</div>
+              </div>
+              <span v-else class="muted">
+                未触发
+                <el-button link size="small" type="primary">手填</el-button>
+              </span>
+            </template>
+            <div class="entry-price-editor">
+              <div class="muted" style="margin-bottom: 6px">
+                修改买入价后会自动按 CSV 重新计算 latest_return_pct
+              </div>
+              <el-input-number
+                v-if="entryPriceEditing[row.tracking_id]"
+                v-model="entryPriceEditing[row.tracking_id].value"
+                :precision="3"
+                :min="0.01"
+                :step="0.01"
+                style="width: 100%"
+              />
+              <div style="margin-top: 8px; text-align: right">
+                <el-button
+                  size="small"
+                  type="primary"
+                  :loading="entryPriceEditing[row.tracking_id]?.loading"
+                  @click="saveEntryPrice(row)"
+                >
+                  保存
+                </el-button>
+              </div>
+            </div>
+          </el-popover>
         </template>
       </el-table-column>
       <el-table-column prop="last_eval_date" label="最近评估" width="110" />
@@ -593,6 +834,22 @@ onMounted(refreshItems)
 }
 .toolbar .hint {
   color: var(--text-secondary);
+  font-size: 12px;
+}
+.single-add-bar {
+  background: var(--bg-secondary);
+  padding: 8px 12px;
+  border-radius: 4px;
+  border: 1px dashed var(--border-color);
+}
+.single-add-label {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.entry-price-cell {
+  cursor: pointer;
+}
+.entry-price-editor {
   font-size: 12px;
 }
 .expand-panel {

@@ -627,6 +627,21 @@ export const batchCreateTrackingItems = (payload: TrackingBatchCreatePayload) =>
 export const syncCloseTracking = (params?: { date?: string }) =>
   api.post('/tracking/sync-close', {}, { params })
 
+// 根据股票代码查询名称（供前端输入代码后自动补全名称）
+// 返回 {success, data: {code, name}}；查不到时 name = '未知'
+export const getStockNameByCode = (code: string) =>
+  api.get(`/tracking/stock-name/${encodeURIComponent(code)}`)
+
+// 手动修改买入价（可同步修改买入日期/数量），后端会自动 force=True 重算 latest_return_pct
+export interface TrackingEntryPricePayload {
+  entry_price: number
+  entry_date?: string
+  quantity?: number
+  eval_date?: string
+}
+export const patchTrackingEntryPrice = (trackingId: string, payload: TrackingEntryPricePayload) =>
+  api.patch(`/tracking/${encodeURIComponent(trackingId)}/entry-price`, payload)
+
 // 批量删除：传入 tracking_id 列表；返回 deleted / not_found
 export const batchDeleteTrackingItems = (trackingIds: string[]) =>
   api.post('/tracking/batch-delete', { tracking_ids: trackingIds })

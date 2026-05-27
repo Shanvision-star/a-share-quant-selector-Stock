@@ -46,6 +46,8 @@ class TrackingBatchCreateRequest(BaseModel):
     signal_date: Optional[str] = Field(default=None, pattern=DATE_PATTERN)
     strategy_name: str = "manual_batch"
     evaluate_now: bool = True
+    # 导入前先刷新每只股票近期行情 CSV（推荐勾选，否则 evaluate_now 在数据陈旧时无效）
+    refresh_data: bool = False
 
 
 class TrackingBatchDeleteRequest(BaseModel):
@@ -106,6 +108,13 @@ async def batch_create_tracking(payload: TrackingBatchCreateRequest):
         raw_codes.extend(payload.codes)
     if not raw_codes:
         raise HTTPException(status_code=400, detail="未解析到任何有效股票代码")
+
+    # 若前端勾选"导入前刷新行情"，在创建前逐一增量更新 CSV，
+    # 确保 evaluate_now=True 时能找到 signal_date 之后的交易日并落 entry_price。
+    if payload.refresh_data and raw_codes:
+        from web.backend.services.tracking_sync_service import _fetch_and_update_single
+        for code in raw_codes:
+            _fetch_and_update_single(code)
 
     result = tracking_service.batch_create_codes(
         codes=raw_codes,
@@ -175,6 +184,22 @@ async def evaluate_tracking_item(
 async def evaluate_tracking_items(date: Optional[str] = Query(default=None, pattern=DATE_PATTERN)):
     """批量评估未结束的跟踪记录。"""
     return {"success": True, "data": tracking_service.evaluate_items(date)}
+
+
+@router.post("/tracking/sync-close")
+async def sync_close_tracking(
+    date: Optional[str] = Query(default=None, pattern=DATE_PATTERN, description="评估基准日，默认取最新收盘日"),
+):
+    """收盘同步：仅更新活跃跟踪股票的近期行情 CSV，再批量评估推进状态。
+
+    对比全市场更新（可能数分钟），本接口只刷跟踪列表中的 N 只股票，
+    通常 5-50 只，耗时秒级，适合每日 15:30 后手动一键触发。
+    返回结构：{total_codes, updated, skipped, errors, evaluation{total, status_changes}}。
+    """
+    from web.backend.services.tracking_sync_service import tracking_sync_service as _tss
+
+    result = _tss.sync_and_evaluate(eval_date=date)
+    return {"success": True, "data": result}
 
 
 @router.get("/tracking/{tracking_id}/events")

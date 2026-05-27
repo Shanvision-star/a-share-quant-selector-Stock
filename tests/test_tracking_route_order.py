@@ -43,6 +43,7 @@ _FIXED_POST_PATHS = [
     "/api/tracking/batch-create",
     "/api/tracking/batch-delete",
     "/api/tracking/batch-from-selection",
+    "/api/tracking/sync-close",   # 收盘同步：固定子路径，不能被 /{tracking_id} 吞掉
 ]
 
 

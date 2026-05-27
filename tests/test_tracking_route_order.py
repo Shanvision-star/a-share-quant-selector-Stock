@@ -36,6 +36,7 @@ _FIXED_GET_PATHS = [
     "/api/tracking/rule-templates",
     "/api/tracking/rule-templates/rules",
     "/api/tracking/stock-name/000001",   # 股票名称查询：固定子路径，不能被 /{tracking_id} 吞
+    "/api/tracking/signal-close/000001?date=2026-05-27",  # 信号日收盘价：固定子路径，不能被 /{tracking_id} 吞
 ]
 
 

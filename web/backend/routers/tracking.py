@@ -177,6 +177,24 @@ async def get_tracking_stock_name(code: str):
     return {"success": True, "data": {"code": code, "name": name}}
 
 
+@router.get("/tracking/signal-close/{code}")
+async def get_tracking_signal_close(code: str, date: str):
+    """查询指定 code 在指定 signal_date（含之前最近交易日）的收盘价。
+
+    用途：前端单股加入跟踪表单选好信号日后，自动把买入价默认填成信号日收盘价，
+    用户可再手动覆盖。
+
+    路由顺序约束：必须注册在 GET /tracking/{tracking_id} 之前。
+    """
+    if not code.isdigit() or len(code) != 6:
+        raise HTTPException(status_code=400, detail="股票代码必须是 6 位数字")
+    try:
+        data = tracking_service.get_signal_close(code, date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "data": data}
+
+
 @router.get("/tracking/{tracking_id}")
 async def get_tracking_item(tracking_id: str):
     """查询单条跟踪记录。"""

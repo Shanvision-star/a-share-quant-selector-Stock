@@ -139,10 +139,24 @@ class TrackingService:
         tracking_id = f"trk_{uuid4().hex[:12]}"
         now = _now_text()
         params = dict(payload.get("params") or {})
+        # 关键改动：name 为空时自动按 code 查询 stock_names.json，
+        # 避免批量导入 / 路由调用方忘传 name 时落库一直为空。
+        # 这样做的好处：列表展示、推送、报表都能立刻拿到中文名。
+        raw_code = str(payload.get("code") or "").strip()
+        raw_name = str(payload.get("name") or "").strip()
+        if not raw_name and raw_code:
+            try:
+                from web.backend.services.kline_service import get_stock_name
+
+                resolved = get_stock_name(raw_code)
+                # get_stock_name 找不到时返回 "未知"，仍然落库以保留占位
+                raw_name = resolved or ""
+            except Exception:
+                raw_name = ""
         item = {
             "tracking_id": tracking_id,
-            "code": str(payload.get("code") or "").strip(),
-            "name": str(payload.get("name") or ""),
+            "code": raw_code,
+            "name": raw_name,
             "strategy_name": str(payload.get("strategy_name") or ""),
             "source": str(payload.get("source") or "manual"),
             "source_date": str(payload.get("source_date") or payload.get("trade_date") or ""),
@@ -190,7 +204,44 @@ class TrackingService:
             f"SELECT * FROM tracking_items {where_sql} ORDER BY updated_at DESC LIMIT ?",
             [*values, max(1, int(limit))],
         ).fetchall()
-        return [self._row_to_item(row) for row in rows]
+        # 关键改动：
+        # 1) 列表内对历史无 name 的行做"懒回填"——查 stock_names.json 拿名后
+        #    UPDATE 落库；只对真空或 "未知" 的行处理，避免污染用户手填名。
+        # 2) 用单次 _frame_cache 共享 CSV 加载，给 _row_to_item 计算 tracked_trading_days
+        #    服用同一个 DataFrame，避免每行重读 CSV。
+        try:
+            from web.backend.services.kline_service import get_stock_name
+        except Exception:
+            get_stock_name = None  # type: ignore
+
+        frame_cache: dict[str, pd.DataFrame] = {}
+        items: list[dict] = []
+        names_to_backfill: list[tuple[str, str]] = []  # (tracking_id, name)
+        for row in rows:
+            item = self._row_to_item(row, frame_cache=frame_cache)
+            current_name = (item.get("name") or "").strip()
+            if get_stock_name and item.get("code") and current_name in ("", "未知"):
+                try:
+                    resolved = get_stock_name(item["code"])
+                    if resolved and resolved != current_name:
+                        item["name"] = resolved
+                        # 只有真名才回写，"未知" 不污染；下次仍会重试
+                        if resolved != "未知":
+                            names_to_backfill.append((item["tracking_id"], resolved))
+                except Exception:
+                    pass
+            items.append(item)
+
+        # 在循环外批量提交回填，避免多次 commit IO
+        if names_to_backfill:
+            conn = self._conn()
+            now = _now_text()
+            conn.executemany(
+                "UPDATE tracking_items SET name = ?, updated_at = ? WHERE tracking_id = ?",
+                [(name, now, tid) for tid, name in names_to_backfill],
+            )
+            conn.commit()
+        return items
 
     # ---------- P-D: 单条与批量删除 ----------
     # 关键边界：
@@ -668,7 +719,7 @@ class TrackingService:
         self._conn().execute(f"UPDATE tracking_items SET {', '.join(columns)} WHERE tracking_id = ?", values)
         self._conn().commit()
 
-    def _row_to_item(self, row) -> dict:
+    def _row_to_item(self, row, frame_cache: dict | None = None) -> dict:
         item = dict(row)
         item["params"] = _decode_json(item.pop("params_json", None), {})
         item["latest_intent"] = _decode_json(item.pop("latest_intent_json", None), None)
@@ -677,7 +728,91 @@ class TrackingService:
         item["last_close"] = None if item.get("last_close") is None else _safe_float(item.get("last_close"))
         item["latest_return_pct"] = _safe_float(item.get("latest_return_pct"), 0.0)
         item["quantity"] = _safe_int(item.get("quantity"), 0)
+        # 派生字段：跟踪交易日数（业务含义=策略实际持有/观察了多少根 K 线）
+        # 起点优先取 entry_date（真正买入），其次 signal_date（仍在 watch_buy 时）
+        # 终点优先取 last_eval_date（最近一次评估），其次今天
+        # 计入起点当日；用 CSV 自带的交易日历，不必另查日历表
+        item["tracked_trading_days"] = self._compute_tracked_days(item, frame_cache)
         return item
+
+    def _compute_tracked_days(self, item: dict, frame_cache: dict | None = None) -> int:
+        """统计跟踪期间穿越的交易日数。
+
+        关键边界：
+        - CSV 缺失或没数据时返回 0，不抛错；
+        - start 取 entry_date ?: signal_date；为空则返回 0；
+        - end 取 last_eval_date ?: 今天；
+        - 调用方传 frame_cache 时复用同一 DataFrame，避免列表场景 N 次 IO。
+        """
+        code = (item.get("code") or "").strip()
+        if not code:
+            return 0
+        start_str = item.get("entry_date") or item.get("signal_date") or ""
+        if not start_str:
+            return 0
+        end_str = item.get("last_eval_date") or datetime.now().strftime("%Y-%m-%d")
+        try:
+            start_ts = pd.to_datetime(start_str)
+            end_ts = pd.to_datetime(end_str)
+        except Exception:
+            return 0
+        if end_ts < start_ts:
+            return 0
+        try:
+            if frame_cache is not None and code in frame_cache:
+                frame = frame_cache[code]
+            else:
+                frame = self._price_frame(code)
+                if frame_cache is not None:
+                    frame_cache[code] = frame
+            if frame is None or frame.empty:
+                return 0
+            mask = (frame["date"] >= start_ts) & (frame["date"] <= end_ts)
+            return int(mask.sum())
+        except Exception:
+            return 0
+
+    # ---------- 信号日收盘价查询（用于单股添加表单默认买入价） ----------
+    def get_signal_close(self, code: str, signal_date: str) -> dict:
+        """返回指定 code 在 signal_date（或之前最近交易日）的收盘价。
+
+        Returns:
+            {"code", "name", "signal_date", "matched_date", "close"}
+            close 可能为 None（CSV 不存在或日期早于首条记录）
+        Raises:
+            ValueError: 当 signal_date 解析失败
+        """
+        code = str(code or "").strip()
+        if not code:
+            raise ValueError("code 不能为空")
+        try:
+            target_ts = pd.to_datetime(signal_date)
+        except Exception as exc:
+            raise ValueError(f"signal_date 非法: {signal_date}") from exc
+        try:
+            from web.backend.services.kline_service import get_stock_name
+
+            name = get_stock_name(code) or "未知"
+        except Exception:
+            name = "未知"
+        frame = self._price_frame(code)
+        if frame is None or frame.empty:
+            return {"code": code, "name": name, "signal_date": signal_date,
+                    "matched_date": None, "close": None}
+        # 取 signal_date 当日；若当日非交易日，回退到之前最近交易日
+        eligible = frame.index[frame["date"] <= target_ts]
+        if len(eligible) == 0:
+            return {"code": code, "name": name, "signal_date": signal_date,
+                    "matched_date": None, "close": None}
+        row = frame.iloc[int(eligible[-1])]
+        matched = row["date"].strftime("%Y-%m-%d")
+        return {
+            "code": code,
+            "name": name,
+            "signal_date": signal_date,
+            "matched_date": matched,
+            "close": _safe_float(row.get("close"), 0.0) or None,
+        }
 
     def _price_frame(self, code: str) -> pd.DataFrame:
         frame = self.daily_loader(code)

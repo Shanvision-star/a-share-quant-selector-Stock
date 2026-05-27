@@ -56,6 +56,20 @@ class TrackingBatchDeleteRequest(BaseModel):
     tracking_ids: list[str] = Field(..., min_length=1, max_length=500)
 
 
+class TrackingEntryPriceUpdateRequest(BaseModel):
+    """手动修正买入价请求。
+
+    - entry_price 必须 > 0；
+    - entry_date / quantity 可选，传则一并更新；
+    - 后端会自动 force=True 重算 latest_return_pct。
+    """
+
+    entry_price: float = Field(..., gt=0)
+    entry_date: Optional[str] = Field(default=None, pattern=DATE_PATTERN)
+    quantity: Optional[int] = Field(default=None, ge=0)
+    eval_date: Optional[str] = Field(default=None, pattern=DATE_PATTERN)
+
+
 def _payload_to_dict(payload: TrackingCreateRequest) -> dict:
     if hasattr(payload, "model_dump"):
         return payload.model_dump()
@@ -145,6 +159,24 @@ async def list_tracking_items(
     return {"success": True, "data": {"items": tracking_service.list_items(status=status, code=code, limit=limit)}}
 
 
+@router.get("/tracking/stock-name/{code}")
+async def get_tracking_stock_name(code: str):
+    """根据 6 位股票代码返回名称，用于前端单股输入时自动补全名称。
+
+    路由顺序约束：必须注册在 GET /tracking/{tracking_id} 之前，否则 FastAPI 会把
+    "stock-name" 当成 tracking_id 命中下方路由导致 404。
+    """
+    if not code.isdigit() or len(code) != 6:
+        raise HTTPException(status_code=400, detail="股票代码必须是 6 位数字")
+    try:
+        # 延迟导入，避免循环依赖以及在路由模块加载时拖入 kline_service 副作用
+        from web.backend.services.kline_service import get_stock_name
+        name = get_stock_name(code)
+    except Exception as exc:  # 容错：名称查不到不算硬错误，返回"未知"由前端展示
+        return {"success": True, "data": {"code": code, "name": "未知"}, "warning": str(exc)}
+    return {"success": True, "data": {"code": code, "name": name}}
+
+
 @router.get("/tracking/{tracking_id}")
 async def get_tracking_item(tracking_id: str):
     """查询单条跟踪记录。"""
@@ -165,6 +197,29 @@ async def delete_tracking_item(tracking_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail=f"跟踪记录不存在: {tracking_id}")
     return {"success": True, "data": {"tracking_id": tracking_id, "deleted": True}}
+
+
+@router.patch("/tracking/{tracking_id}/entry-price")
+async def patch_tracking_entry_price(tracking_id: str, payload: TrackingEntryPriceUpdateRequest):
+    """手动修改买入价（可选同步修改买入日期/数量），并强制重算 latest_return_pct。
+
+    用于实际成交价与系统假设不符的修正场景；
+    后端走 update_entry_price → evaluate_item(force=True)，绕过同日短路。
+    HTTP 方法用 PATCH 与已有的 GET / POST /tracking/{id}/* 互不冲突，无需调整路由顺序测试。
+    """
+    try:
+        item = tracking_service.update_entry_price(
+            tracking_id,
+            entry_price=payload.entry_price,
+            entry_date=payload.entry_date,
+            quantity=payload.quantity,
+            eval_date=payload.eval_date,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"跟踪记录不存在: {tracking_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True, "data": item}
 
 
 @router.post("/tracking/{tracking_id}/evaluate")

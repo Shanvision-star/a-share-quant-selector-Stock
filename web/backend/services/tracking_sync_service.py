@@ -98,7 +98,8 @@ class TrackingSyncService:
 
         # ── Step 3: 批量推进评估状态 ──────────────────────────────────
         # 即使部分 code 更新失败，也继续评估；evaluate_items 内部已处理空 frame
-        eval_result = tracking_service.evaluate_items(eval_date)
+        # force=True 打破 holding 同日短路，保证刚刚刷的 CSV 能即时重算 latest_return_pct。
+        eval_result = tracking_service.evaluate_items(eval_date, force=True)
 
         # 统计状态变更数（watch_buy → holding 等）：从 items 差分得出
         status_changes = [

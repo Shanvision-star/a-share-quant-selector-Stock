@@ -467,7 +467,12 @@ class TrackingService:
             events.append(item)
         return events
 
-    def evaluate_item(self, tracking_id: str, eval_date: str | None = None) -> dict:
+    def evaluate_item(self, tracking_id: str, eval_date: str | None = None, force: bool = False) -> dict:
+        """评估单条跟踪记录。
+
+        force=True 时打破"同日不重算"短路（_evaluate_holding 当 last_eval_date == eval_date 默认直接返回）。
+        收盘同步、手动改买入价等需要强制重算的场景必须传 force=True。
+        """
         item = self.get_item(tracking_id)
         if not item:
             raise KeyError(tracking_id)
@@ -480,15 +485,69 @@ class TrackingService:
         if item["status"] == "watch_buy":
             return self._evaluate_watch_buy(item, frame, eval_row)
         if item["status"] in {"holding", "partial_sold"}:
-            return self._evaluate_holding(item, eval_row)
+            return self._evaluate_holding(item, eval_row, force=force)
         return item
 
-    def evaluate_items(self, eval_date: str | None = None) -> dict:
+    def evaluate_items(self, eval_date: str | None = None, force: bool = False) -> dict:
+        """批量评估未结束跟踪。force 透传给 evaluate_item，用于收盘同步等强制重算路径。"""
         items = [item for item in self.list_items(status="all", limit=1000) if item["status"] not in {"closed"}]
         evaluated = []
         for item in items:
-            evaluated.append(self.evaluate_item(item["tracking_id"], eval_date))
+            evaluated.append(self.evaluate_item(item["tracking_id"], eval_date, force=force))
         return {"total": len(items), "items": evaluated}
+
+    def update_entry_price(
+        self,
+        tracking_id: str,
+        entry_price: float,
+        entry_date: str | None = None,
+        quantity: int | None = None,
+        eval_date: str | None = None,
+    ) -> dict:
+        """手动修正买入价并立即强制重算收益率。
+
+        使用场景：实际成交价与系统假设的开盘/收盘价不符，操盘手需要把真实成交价回填到跟踪记录，
+        以便 latest_return_pct/last_close 反映真实盈亏。
+
+        约束：
+        - 仅允许在 holding / partial_sold 状态下修改 entry_price，避免污染 watch_buy 的入场计算；
+        - entry_price 必须 > 0，否则 ValueError；
+        - 修改完毕走 evaluate_item(force=True)，绕过 _evaluate_holding 同日短路；
+        - 写一条 entry_price_edited 事件，留下审计痕迹。
+        """
+        item = self.get_item(tracking_id)
+        if not item:
+            raise KeyError(tracking_id)
+        if item["status"] not in {"holding", "partial_sold"}:
+            raise ValueError(f"仅 holding/partial_sold 可修改买入价，当前状态 {item['status']}")
+        price = _safe_float(entry_price, 0.0)
+        if price <= 0:
+            raise ValueError("entry_price 必须大于 0")
+
+        changes: dict = {"entry_price": round(price, 3)}
+        if entry_date:
+            changes["entry_date"] = entry_date
+        if quantity is not None:
+            changes["quantity"] = max(0, int(quantity))
+        self._update_item(tracking_id, **changes)
+        # 写审计事件：记录旧值/新值，便于回溯
+        self.add_event(
+            tracking_id,
+            event_type="entry_price_edited",
+            event_date=entry_date or item.get("entry_date") or item.get("last_eval_date"),
+            action="EDIT",
+            message="手动调整买入价",
+            payload={
+                "old_entry_price": item.get("entry_price"),
+                "new_entry_price": round(price, 3),
+                "old_entry_date": item.get("entry_date"),
+                "new_entry_date": entry_date or item.get("entry_date"),
+                "old_quantity": item.get("quantity"),
+                "new_quantity": changes.get("quantity", item.get("quantity")),
+            },
+        )
+        # 强制重算 latest_return_pct，避免被同日短路卡住
+        return self.evaluate_item(tracking_id, eval_date, force=True)
 
     def confirm_intent(self, tracking_id: str, intent: dict | None = None) -> dict:
         """确认 LLM/系统建议的 OrderIntent：只落事件，不接入真实交易。
@@ -688,16 +747,25 @@ class TrackingService:
             quantity=quantity,
         ).to_mapping()
         buy_date = buy_row["date"].strftime("%Y-%m-%d")
+        # 切到 holding 当日：若 eval_row.date 已经 > buy_row.date（即评估日已经过了入场日），
+        # 应该立即按 entry_price/eval_close 计算 latest_return_pct，避免之后被 _evaluate_holding
+        # 同日短路（last_eval_date == eval_date）卡住而长期显示 0%。
+        eval_close = _safe_float(eval_row.get("close"), 0.0)
+        rounded_entry = round(buy_price, 3)
+        if rounded_entry > 0 and eval_close > 0 and eval_row["date"] > buy_row["date"]:
+            initial_return_pct = round((eval_close / rounded_entry - 1) * 100, 2)
+        else:
+            initial_return_pct = 0.0
         self._update_item(
             item["tracking_id"],
             status="holding",
             entry_date=buy_date,
-            entry_price=round(buy_price, 3),
+            entry_price=rounded_entry,
             quantity=quantity,
             remaining_pct=100.0,
             last_eval_date=eval_date,
-            last_close=_safe_float(eval_row.get("close")),
-            latest_return_pct=0.0,
+            last_close=eval_close,
+            latest_return_pct=initial_return_pct,
             next_action="BUY",
             latest_intent=intent,
         )
@@ -711,9 +779,14 @@ class TrackingService:
         )
         return self.get_item(item["tracking_id"])
 
-    def _evaluate_holding(self, item: dict, eval_row) -> dict:
+    def _evaluate_holding(self, item: dict, eval_row, force: bool = False) -> dict:
+        """评估 holding/partial_sold 状态。
+
+        force=False（默认）保留同日短路，避免一次批量评估内重复计算；
+        force=True 强制重算，用于收盘同步与手动改买入价后立即刷新 latest_return_pct。
+        """
         eval_date = eval_row["date"].strftime("%Y-%m-%d")
-        if item.get("last_eval_date") == eval_date:
+        if not force and item.get("last_eval_date") == eval_date:
             return item
 
         close_price = _safe_float(eval_row.get("close"), 0.0)

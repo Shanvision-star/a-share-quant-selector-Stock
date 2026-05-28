@@ -587,11 +587,17 @@ async def _run_data_update_unlocked(
         except Exception:
             pass
 
+    # ------------------------------------------------------------------
+    # 三态分流：done / partial / error
+    # 关键修复（系统化）：原实现把 'partial'（极少数股票失败）和 'error'（致命）
+    # 视为同一类失败 → 直接 finish_run('error') 并 return，导致后续阶段二策略
+    # 重建永远不会触发。这与“5000+ 股票里 1 只失败仍应能跑策略”的业务事实矛盾。
+    # 修复：仅 'error' 真正中止；'partial' 视为“局部完成”，发 warning 事件后
+    # 继续进入阶段二，避免单点失败阻断整条 pipeline。
+    # ------------------------------------------------------------------
     update_status = update_summary.get('status')
-    if update_status in {'error', 'partial'}:
-        message = update_summary.get('message') or (
-            '数据更新未全量完成' if update_status == 'partial' else '数据更新失败'
-        )
+    if update_status == 'error':
+        message = update_summary.get('message') or '数据更新失败'
         try:
             repo.finish_run(run_id, 'error', message)
             repo.insert_event(run_id, 'error', message=message)
@@ -609,6 +615,25 @@ async def _run_data_update_unlocked(
             },
         }
         return
+
+    if update_status == 'partial':
+        # 局部失败：记录告警事件，但不中断 pipeline，继续阶段二
+        warn_msg = update_summary.get('message') or '数据更新未全量完成'
+        try:
+            repo.insert_event(run_id, 'warning', message=warn_msg)
+        except Exception:
+            pass
+        yield {
+            "event": "update_warning",
+            "data": {
+                "status": "running", "progress": 40,
+                "message": warn_msg + "（局部失败，仍将继续阶段二策略重建）",
+                "run_id": run_id, "stage": "update",
+                "trade_date": effective_date,
+                "update_status": "partial",
+                **update_metrics,
+            },
+        }
 
     yield {
         "event": "update_complete",

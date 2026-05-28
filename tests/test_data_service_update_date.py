@@ -191,8 +191,9 @@ def test_mark_stale_update_runs_interrupted(monkeypatch):
     assert events[0][0] == "old-update"
 
 
-def test_run_data_update_stops_rebuild_when_update_is_partial(monkeypatch):
-    """数据更新只完成部分股票时，统一作业必须终止，不能继续重建策略缓存。"""
+def test_run_data_update_continues_rebuild_when_update_is_partial(monkeypatch):
+    """数据更新 partial（少数股票失败）时，必须继续策略重建，
+    避免单点失败阻断整条 pipeline。但应发出 update_warning 事件做提示。"""
     monkeypatch.setattr(data_service.csv_manager, "list_all_stocks", lambda: ["000001", "600000"])
     monkeypatch.setattr(strategy_service, "get_latest_trade_date", lambda: "2026-05-14")
 
@@ -210,17 +211,33 @@ def test_run_data_update_stops_rebuild_when_update_is_partial(monkeypatch):
 
     monkeypatch.setattr(data_service.fetcher, "daily_update", fake_daily_update)
 
-    def should_not_rebuild(*args, **kwargs):
-        raise AssertionError("数据更新 partial 时不能继续策略重建")
+    rebuild_called = {"n": 0}
 
-    monkeypatch.setattr(strategy_service, "build_strategy_result_snapshot", should_not_rebuild)
+    def fake_rebuild(*args, **kwargs):
+        # 模拟策略重建：返回最小快照即可，确保被调用即视为通过
+        rebuild_called["n"] += 1
+        cb = kwargs.get("progress_callback")
+        if cb:
+            try:
+                cb("progress", {"progress": 50, "message": "rebuild..."})
+                cb("progress", {"progress": 100, "message": "done"})
+            except Exception:
+                pass
+        return {"total": 3, "trade_date": "2026-05-14", "groups": {"b1": []}}
+
+    monkeypatch.setattr(strategy_service, "build_strategy_result_snapshot", fake_rebuild)
 
     finished = []
+    events_recorded = []
     monkeypatch.setattr(data_service.repo, "generate_run_id", lambda: "run-partial")
     monkeypatch.setattr(data_service.repo, "create_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(data_service.repo, "update_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(data_service.repo, "finish_run", lambda *args, **kwargs: finished.append(args))
-    monkeypatch.setattr(data_service.repo, "insert_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        data_service.repo,
+        "insert_event",
+        lambda *args, **kwargs: events_recorded.append((args, kwargs)),
+    )
 
     async def collect_events():
         return [
@@ -235,9 +252,16 @@ def test_run_data_update_stops_rebuild_when_update_is_partial(monkeypatch):
 
     events = asyncio.run(collect_events())
 
+    # 策略重建必须被调用
+    assert rebuild_called["n"] >= 1, "partial 状态下应继续进入阶段二策略重建"
+
+    # 事件流应包含 update_warning（提示局部失败）
+    event_types = [e["event"] for e in events]
+    assert "update_warning" in event_types, f"缺少 update_warning 事件：{event_types}"
+    assert "update_complete" in event_types
+    assert "rebuild_start" in event_types
+    assert events[-1]["event"] == "job_complete"
+
+    # run 最终被标为 done 而非 error
     assert finished[-1][0] == "run-partial"
-    assert finished[-1][1] == "error"
-    assert events[-1]["event"] == "error"
-    assert events[-1]["data"]["status"] == "error"
-    assert events[-1]["data"]["update_status"] == "partial"
-    assert events[-1]["data"]["failed"] == 1
+    assert finished[-1][1] == "done"

@@ -48,6 +48,8 @@ nohup.out
 *.key
 *.pem
 *.crt
+# LLM 密钥（DeepSeek 等），仅保留 *.template
+config/llm.yaml
 
 # Web dependency artifacts
 web/node_modules/

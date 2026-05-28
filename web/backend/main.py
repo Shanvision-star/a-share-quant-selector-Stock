@@ -66,6 +66,11 @@ from web.backend.routers import (
     txt_export,
     manual_selection,
     tracking,
+    tracking_rule_template,
+    tracking_alert,
+    tracking_evaluation,
+    tracking_llm,
+    tracking_intent,
 )
 
 
@@ -146,6 +151,15 @@ app.include_router(backtest.router)
 app.include_router(trajectory.router)
 app.include_router(txt_export.router)
 app.include_router(manual_selection.router)
+# 注意：FastAPI 按 include 顺序匹配路由。tracking.router 的 prefix="/api" 下
+# 定义了 /tracking/{tracking_id}，会把 alerts / rule-templates / evaluate-rules
+# 这些固定段误吞为 tracking_id 触发 404。因此把所有 prefix=/api/tracking/<固定段>
+# 的子路由器先于 tracking.router 注册，让更具体的前缀先命中。
+app.include_router(tracking_alert.router)
+app.include_router(tracking_rule_template.router)
+app.include_router(tracking_evaluation.router)
+app.include_router(tracking_llm.router)
+app.include_router(tracking_intent.router)
 app.include_router(tracking.router)
 
 

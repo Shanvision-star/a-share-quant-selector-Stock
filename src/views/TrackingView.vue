@@ -3,6 +3,7 @@
 // + 批量导入（TXT/粘贴） + 勾选批量删除（满足前端运营批量化诉求）
 // 后端入口：tracking.py / tracking_alert.py / tracking_evaluation.py / tracking_llm.py / tracking_intent.py
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listTrackingItems,
@@ -30,6 +31,13 @@ const loading = ref(false)
 const statusFilter = ref<string>('all')
 const codeFilter = ref<string>('')
 const batchLoading = ref(false)
+
+// 路由实例：用于代码/名称点击跳转 K 线详情页（路由名 StockDetail，参数 code）
+const router = useRouter()
+function goStockDetail(code: string) {
+  if (!code) return
+  router.push({ name: 'StockDetail', params: { code } })
+}
 
 // —— 勾选状态（用于批量删除） ——
 // 之所以单独维护一个 Set 而不是依赖 el-table selection 事件，
@@ -744,8 +752,17 @@ onMounted(refreshItems)
         </template>
       </el-table-column>
 
-      <el-table-column prop="code" label="代码" width="100" />
-      <el-table-column prop="name" label="名称" width="120" />
+      <!-- 代码/名称可点击跳转 K 线详情，提升运营查看效率 -->
+      <el-table-column label="代码" width="100">
+        <template #default="{ row }">
+          <el-link type="primary" :underline="false" @click="goStockDetail(row.code)">{{ row.code }}</el-link>
+        </template>
+      </el-table-column>
+      <el-table-column label="名称" width="120">
+        <template #default="{ row }">
+          <el-link type="primary" :underline="false" @click="goStockDetail(row.code)">{{ row.name || '-' }}</el-link>
+        </template>
+      </el-table-column>
       <el-table-column prop="strategy_name" label="策略" width="140" show-overflow-tooltip />
       <el-table-column label="状态" width="120">
         <template #default="{ row }">

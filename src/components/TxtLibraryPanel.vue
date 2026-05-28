@@ -36,6 +36,62 @@ const storageDirLabel = computed(() => txtInfo.value?.relative_dir || 'data/txt/
 const summaryDate = computed(() => txtFilterDate.value || props.date || txtSummary.value?.date || '')
 const hasSummary = computed(() => !!txtSummary.value && Number(txtSummary.value.signal_total || 0) > 0)
 
+// 折叠面板展开状态：默认展开全部分组；选中具体策略时只展开该组
+const activePanels = ref<string[]>([])
+
+// 策略 → 中文标签的映射；优先沿用文件自身 strategy_label，避免与后端口径冲突
+const STRATEGY_LABEL_MAP: Record<string, string> = {
+  b1: 'B1形态',
+  b2: 'B2突破',
+  bowl: '碗底反弹',
+  brick: '砖型图',
+  unified: '统一策略',
+  combined: '统一策略',
+  mixed: '统一策略',
+  unknown: '未分类',
+}
+
+// 将 txtFiles 按 strategy 字段聚合，统一/未分类归入独立分组，便于高效分辨与归纳
+const groupedTxtFiles = computed(() => {
+  const groups: Record<string, { key: string; label: string; files: any[] }> = {}
+  for (const item of txtFiles.value) {
+    const rawKey = (item.strategy || 'unknown').toString().toLowerCase()
+    // 统一策略（含批量分类生成的 combined/mixed 命名）单独成组
+    const key = ['unified', 'combined', 'mixed'].includes(rawKey) ? 'unified' : rawKey
+    if (!groups[key]) {
+      groups[key] = {
+        key,
+        label: item.strategy_label || STRATEGY_LABEL_MAP[key] || key.toUpperCase(),
+        files: [],
+      }
+    }
+    groups[key].files.push(item)
+  }
+  // 按预设顺序排列：B1 → B2 → 碗底 → 砖型 → 统一 → 未分类 → 其他
+  const order = ['b1', 'b2', 'bowl', 'brick', 'unified', 'unknown']
+  return Object.values(groups).sort((a, b) => {
+    const ia = order.indexOf(a.key)
+    const ib = order.indexOf(b.key)
+    if (ia === -1 && ib === -1) return a.key.localeCompare(b.key)
+    if (ia === -1) return 1
+    if (ib === -1) return -1
+    return ia - ib
+  })
+})
+
+// 监听筛选与列表变化，自动维护展开状态：选中具体策略 → 单独展开；全部 → 全部展开
+watch(
+  [txtStrategy, groupedTxtFiles],
+  ([strategy, groups]) => {
+    if (strategy && strategy !== 'all') {
+      activePanels.value = [strategy]
+    } else {
+      activePanels.value = groups.map((g) => g.key)
+    }
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
   loadTxtInfo()
   loadTxtDates()
@@ -231,20 +287,34 @@ function onTxtDateChange() {
 
     <div v-loading="txtLoading" class="txt-file-list">
       <el-empty v-if="!txtFiles.length" description="暂无TXT文件，点击「生成TXT」创建" />
-      <el-table v-else :data="txtFiles" size="small" stripe>
-        <el-table-column prop="date" label="日期" width="120" sortable />
-        <el-table-column prop="strategy_label" label="策略" width="100" />
-        <el-table-column prop="count" label="股票数" width="80" />
-        <el-table-column prop="created_at" label="生成时间" width="160" />
-        <el-table-column prop="filename" label="文件名" show-overflow-tooltip />
-        <el-table-column label="操作" width="90">
-          <template #default="{ row }">
-            <el-button size="small" type="primary" text @click="onDownloadTxt(row.filename)">
-              下载
-            </el-button>
+      <el-collapse v-else v-model="activePanels" class="txt-group-collapse">
+        <!-- 按策略分组折叠：每个策略一个独立面板，统一策略单独成组，便于归纳与分辨 -->
+        <el-collapse-item
+          v-for="group in groupedTxtFiles"
+          :key="group.key"
+          :name="group.key"
+        >
+          <template #title>
+            <div class="txt-group-title">
+              <span class="txt-group-label">{{ group.label }}</span>
+              <el-tag size="small" type="info" effect="plain">{{ group.files.length }} 个文件</el-tag>
+            </div>
           </template>
-        </el-table-column>
-      </el-table>
+          <el-table :data="group.files" size="small" stripe>
+            <el-table-column prop="date" label="日期" width="120" sortable />
+            <el-table-column prop="count" label="股票数" width="80" />
+            <el-table-column prop="created_at" label="生成时间" width="170" />
+            <el-table-column prop="filename" label="文件名" show-overflow-tooltip />
+            <el-table-column label="操作" width="90">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" text @click="onDownloadTxt(row.filename)">
+                  下载
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-collapse-item>
+      </el-collapse>
     </div>
   </div>
 </template>
@@ -346,5 +416,22 @@ function onTxtDateChange() {
 
 .txt-file-list {
   min-height: 60px;
+}
+
+/* 折叠面板分组样式：让每个策略组的标题更突出，区分度更高 */
+.txt-group-collapse {
+  border-top: 1px solid #ebeef5;
+}
+
+.txt-group-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 600;
+  color: #303133;
+}
+
+.txt-group-label {
+  font-size: 14px;
 }
 </style>

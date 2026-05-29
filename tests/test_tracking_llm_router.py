@@ -28,7 +28,7 @@ def client(monkeypatch):
             return [{"rule_id": "STOP_LOSS", "priority": 10, "message": "跌破止损"}]
 
     class _StubLLM:
-        def propose_action(self, item, alerts, frame=None):
+        def propose_action(self, item, alerts, frame=None, profile=None):
             return {
                 "decision": "cut",
                 "confidence": 0.85,
@@ -36,6 +36,7 @@ def client(monkeypatch):
                 "suggested_action": "SELL",
                 "suggested_intent": {"side": "SELL"},
                 "alerts_summary": {"count": len(alerts)},
+                "profile": profile or "default",
             }
 
     monkeypatch.setattr(router_module, "tracking_service", _StubTrackingService())

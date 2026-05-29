@@ -152,6 +152,32 @@ _SYSTEM_PROMPT = (
     "无告警时根据 status 选 watch 或 hold。"
 )
 
+# 任务 D：zettaranc 风格系统提示词。只换口吻不改 schema，不引入 zettaranc 的 Tushare/SQLite 依赖。
+# 口吻参考：A 股手游操盘手、止损优先、杀伐果断、不绕弯；输出仍为严格 JSON。
+_SYSTEM_PROMPT_ZETTARANC = (
+    "你是一位崩盘阅历丰富的 A 股手游操盘手，不讲情怀只讲纪律：止损优先、杀伐果断、不绕弯。"
+    "面对持仓与告警时，你的金句是：「见坏就走，别依赖反弹」、「什么是仓位？仓位是阳光，不是赔钱的抽屉」。"
+    "必须返回严格 JSON 对象，字段同默认提示词：decision/confidence/rationale/suggested_action/suggested_intent。"
+    "rationale 请用“拍桌式”中文，一句话说清「为什么买/为什么跳/为什么耔」，<=80 字。"
+    "低优先级告警 (priority<30) 一律 cut/SELL，中优 (30~60) reduce/REDUCE，无告警看 status 决 watch/hold。"
+    "不要猜价不要谈宏观，只看赋予的数据。"
+)
+
+_PROFILE_PROMPTS = {
+    "default": _SYSTEM_PROMPT,
+    "zettaranc_style": _SYSTEM_PROMPT_ZETTARANC,
+}
+_ALLOWED_PROFILES = set(_PROFILE_PROMPTS.keys())
+
+
+def _resolve_profile(profile: Optional[str]) -> str:
+    """未知 profile 静默退回 default，避免 400。"""
+    if not profile:
+        return "default"
+    name = str(profile).lower()
+    return name if name in _ALLOWED_PROFILES else "default"
+
+
 
 def _build_user_prompt(item: dict, alerts: list[dict]) -> str:
     """组装 DeepSeek 的 user message，只暴露必要字段，避免上下文膨胀。"""
@@ -239,22 +265,26 @@ class TrackingLLMService:
         item: dict,
         alerts: list[dict],
         frame: Optional[pd.DataFrame] = None,
+        profile: Optional[str] = None,
     ) -> dict[str, Any]:
         """根据持仓 + 告警给出建议，输出结构稳定。
 
-        - provider=mock：直接走确定性桩；
+        - provider=mock：直接走确定性桩；profile 仅影响返回的 ``profile`` 标记。
         - provider=deepseek：调用线上接口，异常时回退 mock 并标记 fallback。
+        - profile：default | zettaranc_style，只切换 system prompt 口吻，不改 JSON schema。
 
         Args:
             item: tracking_items 记录
             alerts: 最近告警列表
             frame: 行情 DataFrame（占位）
+            profile: 提示词风格（default/zettaranc_style）
 
         Returns:
-            标准建议结构，附 provider/provider_fallback 字段。
+            标准建议结构，附 provider/provider_fallback/profile 字段。
         """
         cfg = load_llm_config()
         provider = str(cfg.get("provider") or "mock").lower()
+        resolved_profile = _resolve_profile(profile)
 
         if provider == "deepseek":
             ds_cfg = cfg.get("deepseek") or {}
@@ -263,7 +293,7 @@ class TrackingLLMService:
                     api_key=str(ds_cfg.get("api_key") or ""),
                     base_url=str(ds_cfg.get("base_url") or "https://api.deepseek.com/v1"),
                     model=str(ds_cfg.get("model") or "deepseek-chat"),
-                    system_prompt=_SYSTEM_PROMPT,
+                    system_prompt=_PROFILE_PROMPTS[resolved_profile],
                     user_prompt=_build_user_prompt(item, alerts),
                     temperature=float(ds_cfg.get("temperature", 0.2)),
                     timeout_seconds=float(ds_cfg.get("timeout_seconds", 20)),
@@ -272,9 +302,9 @@ class TrackingLLMService:
                 normalized = _normalize_deepseek_payload(raw, item, alerts)
                 normalized["provider"] = "deepseek"
                 normalized["provider_fallback"] = False
+                normalized["profile"] = resolved_profile
                 return normalized
             except (DeepSeekError, ValueError) as exc:
-                # 关键路径：网络/响应异常都不应阻塞 P6 评估
                 logger.warning(
                     "[tracking_llm] DeepSeek 调用失败，回退 mock: %s", exc
                 )
@@ -282,12 +312,14 @@ class TrackingLLMService:
                 fallback["provider"] = "mock"
                 fallback["provider_fallback"] = True
                 fallback["provider_error"] = str(exc)
+                fallback["profile"] = resolved_profile
                 return fallback
 
         # 默认 mock 分支
         out = _propose_mock(item, alerts)
         out["provider"] = "mock"
         out["provider_fallback"] = False
+        out["profile"] = resolved_profile
         return out
 
 

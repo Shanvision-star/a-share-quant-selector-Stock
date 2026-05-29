@@ -71,6 +71,7 @@ from web.backend.routers import (
     tracking_alert,
     tracking_evaluation,
     tracking_llm,
+    tracking_llm_diagnose,
     tracking_intent,
 )
 
@@ -162,6 +163,8 @@ app.include_router(tracking_alert.router)
 app.include_router(tracking_rule_template.router)
 app.include_router(tracking_evaluation.router)
 app.include_router(tracking_llm.router)
+# 任务 D：通用诊断接口（前缀 /api/tracking-llm），不依赖 tracking_id
+app.include_router(tracking_llm_diagnose.router)
 app.include_router(tracking_intent.router)
 app.include_router(tracking.router)
 

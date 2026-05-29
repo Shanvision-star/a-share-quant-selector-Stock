@@ -448,10 +448,18 @@ class DailyExecutionSimulator:
             "exits": exits,
             "profit_actions": profit_actions,
         }
+        # 任务 C 深度：组合权重模式下，按 position_pct 缩放下单意图股数；权重写入 trade，供 equity_curve 加权聚合
+        # 旧默认 position_pct=0 时保持 weight=1.0，原行为不变
+        position_pct = _safe_float(params.get("position_pct"), 0.0)
+        weight = (position_pct / 100.0) if position_pct > 0 else 1.0
+        base_quantity = _safe_int(params.get("intent_quantity"), 0)
+        if position_pct > 0 and base_quantity > 0:
+            base_quantity = int(base_quantity * weight)
         quantity = _round_lot_quantity(
-            _safe_int(params.get("intent_quantity"), 0),
+            base_quantity,
             max(1, _safe_int(params.get("lot_size"), 100)),
         )
+        trade["weight"] = round(weight, 6)
         intent = OrderIntent.from_candidate(
             candidate,
             side="BUY",
@@ -543,8 +551,14 @@ class MinuteExecutionSimulator:
         fee_rate = _safe_float(params.get("fee_rate"), 0.0003)
         slippage_rate = _safe_float(params.get("slippage_rate"), 0.0005)
         net_return = (sell_price / buy_price - 1) - (fee_rate + slippage_rate) * 2
+        # 任务 C 深度：分钟级同理按 position_pct 缩放数量；旧默认 position_pct=0 时不缩放
+        position_pct = _safe_float(params.get("position_pct"), 0.0)
+        weight = (position_pct / 100.0) if position_pct > 0 else 1.0
+        base_quantity = _safe_int(params.get("intent_quantity"), 0)
+        if position_pct > 0 and base_quantity > 0:
+            base_quantity = int(base_quantity * weight)
         quantity = _round_lot_quantity(
-            _safe_int(params.get("intent_quantity"), 0),
+            base_quantity,
             max(1, _safe_int(params.get("lot_size"), 100)),
         )
         intents = [
@@ -596,6 +610,8 @@ class MinuteExecutionSimulator:
                 }
             ],
         }
+        # 任务 C 深度：分钟级 trade 也带权重，equity_curve 同口径加权
+        trade["weight"] = round(weight, 6)
         return trade, intents
 
 

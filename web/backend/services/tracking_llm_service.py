@@ -171,7 +171,12 @@ _ZETTARANC_SCHEMA_APPENDIX = (
     "必须返回严格 JSON 对象，字段：\n"
     "- decision: cut|reduce|hold|watch|add\n"
     "- confidence: 0~1 浮点\n"
-    "- rationale: 简体中文一句话（<=120 字），用 Z 哥本人语气；可含战法/纪律金句\n"
+    "- rationale: 简体中文（<=400 字），用 Z 哥本人语气，必须包含三段推导：\n"
+    "    ① 知行/趋势：短期趋势线、多空线、当前位置（碗底/贴线/多头/空头/震荡）一句话定位；\n"
+    "    ② 量价/指标：KDJ（J 值/金叉死叉）、MACD（DIF-DEA/柱）、BBI/MA 多空头排列、RSI、量比 至少各点评一项；\n"
+    "    ③ 纪律层：止损线、加减仓阈值、仓位上限（呼应 sell-discipline / position-management）。\n"
+    "- analysis: 可选对象 {technical: string[], discipline: string[], risk: string[], next_step: string[]}\n"
+    "    每段 2~4 条，每条 30~80 字；不会破坏老客户端兼容。\n"
     "- suggested_action: SELL|REDUCE|HOLD|WAIT|BUY\n"
     "- suggested_intent: {code, side, qty_hint, reason}\n"
     "不输出 markdown、不输出多余解释、不要 ```json 代码块包裹。"
@@ -287,7 +292,7 @@ def _normalize_deepseek_payload(raw: dict, item: dict, alerts: list[dict]) -> di
     }
 
     min_priority, triggering_alert = _extract_min_priority(alerts)
-    return {
+    result: dict[str, Any] = {
         "decision": decision,
         "confidence": confidence,
         "rationale": rationale,
@@ -301,6 +306,17 @@ def _normalize_deepseek_payload(raw: dict, item: dict, alerts: list[dict]) -> di
             ),
         },
     }
+    # 可选 analysis 段：zettaranc_style 用，dict 才透传，避免任意类型污染响应
+    analysis_raw = raw.get("analysis")
+    if isinstance(analysis_raw, dict) and analysis_raw:
+        cleaned: dict[str, list[str]] = {}
+        for key in ("technical", "discipline", "risk", "next_step"):
+            val = analysis_raw.get(key)
+            if isinstance(val, list):
+                cleaned[key] = [str(x).strip() for x in val if str(x).strip()]
+        if cleaned:
+            result["analysis"] = cleaned
+    return result
 
 
 class TrackingLLMService:
@@ -352,6 +368,9 @@ class TrackingLLMService:
                 system_prompt = _build_zettaranc_system_prompt()
             else:
                 system_prompt = _PROFILE_PROMPTS[resolved_profile]
+            # zettaranc_style 需要更长输出空间承载三段推导 + analysis 段，单独上调上限
+            base_max_out = int(ds_cfg.get("max_output_tokens", 600))
+            max_out = max(base_max_out, 1600) if resolved_profile == "zettaranc_style" else base_max_out
             try:
                 raw = call_deepseek(
                     api_key=str(ds_cfg.get("api_key") or ""),
@@ -361,7 +380,7 @@ class TrackingLLMService:
                     user_prompt=_build_user_prompt(item, alerts, zettaranc_context),
                     temperature=float(ds_cfg.get("temperature", 0.2)),
                     timeout_seconds=float(ds_cfg.get("timeout_seconds", 20)),
-                    max_output_tokens=int(ds_cfg.get("max_output_tokens", 600)),
+                    max_output_tokens=max_out,
                 )
                 normalized = _normalize_deepseek_payload(raw, item, alerts)
                 normalized["provider"] = "deepseek"

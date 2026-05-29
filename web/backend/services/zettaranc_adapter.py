@@ -188,7 +188,7 @@ def _build_local_context(code: str, days: int = 60) -> Optional[str]:
     # 局部导入避免模块加载时拖入 pandas/numpy（测试 fixture 已确保可用）
     try:
         import pandas as pd  # noqa: WPS433  局部导入降低冷启动开销
-        from utils.technical import KDJ, MA, EMA  # 复用现有指标
+        from utils.technical import KDJ, MA, EMA, calculate_zhixing_state  # 复用现有指标
     except Exception as exc:  # pragma: no cover - 防御性
         logger.warning("[zettaranc] 本地指标依赖导入失败: %s", exc)
         return None
@@ -264,6 +264,92 @@ def _build_local_context(code: str, days: int = 60) -> Optional[str]:
     else:
         trend = "纠缠"
 
+    # ---- 知行双线 + 位置（呼应 zettaranc trend-lines/knowledge） ----
+    # 知行短期趋势线 = MA14 与 MA28 的均值；知行多空线 = MA57 与 MA114 的均值。
+    # 必须用未截断的 df（含全部历史，CSV 大多 250+ 根）；只 tail 60 时 MA114 必失效，
+    # 这是早前 LLM 一直回答“多空线未定义/数据不足”的根因。末值进入上下文即可。
+    zhixing_short = float("nan")
+    zhixing_bull = float("nan")
+    zhixing_pos = "数据不足"
+    dist_bull_pct = float("nan")
+    dist_short_pct = float("nan")
+    spread_pct = float("nan")
+    try:
+        if "date" in df.columns and len(df) >= 114:
+            zx_input = pd.DataFrame({
+                "date": df["date"].astype(str).values,
+                "close": df["close"].astype(float).values,
+            })
+            zx_state = calculate_zhixing_state(zx_input)
+            zhixing_short = float(zx_state["short_term_trend"].iloc[-1])
+            zhixing_bull = float(zx_state["bull_bear_line"].iloc[-1])
+            dist_bull_pct = float(zx_state["distance_to_bullbear_pct"].iloc[-1])
+            dist_short_pct = float(zx_state["distance_to_short_term_pct"].iloc[-1])
+            spread_pct = float(zx_state["line_spread_pct"].iloc[-1])
+            # 位置标签按 trend-lines.md 心法层级判定（自上而下）
+            if bool(zx_state["fall_in_bowl"].iloc[-1]):
+                zhixing_pos = "碗底（短期趋势线>多空线，价格落于两线之间）"
+            elif bool(zx_state["near_short_trend"].iloc[-1]):
+                zhixing_pos = "贴近短期趋势线"
+            elif bool(zx_state["near_duokong"].iloc[-1]):
+                zhixing_pos = "贴近多空线"
+            elif bool(zx_state["trend_above"].iloc[-1]) and last_close > zhixing_short:
+                zhixing_pos = "多头（价格在短期趋势线之上）"
+            elif (not bool(zx_state["trend_above"].iloc[-1])) and last_close < zhixing_short:
+                zhixing_pos = "空头（价格在短期趋势线之下）"
+            else:
+                zhixing_pos = "震荡/纠缠"
+    except Exception as exc:  # pragma: no cover - 防御性
+        logger.warning("[zettaranc] 知行线计算失败: %s", exc)
+
+    # ---- RSI(14)：标准 Wilder 平滑 ----
+    rsi14 = float("nan")
+    try:
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1 / 14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / 14, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, float("nan"))
+        rsi_series = 100 - 100 / (1 + rs)
+        rsi14 = float(rsi_series.iloc[-1])
+    except Exception:
+        pass
+
+    # ---- 近 5 日涨跌/量比 ----
+    recent_changes: list[str] = []
+    try:
+        last5 = df_tail.tail(5)
+        chg5 = last5["close"].astype(float).pct_change().fillna(0) * 100
+        recent_changes = [f"{v:+.2f}%" for v in chg5.tolist()]
+    except Exception:
+        recent_changes = []
+    vol_ratio = float("nan")
+    try:
+        if "volume" in df_tail.columns and len(df_tail) >= 6:
+            vol = df_tail["volume"].astype(float)
+            vol_ratio = float(vol.iloc[-1]) / float(vol.iloc[-6:-1].mean())
+    except Exception:
+        pass
+
+    # ---- 砖型方向（呼应 docs/BRICK_STRATEGY 与 SKILL 砖型说法） ----
+    if last_close > ma20 * 1.005:
+        brick = "看多砖（收盘高于 MA20 0.5% 以上）"
+    elif last_close < ma20 * 0.995:
+        brick = "看空砖（收盘低于 MA20 0.5% 以上）"
+    else:
+        brick = "震荡砖（收盘贴近 MA20）"
+
+    zhixing_block = (
+        f"知行: 短期趋势线={zhixing_short:.2f}  多空线={zhixing_bull:.2f}  "
+        f"线差={spread_pct:+.2f}%  距多空线={dist_bull_pct:+.2f}%  距短期={dist_short_pct:+.2f}%\n"
+        f"位置: {zhixing_pos}\n"
+    )
+    recent_block = (
+        f"近5日: {' / '.join(recent_changes) if recent_changes else 'n/a'}  "
+        f"量比(对前5日均)={vol_ratio:.2f}\n" if recent_changes else ""
+    )
+
     return (
         f"【本地数据快照 · 来源 a-share-quant CSV · 非 Tushare 实时】\n"
         f"代码: {bare}  日期: {last_date}  收盘: {last_close:.2f}\n"
@@ -271,6 +357,10 @@ def _build_local_context(code: str, days: int = 60) -> Optional[str]:
         f"MACD: DIF={last_dif:.4f}  DEA={last_dea:.4f}  柱={last_hist:.4f}\n"
         f"BBI:  {last_bbi:.2f}\n"
         f"均线: MA5={ma5:.2f}  MA10={ma10:.2f}  MA20={ma20:.2f}  ({trend})\n"
+        f"RSI14: {rsi14:.2f}\n"
+        + zhixing_block
+        + recent_block
+        + f"砖型: {brick}\n"
     )
 
 

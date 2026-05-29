@@ -64,6 +64,17 @@ const isSwitchingStock = computed(() =>
 )
 const showShortTermTrend = ref(true)
 const showBullBearLine = ref(true)
+// 任务 A：K 线指标工具栏控制变量
+// - subIndicator：副图指标切换（默认 MACD，保持历史行为）
+// - showMA / showBBI / showBoll：主图叠加开关，showBBI 默认开（与原行为一致）
+// - showVolume / showAdjVolume：成交量副图显隐
+const subIndicator = ref<'macd' | 'kdj' | 'rsi' | 'wr' | 'dmi' | 'brick'>('macd')
+const mainOverlays = ref<string[]>(['bbi'])
+const showVolume = ref(true)
+const showAdjVolume = ref(true)
+const showMA = computed(() => mainOverlays.value.includes('ma'))
+const showBBI = computed(() => mainOverlays.value.includes('bbi'))
+const showBoll = computed(() => mainOverlays.value.includes('boll'))
 
 // ─── 面板折叠与宽度 ────────────────────────────────────────────────────
 const leftCollapsed = ref(false)
@@ -523,6 +534,34 @@ function formatListSimilarity(score: unknown): string {
       </div>
 
       <div class="chart-area">
+        <!-- 任务 A：K 线指标工具栏 -->
+        <div class="indicator-toolbar">
+          <div class="indicator-group">
+            <span class="indicator-label">副图</span>
+            <el-radio-group v-model="subIndicator" size="small">
+              <el-radio-button value="macd">MACD</el-radio-button>
+              <el-radio-button value="kdj">KDJ</el-radio-button>
+              <el-radio-button value="rsi">RSI</el-radio-button>
+              <el-radio-button value="wr">WR</el-radio-button>
+              <el-radio-button value="dmi">DMI</el-radio-button>
+              <el-radio-button value="brick">砖型</el-radio-button>
+            </el-radio-group>
+          </div>
+          <div class="indicator-group">
+            <span class="indicator-label">主图叠加</span>
+            <el-checkbox-group v-model="mainOverlays" size="small">
+              <el-checkbox-button value="ma">MA</el-checkbox-button>
+              <el-checkbox-button value="bbi">BBI</el-checkbox-button>
+              <el-checkbox-button value="boll">BOLL</el-checkbox-button>
+            </el-checkbox-group>
+          </div>
+          <div class="indicator-group">
+            <span class="indicator-label">成交量</span>
+            <el-switch v-model="showVolume" inline-prompt active-text="显" inactive-text="隐" />
+            <span class="indicator-label" style="margin-left:8px">还原量</span>
+            <el-switch v-model="showAdjVolume" inline-prompt active-text="显" inactive-text="隐" />
+          </div>
+        </div>
         <KlineChart
           :code="code"
           :period="period"
@@ -531,6 +570,12 @@ function formatListSimilarity(score: unknown): string {
           :signals="adjust === 'qfq' ? signals : []"
           :show-short-term-trend="showShortTermTrend"
           :show-bull-bear-line="showBullBearLine"
+          :sub-indicator="subIndicator"
+          :show-m-a="showMA"
+          :show-b-b-i="showBBI"
+          :show-boll="showBoll"
+          :show-volume="showVolume"
+          :show-adj-volume="showAdjVolume"
         />
       </div>
 
@@ -781,6 +826,32 @@ function formatListSimilarity(score: unknown): string {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+/* 任务 A：K 线指标工具栏样式 */
+.indicator-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 18px;
+  padding: 6px 10px;
+  background: #fafafa;
+  border-bottom: 1px solid #ebeef5;
+}
+.indicator-toolbar .indicator-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.indicator-toolbar .indicator-label {
+  font-size: 12px;
+  color: #606266;
+}
+.chart-area > :not(.indicator-toolbar) {
+  flex: 1;
+  min-height: 0;
 }
 
 /* ── 策略详情拖拽把手 ─────────────────────────────────── */

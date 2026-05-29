@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { House, Refresh, Setting, DataAnalysis, List, Star, Aim } from '@element-plus/icons-vue'
+import { House, Refresh, Setting, DataAnalysis, List, Star, Aim, Document } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -52,6 +52,11 @@ function navigate(path: string) {
       <el-menu-item index="/tracking">
         <el-icon><Aim /></el-icon>
         <template #title>跟踪运营</template>
+      </el-menu-item>
+      <!-- 任务 B：战法文档入口 -->
+      <el-menu-item index="/strategy-docs">
+        <el-icon><Document /></el-icon>
+        <template #title>战法文档</template>
       </el-menu-item>
     </el-menu>
     <div class="sidebar-toggle" @click="isCollapsed = !isCollapsed">

@@ -44,6 +44,12 @@ const routes = [
     name: 'Tracking',
     component: () => import('@/views/TrackingView.vue'),
   },
+  {
+    // 任务 B：战法文档页面，集中展示策略与系统说明文档
+    path: '/strategy-docs',
+    name: 'StrategyDocs',
+    component: () => import('@/views/StrategyDocsView.vue'),
+  },
 ]
 
 const router = createRouter({

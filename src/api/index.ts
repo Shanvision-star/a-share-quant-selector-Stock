@@ -402,6 +402,12 @@ export interface BacktestRequestPayload {
   intent_quantity?: number
   lot_size?: number
   allow_st_buy?: boolean
+  // 任务 C：组合策略 / 多战法融合参数；后端均有默认值，前端不传时保持旧行为
+  signal_merge_mode?: 'single' | 'multi_strategy'
+  signal_priority_mode?: 'critical_first' | 'buy_first' | 'sell_first'
+  portfolio_mode?: 'fixed_slots' | 'weight_cap'
+  position_pct?: number
+  max_weight_per_code?: number
 }
 
 export type BacktestTaskStatus = 'queued' | 'running' | 'cancel_requested' | 'canceled' | 'done' | 'failed'
@@ -692,5 +698,21 @@ export const confirmTrackingIntent = (
 
 export const rejectTrackingIntent = (trackingId: string, reason = '') =>
   api.post(`/tracking/${encodeURIComponent(trackingId)}/reject-intent`, { reason })
+
+// 任务 B：战法文档接口
+export interface StrategyDocItem {
+  slug: string
+  title: string
+  category: string
+}
+export interface StrategyDocDetail extends StrategyDocItem {
+  content: string
+  updated_at: string | null
+}
+export const getStrategyDocs = () =>
+  api.get<{ categories: string[]; items: StrategyDocItem[] }>('/strategy-docs')
+
+export const getStrategyDoc = (slug: string) =>
+  api.get<StrategyDocDetail>(`/strategy-docs/${encodeURIComponent(slug)}`)
 
 export default api

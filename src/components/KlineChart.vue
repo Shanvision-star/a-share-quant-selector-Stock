@@ -5,7 +5,7 @@ import { getCachedKlineResponse, getKline, getIntradayKline } from '@/api'
 import type { KlineAdjust } from '@/api'
 import { createRequestManager, isAbortError } from '@/api/requestManager'
 import { buildMainKlineRequestKey, scheduleKlineIdleWork, selectFastKlineLimit, shouldShowBlockingKlineLoading } from '@/components/klineRequest'
-import { buildBrickStackedBars } from '@/utils/klineIndicators'
+import { buildBrickStackedBars, computeRSI, computeWR, computeDMI, computeBOLL } from '@/utils/klineIndicators'
 import { buildVolumeAxisScaleForZoom } from '@/utils/klineVolumeScale'
 
 const props = withDefaults(defineProps<{
@@ -16,6 +16,17 @@ const props = withDefaults(defineProps<{
   showShortTermTrend?: boolean
   showBullBearLine?: boolean
   adjust?: string
+  // 任务 A：副图指标外部联控（'macd' | 'kdj' | 'rsi' | 'wr' | 'dmi' | 'brick'）
+  // 不传则维持组件内部默认；传值时由外部工具栏接管
+  subIndicator?: string
+  // 任务 A：主图叠加线开关（与 BBI / 短期趋势线 / 知行多空线 并列）
+  showMA?: boolean
+  showBBI?: boolean
+  showBoll?: boolean
+  // 任务 A：成交量副图与还原成交量副图的可见性；隐藏时高度收为 0，但 4 个 grid 仍保留
+  // 以确保 axisPointer.link xAxisIndex [0,1,2,3] 联动不被破坏
+  showVolume?: boolean
+  showAdjVolume?: boolean
 }>(), {
   period: 'daily',
   limit: 2600,
@@ -23,6 +34,12 @@ const props = withDefaults(defineProps<{
   showShortTermTrend: true,
   showBullBearLine: true,
   adjust: 'qfq',
+  subIndicator: undefined,
+  showMA: false,
+  showBBI: true,
+  showBoll: false,
+  showVolume: true,
+  showAdjVolume: true,
 })
 
 const wrapperRef = ref<HTMLDivElement>()
@@ -87,10 +104,31 @@ type PanelKey = typeof PANEL_KEYS[number]
 const SUB_INDICATOR_OPTIONS = [
   { key: 'macd', label: 'MACD' },
   { key: 'kdj', label: 'KDJ' },
+  { key: 'rsi', label: 'RSI' },
+  { key: 'wr', label: 'WR' },
+  { key: 'dmi', label: 'DMI' },
   { key: 'brick', label: '砖型图' },
 ] as const
 type SubIndicatorKey = typeof SUB_INDICATOR_OPTIONS[number]['key']
 const activeSubIndicator = ref<SubIndicatorKey>('macd')
+// setup 阶段同步外部初值，避免首屏渲染用错默认值（safeRenderChart 还没定义，不调用）
+if (props.subIndicator) {
+  const initialHit = SUB_INDICATOR_OPTIONS.find((opt) => opt.key === props.subIndicator)
+  if (initialHit) activeSubIndicator.value = initialHit.key as SubIndicatorKey
+}
+// 任务 A：若父组件通过 props.subIndicator 指定了副图指标，同步到内部 state
+// 这样工具栏切换与组件内部既存逻辑（如 expandedSubPanel 标签）保持一致
+watch(
+  () => props.subIndicator,
+  (val) => {
+    if (!val) return
+    const hit = SUB_INDICATOR_OPTIONS.find((opt) => opt.key === val)
+    if (hit && hit.key !== activeSubIndicator.value) {
+      activeSubIndicator.value = hit.key as SubIndicatorKey
+      void safeRenderChart()
+    }
+  },
+)
 const activeSubIndicatorLabel = computed(() =>
   SUB_INDICATOR_OPTIONS.find(item => item.key === activeSubIndicator.value)?.label || 'MACD',
 )
@@ -111,7 +149,25 @@ const panelRatios = reactive<Record<PanelKey, number>>({
 
 function getEffectivePanelRatios(): Record<PanelKey, number> {
   if (!expandedSubPanel.value) {
-    return { ...panelRatios }
+    // 任务 A：当父组件关闭成交量 / 还原成交量副图时，把其高度收为 0，
+    // 把腾出的空间按比例补给“主图 + 当前副图指标”。
+    // 4 个 grid 仍保留，axisPointer.link xAxisIndex [0,1,2,3] 与 dataZoom 联动不被破坏。
+    const showVolume = props.showVolume !== false
+    const showAdj = props.showAdjVolume !== false
+    if (showVolume && showAdj) {
+      return { ...panelRatios }
+    }
+    const hidden = (showVolume ? 0 : panelRatios.volume) + (showAdj ? 0 : panelRatios.adjVolume)
+    const baseMain = panelRatios.main
+    const baseIndicator = panelRatios.indicator
+    const baseSum = baseMain + baseIndicator
+    const mainExtra = baseSum > 0 ? hidden * (baseMain / baseSum) : hidden
+    return {
+      main: baseMain + mainExtra,
+      volume: showVolume ? panelRatios.volume : 0,
+      adjVolume: showAdj ? panelRatios.adjVolume : 0,
+      indicator: baseIndicator + (hidden - mainExtra),
+    }
   }
 
   const mainRatio = Math.min(panelRatios.main, EXPANDED_MAIN_RATIO)
@@ -143,11 +199,14 @@ function computeGrids() {
 // ── 副图左上角指标名称标签（与面板高度联动，拖拽时自动更新）─────────────
 const subPanelLabels = computed(() => {
   const grids = computeGrids()
+  // 任务 A：父组件隐藏的副图同时隐藏其左上角名称标签
+  const showVolume = props.showVolume !== false
+  const showAdj = props.showAdjVolume !== false
   const labels = [
-    { key: 'volume' as PanelKey,    name: '成交量',    top: grids[1].top + 3 },
-    { key: 'adjVolume' as PanelKey, name: '还原成交量', top: grids[2].top + 3 },
+    showVolume ? { key: 'volume' as PanelKey, name: '成交量', top: grids[1].top + 3 } : null,
+    showAdj ? { key: 'adjVolume' as PanelKey, name: '还原成交量', top: grids[2].top + 3 } : null,
     { key: 'indicator' as PanelKey, name: activeSubIndicatorLabel.value, top: grids[3].top + 3 },
-  ]
+  ].filter((x): x is { key: PanelKey; name: string; top: number } => x !== null)
   return expandedSubPanel.value
     ? labels.filter(label => label.key === expandedSubPanel.value)
     : labels
@@ -526,13 +585,40 @@ async function renderChart() {
     }))
     const brickValues = sanitizeIndicator(indicators.brick_value)
     const brickBars = buildBrickStackedBars(brickValues)
+    // 任务 A：RSI/WR/DMI/BOLL 在前端用 OHLC 计算，warm-up 期返回 null 由 ECharts 自动跳过
+    const ohlcBars = normalizedBars.map((b: any) => ({
+      open: b.open ?? null,
+      high: b.high ?? null,
+      low: b.low ?? null,
+      close: b.close ?? null,
+    }))
+    const rsiData = computeRSI(ohlcBars, 14)
+    const wr10Data = computeWR(ohlcBars, 10)
+    const wr20Data = computeWR(ohlcBars, 20)
+    const dmi = computeDMI(ohlcBars, 14)
+    const bollResult = props.showBoll ? computeBOLL(ohlcBars, 20, 2) : { upper: [], middle: [], lower: [] }
     const subIndicatorSeries = activeSubIndicator.value === 'kdj'
       ? [
           { name: 'K', type: 'line', data: kData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
           { name: 'D', type: 'line', data: dData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#42a5f5' } },
           { name: 'J', type: 'line', data: jData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#ab47bc' } },
         ]
-      : activeSubIndicator.value === 'brick'
+      : activeSubIndicator.value === 'rsi'
+        ? [
+            { name: 'RSI14', type: 'line', data: rsiData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
+          ]
+        : activeSubIndicator.value === 'wr'
+          ? [
+              { name: 'WR10', type: 'line', data: wr10Data, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
+              { name: 'WR20', type: 'line', data: wr20Data, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#42a5f5' } },
+            ]
+          : activeSubIndicator.value === 'dmi'
+            ? [
+                { name: '+DI', type: 'line', data: dmi.pdi, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#ef5350' } },
+                { name: '-DI', type: 'line', data: dmi.mdi, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#26a69a' } },
+                { name: 'ADX', type: 'line', data: dmi.adx, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#ab47bc' } },
+              ]
+            : activeSubIndicator.value === 'brick'
         ? [
             {
               name: '砖型图基线',
@@ -608,10 +694,19 @@ async function renderChart() {
     // 均线图例标签（跟随 maPeriods 动态生成）
     const maLegendNames = maPeriods.map((p: number) => `MA${p}`)
     const legendSelected: Record<string, boolean> = {}
-    maLegendNames.forEach((n: string) => { legendSelected[n] = false })
-    legendSelected['BBI'] = true
+    // 任务 A：父组件可通过 showMA 一键启用所有均线，默认关闭以保持历史行为
+    maLegendNames.forEach((n: string) => { legendSelected[n] = props.showMA === true })
+    legendSelected['BBI'] = props.showBBI !== false
     legendSelected['短期趋势线'] = props.showShortTermTrend
     legendSelected['知行多空线'] = props.showBullBearLine
+    if (props.showBoll) {
+      legendSelected['BOLL上轨'] = true
+      legendSelected['BOLL中轨'] = true
+      legendSelected['BOLL下轨'] = true
+    }
+    // 任务 A：图例数据列表需包含 BOLL 三条线，否则点击切换不生效
+    const legendData: string[] = [...maLegendNames, 'BBI', '短期趋势线', '知行多空线']
+    if (props.showBoll) legendData.push('BOLL上轨', 'BOLL中轨', 'BOLL下轨')
 
     const option: echarts.EChartsOption = {
       animation: false,
@@ -671,7 +766,7 @@ async function renderChart() {
         },
       },
       legend: {
-        data: [...maLegendNames, 'BBI', '短期趋势线', '知行多空线'],
+        data: legendData,
         top: 5,
         textStyle: { color: '#787b86', fontSize: 11 },
         itemWidth: 14,
@@ -789,6 +884,14 @@ async function renderChart() {
         { name: 'BBI', type: 'line', data: bbiData, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1.4, color: '#1e90ff' } },
         { name: '短期趋势线', type: 'line', data: shortTrendData, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1.5, color: '#ffffff', type: 'dashed' } },
         { name: '知行多空线', type: 'line', data: bullBearData, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1.5, color: '#ffcc00', type: 'dashed' } },
+        // 任务 A：布林带（主图叠加），仅当父组件 showBoll=true 时计算并绘制
+        ...(props.showBoll
+          ? [
+              { name: 'BOLL上轨', type: 'line', data: bollResult.upper, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#bb86fc' } },
+              { name: 'BOLL中轨', type: 'line', data: bollResult.middle, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#ffa726' } },
+              { name: 'BOLL下轨', type: 'line', data: bollResult.lower, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#bb86fc' } },
+            ]
+          : []),
         { name: 'Volume', type: 'bar', data: volumes, xAxisIndex: 1, yAxisIndex: 1 },
         // 还原成交量：按前一日收盘与当日收盘比较确定颜色
         { name: 'AdjVolume', type: 'bar', data: adjVolumes, xAxisIndex: 2, yAxisIndex: 2 },
@@ -951,6 +1054,14 @@ watch(() => [props.code, props.period], () => {
 watch(() => [props.code, props.period, props.limit, props.adjust, props.showShortTermTrend, props.showBullBearLine], () => {
   void safeRenderChart()
 })
+
+// 任务 A：父组件工具栏切换主图叠加 / 副图显隐时触发重渲染
+watch(
+  () => [props.showMA, props.showBBI, props.showBoll, props.showVolume, props.showAdjVolume],
+  () => {
+    void safeRenderChart()
+  },
+)
 
 watch(() => props.signals, () => {
   void safeRenderChart()

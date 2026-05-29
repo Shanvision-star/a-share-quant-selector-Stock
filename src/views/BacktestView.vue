@@ -129,6 +129,12 @@ const params = reactive<BacktestRequestPayload>({
   intent_quantity: 0,
   lot_size: 100,
   allow_st_buy: false,
+  // 任务 C：组合策略 / 多战法融合相关参数，默认值与历史行为保持一致
+  signal_merge_mode: 'single',
+  signal_priority_mode: 'critical_first',
+  portfolio_mode: 'fixed_slots',
+  position_pct: 0,
+  max_weight_per_code: 0,
 })
 
 const parsedInputCodes = computed(() => parseCodes(codeInput.value))
@@ -966,6 +972,36 @@ onBeforeUnmount(() => {
               <el-form-item>
                 <el-switch v-model="params.allow_st_buy" active-text="允许 ST/退市风险股买入回测" />
               </el-form-item>
+            </el-collapse-item>
+            <!-- 任务 C：组合策略 / 多战法融合面板。默认折叠并保留旧行为，启用后可融合多战法或按权重组合。 -->
+            <el-collapse-item title="组合策略与多战法融合 (任务C)" name="portfolio">
+              <div class="param-grid two">
+                <el-form-item label="信号融合模式">
+                  <el-select v-model="params.signal_merge_mode" size="small">
+                    <el-option label="单战法 (single)" value="single" />
+                    <el-option label="多战法融合 (multi_strategy)" value="multi_strategy" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="优先级模式">
+                  <el-select v-model="params.signal_priority_mode" size="small" :disabled="params.signal_merge_mode !== 'multi_strategy'">
+                    <el-option label="止损优先 (critical_first)" value="critical_first" />
+                    <el-option label="买入优先 (buy_first)" value="buy_first" />
+                    <el-option label="卖出优先 (sell_first)" value="sell_first" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="组合仓位模式">
+                  <el-select v-model="params.portfolio_mode" size="small">
+                    <el-option label="固定槽位 (fixed_slots)" value="fixed_slots" />
+                    <el-option label="权重上限 (weight_cap)" value="weight_cap" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="单笔仓位 %">
+                  <el-input-number v-model="params.position_pct" :min="0" :max="100" :step="1" controls-position="right" :disabled="params.portfolio_mode !== 'weight_cap'" />
+                </el-form-item>
+                <el-form-item label="单股累计权重上限 %">
+                  <el-input-number v-model="params.max_weight_per_code" :min="0" :max="100" :step="1" controls-position="right" :disabled="params.portfolio_mode !== 'weight_cap'" />
+                </el-form-item>
+              </div>
             </el-collapse-item>
           </el-collapse>
         </el-form>

@@ -271,6 +271,8 @@ interface RowState {
   alertsLoading: boolean
   adviceLoading: boolean
   actionLoading: boolean
+  // 任务 D：每行独立记录 LLM 提示词风格，不干扰其他行
+  profile: 'default' | 'zettaranc_style'
 }
 const rowStateMap = ref<Record<string, RowState>>({})
 
@@ -282,6 +284,7 @@ function ensureRowState(id: string): RowState {
       alertsLoading: false,
       adviceLoading: false,
       actionLoading: false,
+      profile: 'default',
     }
   }
   return rowStateMap.value[id]
@@ -498,7 +501,7 @@ async function fetchAdvice(row: TrackingItem) {
   const state = ensureRowState(row.tracking_id)
   state.adviceLoading = true
   try {
-    const resp = await getTrackingLLMAdvice(row.tracking_id)
+    const resp = await getTrackingLLMAdvice(row.tracking_id, state.profile)
     state.advice = resp.data?.data ?? null
     ElMessage.success('已获取操盘建议')
   } catch (e: any) {
@@ -709,7 +712,15 @@ onMounted(refreshItems)
 
             <!-- LLM 建议 -->
             <div class="panel-block">
-              <h4>LLM 操盘建议（mock，确定性）</h4>
+              <h4>LLM 操盘建议（mock/DeepSeek，仅供参考）</h4>
+              <el-select
+                v-model="rowStateMap[row.tracking_id]!.profile"
+                size="small"
+                style="width: 160px; margin-right: 8px"
+              >
+                <el-option label="默认助理口吻" value="default" />
+                <el-option label="zettaranc 手游风" value="zettaranc_style" />
+              </el-select>
               <el-button
                 size="small"
                 type="primary"

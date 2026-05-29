@@ -687,8 +687,24 @@ export const evaluateTrackingRules = (payload?: { eval_date?: string; only_codes
   api.post('/tracking/evaluate-rules', payload ?? {})
 
 // P6 LLM 操盘建议
-export const getTrackingLLMAdvice = (trackingId: string) =>
-  api.post(`/tracking/${encodeURIComponent(trackingId)}/llm-advice`)
+// 任务 D：profile 可选，default | zettaranc_style
+export type LlmProfile = 'default' | 'zettaranc_style'
+
+export const getTrackingLLMAdvice = (trackingId: string, profile?: LlmProfile) =>
+  api.post(
+    `/tracking/${encodeURIComponent(trackingId)}/llm-advice`,
+    profile ? { profile } : {},
+  )
+
+// 任务 D：股票详情页"诊断视角"通用接口
+export const diagnoseStock = (payload: {
+  code: string
+  profile?: LlmProfile
+  signals?: any[]
+  price_info?: Record<string, any>
+  alerts?: any[]
+  tracking_item?: Record<string, any>
+}) => api.post('/tracking-llm/diagnose-stock', payload)
 
 // P7 OrderIntent 确认 / 否决
 export const confirmTrackingIntent = (

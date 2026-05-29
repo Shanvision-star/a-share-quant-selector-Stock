@@ -5,7 +5,7 @@ import { ElMessage } from 'element-plus'
 import { ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import KlineChart from '@/components/KlineChart.vue'
 import StockInfoPanel from '@/components/StockInfoPanel.vue'
-import { getStockPrice, getStrategyResultsHistory, getStockInfo, prefetchKline, prefetchKlineBatch } from '@/api'
+import { getStockPrice, getStrategyResultsHistory, getStockInfo, prefetchKline, prefetchKlineBatch, diagnoseStock, type LlmProfile } from '@/api'
 import { buildStrategyDayPrefetchCodes, getNeighborCodes } from '@/components/klineRequest'
 import { useStrategyListStore } from '@/stores/strategyList'
 import { useManualSelectionStore } from '@/stores/manualSelection'
@@ -121,6 +121,50 @@ onBeforeUnmount(() => {
   stopResize()
   stopCardResize()
 })
+
+// ─── 任务 D：诊断视角面板 ──────────────────────────────────────────────
+// 仅生成"分析建议"，不下单、不写持仓；profile 控制口吻不改 schema
+const diagnoseProfile = ref<LlmProfile>('default')
+const diagnoseLoading = ref(false)
+const diagnoseResult = ref<Record<string, any> | null>(null)
+
+async function runDiagnose() {
+  const code = props.code
+  if (!code) {
+    ElMessage.warning('缺少股票代码')
+    return
+  }
+  diagnoseLoading.value = true
+  try {
+    // 暂不传价格快照，依赖后端默认；后续可接入 price ref 提升 rationale 质量
+    const resp = await diagnoseStock({
+      code,
+      profile: diagnoseProfile.value,
+    })
+    diagnoseResult.value = resp.data?.data ?? null
+    ElMessage.success('已生成诊断建议')
+  } catch (e: any) {
+    ElMessage.error(`诊断失败：${e?.message || e}`)
+  } finally {
+    diagnoseLoading.value = false
+  }
+}
+
+function diagnoseTagType(decision?: string): string {
+  switch (decision) {
+    case 'cut':
+      return 'danger'
+    case 'reduce':
+      return 'warning'
+    case 'add':
+    case 'buy':
+      return 'success'
+    case 'watch':
+      return 'info'
+    default:
+      return ''
+  }
+}
 
 // ─── 策略详情卡可调整高度 ──────────────────────────────────────────────
 const strategyCardHeight = ref(160)
@@ -594,6 +638,42 @@ function formatListSimilarity(score: unknown): string {
           <p><strong>分类:</strong> {{ safeStrategyCard.category }}</p>
           <p><strong>匹配日期:</strong> {{ safeStrategyCard.signal_date || safeStrategyCard.trade_date }}</p>
           <p v-if="safeStrategyCard.reason"><strong>原因:</strong> {{ safeStrategyCard.reason }}</p>
+        </el-card>
+      </div>
+
+      <!-- 任务 D：诊断视角面板。仅展示分析建议，不下单、不写持仓。 -->
+      <div class="strategy-card diagnose-card">
+        <el-card shadow="never">
+          <template #header>
+            <span>诊断视角</span>
+            <el-tag size="small" type="warning" style="margin-left:8px">分析建议，非自动交易</el-tag>
+          </template>
+          <div class="diagnose-toolbar">
+            <el-select v-model="diagnoseProfile" size="small" style="width:160px;margin-right:8px">
+              <el-option label="默认助理口吻" value="default" />
+              <el-option label="zettaranc 手游风" value="zettaranc_style" />
+            </el-select>
+            <el-button size="small" type="primary" :loading="diagnoseLoading" @click="runDiagnose">
+              生成诊断建议
+            </el-button>
+          </div>
+          <div v-if="diagnoseResult" class="diagnose-result">
+            <p>
+              <strong>决策:</strong>
+              <el-tag :type="diagnoseTagType(diagnoseResult.decision)" size="small">{{ diagnoseResult.decision }}</el-tag>
+              <span class="diagnose-confidence">置信度 {{ ((diagnoseResult.confidence ?? 0) * 100).toFixed(0) }}%</span>
+            </p>
+            <p><strong>建议动作:</strong> {{ diagnoseResult.suggested_action }}</p>
+            <p v-if="diagnoseResult.rationale"><strong>依据:</strong> {{ diagnoseResult.rationale }}</p>
+            <p v-if="diagnoseResult.profile" class="diagnose-meta">
+              风格: {{ diagnoseResult.profile }} · provider: {{ diagnoseResult.provider }}
+              <span v-if="diagnoseResult.provider_fallback" style="color:#e6a23c">（已回退 mock）</span>
+            </p>
+            <details v-if="diagnoseResult.suggested_intent" class="diagnose-intent">
+              <summary>建议意图（仅供参考）</summary>
+              <pre>{{ JSON.stringify(diagnoseResult.suggested_intent, null, 2) }}</pre>
+            </details>
+          </div>
         </el-card>
       </div>
     </div>

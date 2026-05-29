@@ -715,20 +715,35 @@ export const confirmTrackingIntent = (
 export const rejectTrackingIntent = (trackingId: string, reason = '') =>
   api.post(`/tracking/${encodeURIComponent(trackingId)}/reject-intent`, { reason })
 
-// 任务 B：战法文档接口
+// 任务 B 修复：战法文档 API 必须在函数内部解开后端 {success, data:{...}} 外层，
+// 否则视图 `const { data } = await getStrategyDocs()` 拿到的是带 success 的响应体，
+// data.items / data.categories 永远是 undefined，页面就一直显示「请选择左侧文档」。
 export interface StrategyDocItem {
   slug: string
   title: string
   category: string
+  source?: 'local' | 'zettaranc'
+  updated_at?: number
+  size?: number
 }
 export interface StrategyDocDetail extends StrategyDocItem {
   content: string
-  updated_at: string | null
+  updated_at?: number
 }
-export const getStrategyDocs = () =>
-  api.get<{ categories: string[]; items: StrategyDocItem[] }>('/strategy-docs')
+interface StrategyDocsListResponse {
+  data: { categories: string[]; items: StrategyDocItem[] }
+}
+interface StrategyDocDetailResponse {
+  data: StrategyDocDetail
+}
+export const getStrategyDocs = async (): Promise<StrategyDocsListResponse> => {
+  const res = await api.get<{ success: boolean; data: { categories: string[]; items: StrategyDocItem[] } }>('/strategy-docs')
+  return res.data
+}
 
-export const getStrategyDoc = (slug: string) =>
-  api.get<StrategyDocDetail>(`/strategy-docs/${encodeURIComponent(slug)}`)
+export const getStrategyDoc = async (slug: string): Promise<StrategyDocDetailResponse> => {
+  const res = await api.get<{ success: boolean; data: StrategyDocDetail }>(`/strategy-docs/${encodeURIComponent(slug)}`)
+  return res.data
+}
 
 export default api

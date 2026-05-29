@@ -8,7 +8,12 @@ from web.backend.backtest_engine.analyzer import build_result
 from web.backend.backtest_engine.data_portal import DailyDataPortal, MinuteDataPortal
 from web.backend.backtest_engine.execution import DailyExecutionSimulator, MinuteExecutionSimulator
 from web.backend.backtest_engine.models import BacktestParams
-from web.backend.backtest_engine.signal_source import SignalSource, cap_positions_per_day
+from web.backend.backtest_engine.signal_source import (
+    SignalSource,
+    apply_max_weight_per_code,
+    cap_positions_per_day,
+    merge_same_day_signals,
+)
 
 
 class BacktestEngine:
@@ -74,6 +79,22 @@ class BacktestEngine:
             "warnings": [],
         }
 
+        # 任务 C：多战法融合 —— 在限流前先按 (code, signal_date) 合并，避免同股同日被重复计费
+        if str(params.get("signal_merge_mode") or "single") == "multi_strategy":
+            before_merge = len(candidates)
+            priority_mode = str(params.get("signal_priority_mode") or "critical_first")
+            candidates = merge_same_day_signals(candidates, priority_mode=priority_mode)
+            merged = before_merge - len(candidates)
+            if merged > 0:
+                runtime["warnings"].append(
+                    f"多战法融合已合并 {merged} 条同股同日重复信号 (priority={priority_mode})"
+                )
+            runtime["signal_merge_mode"] = "multi_strategy"
+            runtime["signal_priority_mode"] = priority_mode
+        else:
+            runtime["signal_merge_mode"] = "single"
+            runtime["signal_priority_mode"] = "n/a"
+
         candidates = _limit_signals_per_code(candidates, int(params.get("max_signals_per_code", 0) or 0), runtime)
 
         before_day_cap = len(candidates)
@@ -83,6 +104,19 @@ class BacktestEngine:
             runtime["warnings"].append(
                 f"每日候选上限已触发，截断 {before_day_cap - len(candidates)} 条候选"
             )
+
+        # 任务 C：weight_cap 组合模式下额外按单股最大权重过滤；fixed_slots 默认不动
+        position_pct = float(params.get("position_pct") or 0)
+        max_weight = float(params.get("max_weight_per_code") or 0)
+        portfolio_mode = str(params.get("portfolio_mode") or "fixed_slots")
+        if portfolio_mode == "weight_cap" and position_pct > 0 and max_weight > 0:
+            candidates, dropped = apply_max_weight_per_code(candidates, max_weight, position_pct)
+            if dropped > 0:
+                runtime["candidate_limit_applied"] = True
+                runtime["warnings"].append(
+                    f"单股权重上限 {max_weight}% 已触发，丢弃 {dropped} 条候选"
+                )
+        runtime["portfolio_mode"] = portfolio_mode
 
         max_candidates = int(params.get("max_candidates", 0) or 0)
         if max_candidates > 0 and len(candidates) > max_candidates:

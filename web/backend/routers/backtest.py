@@ -64,6 +64,12 @@ class BacktestRequest(BaseModel):
     intent_quantity: int = Field(default=0, ge=0, le=100000000)
     lot_size: int = Field(default=100, ge=1, le=10000)
     allow_st_buy: bool = False
+    # 任务 C：组合策略 / 多战法融合参数。默认值保持旧行为，不影响现有调用方。
+    signal_merge_mode: Literal['single', 'multi_strategy'] = 'single'
+    signal_priority_mode: Literal['critical_first', 'buy_first', 'sell_first'] = 'critical_first'
+    portfolio_mode: Literal['fixed_slots', 'weight_cap'] = 'fixed_slots'
+    position_pct: float = Field(default=0, ge=0, le=100)
+    max_weight_per_code: float = Field(default=0, ge=0, le=100)
 
 
 def _payload_to_dict(payload: BacktestRequest) -> dict:

@@ -41,6 +41,12 @@ def build_result(
         "avg_hold_days": round(avg_hold_days, 1),
         "best_return_pct": round(max((trade["return_pct"] for trade in trades), default=0.0), 2),
         "worst_return_pct": round(min((trade["return_pct"] for trade in trades), default=0.0), 2),
+        # 任务 C：把组合模式 / 融合模式 / 优先级模式透出到摘要，便于前端展示与回归审计
+        "portfolio_mode": str(runtime.get("portfolio_mode") or params.get("portfolio_mode") or "fixed_slots"),
+        "signal_merge_mode": str(runtime.get("signal_merge_mode") or params.get("signal_merge_mode") or "single"),
+        "signal_priority_mode": str(runtime.get("signal_priority_mode") or params.get("signal_priority_mode") or "n/a"),
+        "position_pct": float(params.get("position_pct") or 0),
+        "max_weight_per_code": float(params.get("max_weight_per_code") or 0),
     }
 
     return {

@@ -1,0 +1,3 @@
+[submodule "third_party/zettaranc"]
+	path = third_party/zettaranc
+	url = https://github.com/lululu811/zettaranc-skill.git

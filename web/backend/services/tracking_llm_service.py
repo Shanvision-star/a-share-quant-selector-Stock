@@ -23,6 +23,7 @@ import pandas as pd
 
 from .llm_providers import call_deepseek, load_llm_config
 from .llm_providers.deepseek_provider import DeepSeekError
+from . import zettaranc_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,7 @@ _SYSTEM_PROMPT = (
 
 # 任务 D：zettaranc 风格系统提示词。只换口吻不改 schema，不引入 zettaranc 的 Tushare/SQLite 依赖。
 # 口吻参考：A 股手游操盘手、止损优先、杀伐果断、不绕弯；输出仍为严格 JSON。
-_SYSTEM_PROMPT_ZETTARANC = (
+_SYSTEM_PROMPT_ZETTARANC_FALLBACK = (
     "你是一位崩盘阅历丰富的 A 股手游操盘手，不讲情怀只讲纪律：止损优先、杀伐果断、不绕弯。"
     "面对持仓与告警时，你的金句是：「见坏就走，别依赖反弹」、「什么是仓位？仓位是阳光，不是赔钱的抽屉」。"
     "必须返回严格 JSON 对象，字段同默认提示词：decision/confidence/rationale/suggested_action/suggested_intent。"
@@ -163,9 +164,39 @@ _SYSTEM_PROMPT_ZETTARANC = (
     "不要猜价不要谈宏观，只看赋予的数据。"
 )
 
+# 把上游 SKILL.md 拼到 fallback 短提示之后：先角色协议，再覆盖输出 schema 要求，
+# 防止 LLM 沉浸 Z 哥角色后丢失结构化字段（这是 zettaranc-skill 原本不存在的约束）。
+_ZETTARANC_SCHEMA_APPENDIX = (
+    "\n\n# 输出格式硬约束（覆盖所有 Z 哥习惯）\n"
+    "必须返回严格 JSON 对象，字段：\n"
+    "- decision: cut|reduce|hold|watch|add\n"
+    "- confidence: 0~1 浮点\n"
+    "- rationale: 简体中文一句话（<=120 字），用 Z 哥本人语气；可含战法/纪律金句\n"
+    "- suggested_action: SELL|REDUCE|HOLD|WAIT|BUY\n"
+    "- suggested_intent: {code, side, qty_hint, reason}\n"
+    "不输出 markdown、不输出多余解释、不要 ```json 代码块包裹。"
+)
+
+
+def _build_zettaranc_system_prompt() -> str:
+    """运行时拼装 zettaranc system prompt：SKILL.md 角色协议 + schema 约束。
+
+    单独抽函数是为了让测试可 monkeypatch zettaranc_adapter.load_skill_md_role，
+    无需读上游 600+ 行 markdown 也能验证 schema 接入路径。
+    """
+    try:
+        role = zettaranc_adapter.load_skill_md_role()
+    except Exception as exc:  # pragma: no cover - 防御性
+        logger.warning("[tracking_llm] 加载 SKILL.md 失败，回退短提示: %s", exc)
+        role = _SYSTEM_PROMPT_ZETTARANC_FALLBACK
+    return role + _ZETTARANC_SCHEMA_APPENDIX
+
+
 _PROFILE_PROMPTS = {
     "default": _SYSTEM_PROMPT,
-    "zettaranc_style": _SYSTEM_PROMPT_ZETTARANC,
+    # zettaranc_style 不预先固化，运行时拼装（读 SKILL.md）。这里挂一个标记位，
+    # 真正的 system_prompt 在 propose_action 里通过 _build_zettaranc_system_prompt() 取。
+    "zettaranc_style": "__zettaranc_runtime__",
 }
 _ALLOWED_PROFILES = set(_PROFILE_PROMPTS.keys())
 
@@ -179,8 +210,18 @@ def _resolve_profile(profile: Optional[str]) -> str:
 
 
 
-def _build_user_prompt(item: dict, alerts: list[dict]) -> str:
-    """组装 DeepSeek 的 user message，只暴露必要字段，避免上下文膨胀。"""
+def _build_user_prompt(
+    item: dict,
+    alerts: list[dict],
+    zettaranc_context: Optional[dict] = None,
+) -> str:
+    """组装 DeepSeek 的 user message，只暴露必要字段，避免上下文膨胀。
+
+    zettaranc_context: 由 zettaranc_adapter.prepare_context 产出，
+        ``{"source": "cli|local_csv|none", "text": ..., "error": ...}``。
+        非空且 source != "none" 时，作为「行情快照」段落附在最前面，让 LLM
+        基于真实数据回答，而不是只看持仓 JSON。
+    """
     item_view = {
         "code": item.get("code"),
         "name": item.get("name"),
@@ -203,13 +244,18 @@ def _build_user_prompt(item: dict, alerts: list[dict]) -> str:
         }
         for a in alerts[:20]
     ]
-    return (
-        "持仓:\n"
-        + json.dumps(item_view, ensure_ascii=False)
-        + "\n告警(最多20条):\n"
-        + json.dumps(alert_view, ensure_ascii=False)
-        + "\n请按系统提示输出严格 JSON。"
-    )
+    parts: list[str] = []
+    if zettaranc_context and zettaranc_context.get("source") not in (None, "none"):
+        parts.append(
+            "## 行情快照（来源："
+            + str(zettaranc_context.get("source"))
+            + "）\n"
+            + str(zettaranc_context.get("text") or "")
+        )
+    parts.append("## 持仓\n" + json.dumps(item_view, ensure_ascii=False))
+    parts.append("## 告警（最多20条）\n" + json.dumps(alert_view, ensure_ascii=False))
+    parts.append("请按系统提示输出严格 JSON。")
+    return "\n\n".join(parts)
 
 
 def _normalize_deepseek_payload(raw: dict, item: dict, alerts: list[dict]) -> dict[str, Any]:
@@ -286,15 +332,33 @@ class TrackingLLMService:
         provider = str(cfg.get("provider") or "mock").lower()
         resolved_profile = _resolve_profile(profile)
 
+        # 任务 C 档：zettaranc_style 时拉真行情快照 + 拼 SKILL.md 角色协议。
+        # 注意：以下两步均允许失败（adapter 内部已自我降级），失败时 zettaranc_context
+        # 仍是 {"source": "none", ...}，user prompt 不附行情段，行为退回纯 schema 路径。
+        zettaranc_context: Optional[dict] = None
+        if resolved_profile == "zettaranc_style":
+            try:
+                code = str(item.get("code") or "").strip()
+                if code:
+                    zettaranc_context = zettaranc_adapter.prepare_context(code)
+            except Exception as exc:  # 防御性：adapter 任何异常都不影响主链路
+                logger.warning("[tracking_llm] zettaranc 上下文准备失败: %s", exc)
+                zettaranc_context = {"source": "none", "text": "", "error": str(exc)}
+
         if provider == "deepseek":
             ds_cfg = cfg.get("deepseek") or {}
+            # zettaranc_style 走运行时拼装的 system prompt（SKILL.md + schema 约束）
+            if resolved_profile == "zettaranc_style":
+                system_prompt = _build_zettaranc_system_prompt()
+            else:
+                system_prompt = _PROFILE_PROMPTS[resolved_profile]
             try:
                 raw = call_deepseek(
                     api_key=str(ds_cfg.get("api_key") or ""),
                     base_url=str(ds_cfg.get("base_url") or "https://api.deepseek.com/v1"),
                     model=str(ds_cfg.get("model") or "deepseek-chat"),
-                    system_prompt=_PROFILE_PROMPTS[resolved_profile],
-                    user_prompt=_build_user_prompt(item, alerts),
+                    system_prompt=system_prompt,
+                    user_prompt=_build_user_prompt(item, alerts, zettaranc_context),
                     temperature=float(ds_cfg.get("temperature", 0.2)),
                     timeout_seconds=float(ds_cfg.get("timeout_seconds", 20)),
                     max_output_tokens=int(ds_cfg.get("max_output_tokens", 600)),
@@ -303,6 +367,8 @@ class TrackingLLMService:
                 normalized["provider"] = "deepseek"
                 normalized["provider_fallback"] = False
                 normalized["profile"] = resolved_profile
+                if zettaranc_context is not None:
+                    normalized["zettaranc_data_source"] = zettaranc_context.get("source")
                 return normalized
             except (DeepSeekError, ValueError) as exc:
                 logger.warning(
@@ -313,6 +379,8 @@ class TrackingLLMService:
                 fallback["provider_fallback"] = True
                 fallback["provider_error"] = str(exc)
                 fallback["profile"] = resolved_profile
+                if zettaranc_context is not None:
+                    fallback["zettaranc_data_source"] = zettaranc_context.get("source")
                 return fallback
 
         # 默认 mock 分支
@@ -320,6 +388,8 @@ class TrackingLLMService:
         out["provider"] = "mock"
         out["provider_fallback"] = False
         out["profile"] = resolved_profile
+        if zettaranc_context is not None:
+            out["zettaranc_data_source"] = zettaranc_context.get("source")
         return out
 
 

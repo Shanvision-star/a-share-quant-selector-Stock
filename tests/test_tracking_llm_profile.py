@@ -100,3 +100,61 @@ def test_deepseek_failure_returns_mock_with_fallback(monkeypatch) -> None:
     assert advice["provider_fallback"] is True
     assert advice["profile"] == "zettaranc_style"
     assert advice["provider_error"]
+
+
+# ---- C 档：zettaranc 真实上下文注入测试 ----
+
+
+def test_zettaranc_profile_injects_data_source_field(monkeypatch) -> None:
+    """profile=zettaranc_style 时应通过 adapter 拿到 source 并透传到 advice。"""
+    from web.backend.services import tracking_llm_service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "load_llm_config", lambda: {"provider": "mock"})
+    monkeypatch.setattr(
+        svc_mod.zettaranc_adapter,
+        "prepare_context",
+        lambda code, days=60: {"source": "local_csv", "text": "FAKE-SNAPSHOT", "error": None},
+    )
+    service = svc_mod.TrackingLLMService()
+    advice = service.propose_action(
+        dict(_BASE_ITEM), _HIGH_PRIORITY_ALERT, profile="zettaranc_style"
+    )
+    _assert_schema(advice)
+    assert advice["zettaranc_data_source"] == "local_csv"
+
+
+def test_default_profile_does_not_call_zettaranc(monkeypatch) -> None:
+    """default profile 不应触发 adapter 调用，也不应有 zettaranc 字段。"""
+    from web.backend.services import tracking_llm_service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "load_llm_config", lambda: {"provider": "mock"})
+    called = {"n": 0}
+
+    def _spy(code, days=60):
+        called["n"] += 1
+        return {"source": "none", "text": "", "error": None}
+
+    monkeypatch.setattr(svc_mod.zettaranc_adapter, "prepare_context", _spy)
+    service = svc_mod.TrackingLLMService()
+    advice = service.propose_action(dict(_BASE_ITEM), _HIGH_PRIORITY_ALERT, profile="default")
+    assert called["n"] == 0
+    assert "zettaranc_data_source" not in advice
+
+
+def test_zettaranc_adapter_exception_does_not_break(monkeypatch) -> None:
+    """adapter 抛错应被吞掉，链路继续走 mock 决策。"""
+    from web.backend.services import tracking_llm_service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "load_llm_config", lambda: {"provider": "mock"})
+
+    def _boom(code, days=60):
+        raise RuntimeError("adapter exploded")
+
+    monkeypatch.setattr(svc_mod.zettaranc_adapter, "prepare_context", _boom)
+    service = svc_mod.TrackingLLMService()
+    advice = service.propose_action(
+        dict(_BASE_ITEM), _HIGH_PRIORITY_ALERT, profile="zettaranc_style"
+    )
+    _assert_schema(advice)
+    # adapter 异常 → context 退回 source=none → 字段被写为 "none"
+    assert advice["zettaranc_data_source"] == "none"

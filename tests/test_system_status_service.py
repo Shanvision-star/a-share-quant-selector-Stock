@@ -372,3 +372,34 @@ def test_default_db_reads_do_not_use_project_sqlite_helpers(monkeypatch, tmp_pat
     assert payload["update_pipeline"]["status"] == "missing"
     assert payload["tracking"]["status"] == "ready"
     assert not svc_mod.WEB_STRATEGY_CACHE_DB_FILE.exists()
+
+
+def test_default_data_loader_is_side_effect_free(monkeypatch, tmp_path):
+    def forbidden_call(*args, **kwargs):
+        raise AssertionError("system status must not import side-effect data/sqlite/repository helpers")
+
+    import web.backend.services as services_pkg
+
+    fake_data_module = types.SimpleNamespace(get_data_status=forbidden_call)
+    fake_sqlite_module = types.SimpleNamespace(get_connection=forbidden_call)
+    fake_repo_module = types.SimpleNamespace(list_runs=forbidden_call)
+    monkeypatch.setitem(sys.modules, "web.backend.services.data_service", fake_data_module)
+    monkeypatch.setitem(sys.modules, "web.backend.services.sqlite_service", fake_sqlite_module)
+    monkeypatch.setitem(sys.modules, "web.backend.services.strategy_result_repository", fake_repo_module)
+    monkeypatch.setattr(services_pkg, "data_service", fake_data_module, raising=False)
+    monkeypatch.setattr(services_pkg, "sqlite_service", fake_sqlite_module, raising=False)
+    monkeypatch.setattr(services_pkg, "strategy_result_repository", fake_repo_module, raising=False)
+    monkeypatch.setattr(svc_mod, "DATA_DIR", tmp_path / "missing_data", raising=False)
+    monkeypatch.setattr(svc_mod, "WEB_STRATEGY_RESULTS_FILE", tmp_path / "missing_strategy_cache.json")
+    monkeypatch.setattr(svc_mod, "WEB_STRATEGY_CACHE_DB_FILE", tmp_path / "missing_web_strategy_cache.db", raising=False)
+    monkeypatch.setattr(svc_mod, "_default_requested_trade_date", lambda: "2026-06-19")
+
+    payload = SystemStatusService(
+        now_provider=lambda: NOW,
+        config_loader=lambda: {},
+    ).build_status()
+
+    assert payload["data"]["status"] == "missing"
+    assert payload["data"]["details"]["total_stocks"] == 0
+    assert not svc_mod.DATA_DIR.exists()
+    assert not svc_mod.WEB_STRATEGY_CACHE_DB_FILE.exists()

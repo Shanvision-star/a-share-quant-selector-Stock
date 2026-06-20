@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from utils.trading_calendar import previous_a_share_trading_day
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DATA_DIR = PROJECT_ROOT / "data"
 WEB_STRATEGY_RESULTS_FILE = PROJECT_ROOT / "data" / "web_strategy_results.json"
 WEB_STRATEGY_CACHE_DB_FILE = PROJECT_ROOT / "data" / "web_strategy_cache.db"
 WEB_STRATEGY_SCHEMA_VERSION = 1
@@ -62,10 +64,89 @@ def _default_config_loader() -> dict:
     }
 
 
-def _default_data_status_loader() -> dict:
-    from web.backend.services.data_service import get_data_status
+def _stock_csv_files() -> list[Path]:
+    if not DATA_DIR.exists() or not DATA_DIR.is_dir():
+        return []
+    return sorted(
+        path
+        for path in DATA_DIR.rglob("*.csv")
+        if path.is_file() and path.stem.isdigit() and len(path.stem) == 6
+    )
 
-    return get_data_status()
+
+def _first_csv_date(path: Path) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as file:
+            reader = csv.reader(file)
+            header = next(reader, None)
+            if not header or "date" not in header:
+                return None
+            date_index = header.index("date")
+            for row in reader:
+                if date_index >= len(row):
+                    continue
+                value = str(row[date_index]).strip()[:10]
+                if len(value) == 10 and value[4] == "-" and value[7] == "-":
+                    return value
+    except OSError:
+        return None
+    return None
+
+
+def _empty_board_status() -> dict[str, dict[str, Any]]:
+    return {
+        board: {
+            "total": 0,
+            "latest_date": "-",
+            "stale_ratio": 0.0,
+        }
+        for board in ("00", "30", "60", "68")
+    }
+
+
+def _default_data_status_loader() -> dict:
+    csv_files = _stock_csv_files()
+    board_files: dict[str, list[Path]] = {board: [] for board in ("00", "30", "60", "68")}
+    for path in csv_files:
+        prefix = path.stem[:2]
+        if prefix in board_files:
+            board_files[prefix].append(path)
+
+    expected_date = _default_requested_trade_date()
+    board_status = _empty_board_status()
+    latest_dates: list[str] = []
+    stale_count = 0
+    checked_count = 0
+
+    for board, files in board_files.items():
+        board_latest = None
+        board_stale = 0
+        sample = files[:10]
+        for path in sample:
+            stock_date = _first_csv_date(path)
+            if not stock_date:
+                continue
+            if stock_date < expected_date:
+                board_stale += 1
+                stale_count += 1
+            if board_latest is None or stock_date > board_latest:
+                board_latest = stock_date
+            latest_dates.append(stock_date)
+            checked_count += 1
+        board_status[board] = {
+            "total": len(files),
+            "latest_date": board_latest or "-",
+            "stale_ratio": round(board_stale / max(len(sample), 1) * 100, 1),
+        }
+
+    return {
+        "total_stocks": len(csv_files),
+        "latest_date": max(latest_dates) if latest_dates else "-",
+        "stale_count": stale_count,
+        "checked_count": checked_count,
+        "is_fresh": stale_count / max(checked_count, 1) < 0.3 if checked_count else False,
+        "boards": board_status,
+    }
 
 
 def _default_requested_trade_date() -> str:

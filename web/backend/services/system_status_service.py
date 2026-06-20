@@ -217,9 +217,22 @@ def _default_tracking_status_count_loader(status: str) -> int:
 
 
 def _default_alerts_loader(ui_status: str, limit: int = 1000) -> list[dict]:
-    from web.backend.services.tracking_alert_service import tracking_alert_service
+    from web.backend.services.sqlite_service import get_connection
 
-    return tracking_alert_service.list_alerts(ui_status=ui_status, limit=limit)
+    try:
+        rows = get_connection().execute(
+            """
+            SELECT alert_id, tracking_id, ui_status, priority
+            FROM tracking_alert_events
+            WHERE ui_status = ?
+            ORDER BY priority ASC, alert_id ASC
+            LIMIT ?
+            """,
+            (ui_status, max(1, int(limit))),
+        ).fetchall()
+    except Exception:
+        return []
+    return [dict(row) for row in rows]
 
 
 @dataclass(frozen=True)

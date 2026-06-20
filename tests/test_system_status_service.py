@@ -1,4 +1,6 @@
 import json
+import sys
+import types
 
 from web.backend.services import system_status_service as svc_mod
 from web.backend.services.system_status_service import SystemStatusService
@@ -281,3 +283,47 @@ def test_read_only_strategy_cache_marks_same_date_missing_groups_partial(monkeyp
     assert payload["strategy_cache"]["status"] == "partial"
     assert payload["strategy_cache"]["details"]["missing_groups"] == ["bowl", "brick"]
     assert payload["overall_status"] == "partial"
+
+
+def test_default_alerts_loader_is_read_only(monkeypatch):
+    class ForbiddenAlertService:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("system status must not construct TrackingAlertService")
+
+    class ForbiddenAlertSingleton:
+        def list_alerts(self, *args, **kwargs):
+            raise AssertionError("system status must not call tracking_alert_service.list_alerts")
+
+    fake_alert_module = types.SimpleNamespace(
+        TrackingAlertService=ForbiddenAlertService,
+        tracking_alert_service=ForbiddenAlertSingleton(),
+    )
+    monkeypatch.setitem(sys.modules, "web.backend.services.tracking_alert_service", fake_alert_module)
+
+    service = SystemStatusService(
+        now_provider=lambda: NOW,
+        data_status_loader=lambda: {
+            "total_stocks": 5100,
+            "latest_date": "2026-06-19",
+            "stale_count": 0,
+            "checked_count": 40,
+            "is_fresh": True,
+        },
+        strategy_cache_loader=lambda: {
+            "status": "ready",
+            "requested_date": "2026-06-19",
+            "trade_date": "2026-06-19",
+            "is_latest": True,
+            "total": 120,
+            "unique_total": 98,
+        },
+        runs_loader=lambda: {"items": []},
+        tracking_counts_loader=lambda status: 0,
+        config_loader=lambda: {},
+    )
+
+    payload = service.build_status()
+
+    assert payload["overall_status"] == "ready"
+    assert payload["tracking"]["status"] == "ready"
+    assert payload["tracking"]["details"]["pending_alert_count"] >= 0

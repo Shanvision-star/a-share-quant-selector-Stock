@@ -296,6 +296,32 @@ export const updateConfig = (
 export const healthCheck = () =>
   api.get('/health')
 
+// ─── 系统状态中心 ───
+export type SystemStatusKind = 'ready' | 'stale' | 'missing' | 'running' | 'partial' | 'error' | 'disabled'
+
+export interface SystemStatusBlock {
+  status: SystemStatusKind | string
+  message: string
+  checked_at: string
+  next_action: string
+  details: Record<string, any>
+}
+
+export interface SystemStatusPayload {
+  checked_at: string
+  overall_status: SystemStatusKind | string
+  backend: SystemStatusBlock
+  data: SystemStatusBlock
+  strategy_cache: SystemStatusBlock
+  update_pipeline: SystemStatusBlock
+  tracking: SystemStatusBlock
+  integrations: SystemStatusBlock
+  frontend_hints: string[]
+}
+
+export const getSystemStatus = () =>
+  api.get<{ success: boolean; data: SystemStatusPayload }>('/system/status')
+
 // ─── TXT 文件库 ───
 
 /** 列出已生成的 TXT 文件（可按日期过滤） */

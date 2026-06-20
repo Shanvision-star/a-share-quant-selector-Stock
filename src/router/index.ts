@@ -34,6 +34,11 @@ const routes = [
     component: () => import('@/views/SettingsView.vue'),
   },
   {
+    path: '/status',
+    name: 'SystemStatus',
+    component: () => import('@/views/SystemStatusView.vue'),
+  },
+  {
     path: '/backtest',
     name: 'Backtest',
     component: () => import('@/views/BacktestView.vue'),

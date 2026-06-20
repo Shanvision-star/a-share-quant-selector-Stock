@@ -45,6 +45,10 @@ function navigate(path: string) {
         <el-icon><Setting /></el-icon>
         <template #title>参数设置</template>
       </el-menu-item>
+      <el-menu-item index="/status">
+        <el-icon><Setting /></el-icon>
+        <template #title>系统状态</template>
+      </el-menu-item>
       <el-menu-item index="/backtest">
         <el-icon><DataAnalysis /></el-icon>
         <template #title>回测</template>

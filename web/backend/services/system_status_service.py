@@ -22,6 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WEB_STRATEGY_RESULTS_FILE = PROJECT_ROOT / "data" / "web_strategy_results.json"
 WEB_STRATEGY_SCHEMA_VERSION = 1
 UPDATE_RUN_TYPES = {"update_and_rebuild", "update_only", "init_only"}
+EXPECTED_STRATEGY_GROUPS = ("b1", "b2", "bowl", "brick")
 ACTIVE_TRACKING_STATUSES = ("watch_buy", "holding", "partial_sold")
 CORE_STATUS_WEIGHT = {
     "ready": 0,
@@ -139,6 +140,8 @@ def _default_strategy_cache_loader() -> dict:
 
     results = snapshot.get("results", [])
     groups = snapshot.get("groups", {})
+    available_groups = sorted(groups.keys())
+    missing_groups = [group for group in EXPECTED_STRATEGY_GROUPS if group not in groups]
     trade_date = snapshot.get("trade_date")
     unique_total = len({str(item.get("code", "")) for item in results if item.get("code")})
     is_latest = bool(trade_date and trade_date == requested_date)
@@ -148,6 +151,9 @@ def _default_strategy_cache_loader() -> dict:
         if is_latest
         else f"策略缓存日期 {trade_date} 与目标日期 {requested_date} 不一致。"
     )
+    if is_latest and missing_groups:
+        status = "partial"
+        message = f"策略缓存日期 {trade_date} 可用，但缺少策略分组: {', '.join(missing_groups)}。"
     if last_run and last_run.get("status") == "running":
         status = "running"
         message = last_run.get("message") or "策略缓存正在重建。"
@@ -159,7 +165,8 @@ def _default_strategy_cache_loader() -> dict:
             "generated_at": snapshot.get("generated_at"),
             "total": len(results),
             "unique_total": unique_total,
-            "available_groups": sorted(groups.keys()),
+            "available_groups": available_groups,
+            "missing_groups": missing_groups,
             "group_totals": {
                 group_name: group.get("total", 0)
                 for group_name, group in groups.items()
@@ -187,9 +194,26 @@ def _default_runs_loader() -> dict:
 
 
 def _default_tracking_items_loader(status: str, limit: int = 1000) -> list[dict]:
-    from web.backend.services.tracking_service import tracking_service
+    from web.backend.services.sqlite_service import get_connection
 
-    return tracking_service.list_items(status=status, limit=limit)
+    rows = get_connection().execute(
+        "SELECT tracking_id FROM tracking_items WHERE status = ? ORDER BY updated_at DESC LIMIT ?",
+        (status, max(1, int(limit))),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _default_tracking_status_count_loader(status: str) -> int:
+    from web.backend.services.sqlite_service import get_connection
+
+    try:
+        row = get_connection().execute(
+            "SELECT COUNT(*) AS cnt FROM tracking_items WHERE status = ?",
+            (status,),
+        ).fetchone()
+    except Exception:
+        return 0
+    return int(row["cnt"] if row else 0)
 
 
 def _default_alerts_loader(ui_status: str, limit: int = 1000) -> list[dict]:
@@ -227,6 +251,7 @@ class SystemStatusService:
         strategy_cache_loader: Callable[[], dict] = _default_strategy_cache_loader,
         runs_loader: Callable[[], dict] = _default_runs_loader,
         tracking_items_loader: Callable[[str, int], list[dict]] = _default_tracking_items_loader,
+        tracking_counts_loader: Callable[[str], int] | None = None,
         alerts_loader: Callable[[str, int], list[dict]] = _default_alerts_loader,
         config_loader: Callable[[], dict] = _default_config_loader,
     ) -> None:
@@ -235,6 +260,15 @@ class SystemStatusService:
         self.strategy_cache_loader = strategy_cache_loader
         self.runs_loader = runs_loader
         self.tracking_items_loader = tracking_items_loader
+        self.tracking_counts_loader = (
+            tracking_counts_loader
+            if tracking_counts_loader is not None
+            else (
+                _default_tracking_status_count_loader
+                if tracking_items_loader is _default_tracking_items_loader
+                else None
+            )
+        )
         self.alerts_loader = alerts_loader
         self.config_loader = config_loader
 
@@ -425,9 +459,13 @@ class SystemStatusService:
         counts: dict[str, int] = {}
         total_active = 0
         for status in ACTIVE_TRACKING_STATUSES:
-            items = self.tracking_items_loader(status, 1000)
-            counts[status] = len(items)
-            total_active += len(items)
+            count = (
+                self.tracking_counts_loader(status)
+                if self.tracking_counts_loader is not None
+                else len(self.tracking_items_loader(status, 1000))
+            )
+            counts[status] = count
+            total_active += count
         pending_alerts = self.alerts_loader("pending", 1000)
         return StatusBlock(
             status="ready",

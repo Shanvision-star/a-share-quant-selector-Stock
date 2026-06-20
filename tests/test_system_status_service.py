@@ -1,7 +1,5 @@
 import json
 
-import pytest
-
 from web.backend.services import system_status_service as svc_mod
 from web.backend.services.system_status_service import SystemStatusService
 
@@ -199,3 +197,87 @@ def test_default_strategy_cache_loader_is_read_only(monkeypatch, tmp_path):
 
     assert payload["status"] == "missing"
     assert payload["requested_date"] == "2026-06-19"
+
+
+def test_default_tracking_loader_is_read_only(monkeypatch):
+    def forbidden_list_items(*args, **kwargs):
+        raise AssertionError("system status must not call tracking_service.list_items")
+
+    from web.backend.services.tracking_service import tracking_service
+
+    monkeypatch.setattr(tracking_service, "list_items", forbidden_list_items)
+
+    service = SystemStatusService(
+        now_provider=lambda: NOW,
+        data_status_loader=lambda: {
+            "total_stocks": 5100,
+            "latest_date": "2026-06-19",
+            "stale_count": 0,
+            "checked_count": 40,
+            "is_fresh": True,
+        },
+        strategy_cache_loader=lambda: {
+            "status": "ready",
+            "requested_date": "2026-06-19",
+            "trade_date": "2026-06-19",
+            "is_latest": True,
+            "total": 120,
+            "unique_total": 98,
+        },
+        runs_loader=lambda: {"items": []},
+        alerts_loader=lambda ui_status, limit=1000: [],
+        config_loader=lambda: {},
+    )
+
+    payload = service.build_status()
+
+    assert payload["overall_status"] == "ready"
+    assert payload["tracking"]["status"] == "ready"
+    assert payload["tracking"]["details"]["active_count"] >= 0
+
+
+def test_read_only_strategy_cache_marks_same_date_missing_groups_partial(monkeypatch, tmp_path):
+    cache_file = tmp_path / "web_strategy_results.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "trade_date": "2026-06-19",
+                "generated_at": "2026-06-19T16:00:00+08:00",
+                "groups": {
+                    "b1": {"total": 2},
+                    "b2": {"total": 1},
+                },
+                "results": [
+                    {"code": "000001", "strategy_filter": "b1"},
+                    {"code": "000002", "strategy_filter": "b2"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(svc_mod, "WEB_STRATEGY_RESULTS_FILE", cache_file)
+    monkeypatch.setattr(svc_mod, "_default_requested_trade_date", lambda: "2026-06-19")
+    monkeypatch.setattr(svc_mod, "_latest_strategy_run", lambda requested_date: None)
+
+    service = SystemStatusService(
+        now_provider=lambda: NOW,
+        data_status_loader=lambda: {
+            "total_stocks": 5100,
+            "latest_date": "2026-06-19",
+            "stale_count": 0,
+            "checked_count": 40,
+            "is_fresh": True,
+        },
+        runs_loader=lambda: {"items": []},
+        tracking_items_loader=lambda status, limit=1000: [],
+        alerts_loader=lambda ui_status, limit=1000: [],
+        config_loader=lambda: {},
+    )
+
+    payload = service.build_status()
+
+    assert payload["strategy_cache"]["status"] == "partial"
+    assert payload["strategy_cache"]["details"]["missing_groups"] == ["bowl", "brick"]
+    assert payload["overall_status"] == "partial"

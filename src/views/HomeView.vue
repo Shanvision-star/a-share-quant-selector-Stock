@@ -250,6 +250,7 @@ function onSortChange(prop: string, order: string | null) {
 function goToResults() { router.push('/strategy-results') }
 function goToTxtLibrary() { router.push({ path: '/strategy-results', query: { focus: 'txt' } }) }
 function goToUpdate() { router.push('/update') }
+function goToSystemStatus() { router.push('/status') }
 function goToStock(code: string) { router.push(`/stocks/${code}`) }
 
 function getStatusType(s?: string) {
@@ -456,6 +457,12 @@ function goToRebuild() {
               @click="goToResults"
             >
               查看结果
+            </el-button>
+            <el-button
+              size="small"
+              @click="goToSystemStatus"
+            >
+              系统状态
             </el-button>
           </div>
         </div>

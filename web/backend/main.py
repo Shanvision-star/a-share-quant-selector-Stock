@@ -66,6 +66,7 @@ from web.backend.routers import (
     txt_export,
     manual_selection,
     strategy_docs,
+    system_status,
     tracking,
     tracking_rule_template,
     tracking_alert,
@@ -155,6 +156,8 @@ app.include_router(txt_export.router)
 app.include_router(manual_selection.router)
 # 战法文档中心：固定 prefix=/api/strategy-docs，不会与 /api/tracking 冲突
 app.include_router(strategy_docs.router)
+# 系统状态中心：只读聚合数据、策略缓存、更新作业和集成健康，不触发写操作。
+app.include_router(system_status.router)
 # 注意：FastAPI 按 include 顺序匹配路由。tracking.router 的 prefix="/api" 下
 # 定义了 /tracking/{tracking_id}，会把 alerts / rule-templates / evaluate-rules
 # 这些固定段误吞为 tracking_id 触发 404。因此把所有 prefix=/api/tracking/<固定段>

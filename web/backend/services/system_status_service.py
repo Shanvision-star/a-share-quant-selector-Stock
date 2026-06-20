@@ -291,13 +291,17 @@ def _default_strategy_cache_loader() -> dict:
 
 
 def _default_runs_loader() -> dict:
+    update_run_types = sorted(UPDATE_RUN_TYPES)
+    placeholders = ",".join("?" for _ in update_run_types)
     items = _read_only_db_rows(
-        """
+        f"""
         SELECT *
         FROM strategy_runs
+        WHERE run_type IN ({placeholders})
         ORDER BY started_at DESC
         LIMIT 20
-        """
+        """,
+        tuple(update_run_types),
     )
     return {
         "items": items,
@@ -441,7 +445,7 @@ class SystemStatusService:
             action = "先查看后端日志，再重试状态检查。" if core_block else "该模块不阻断数据和策略主链路。"
             return StatusBlock(
                 status="error",
-                message=f"{name} 状态读取失败: {exc}",
+                message=f"{name} 状态读取失败。",
                 checked_at=checked_at,
                 next_action=action,
                 details={"error_type": type(exc).__name__},

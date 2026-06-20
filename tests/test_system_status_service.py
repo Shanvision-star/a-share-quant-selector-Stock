@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 import types
 
@@ -147,7 +148,8 @@ def test_system_status_marks_submodule_error_without_raising():
 
     assert payload["overall_status"] == "error"
     assert payload["data"]["status"] == "error"
-    assert "csv broken" in payload["data"]["message"]
+    assert payload["data"]["details"]["error_type"] == "RuntimeError"
+    assert "csv broken" not in json.dumps(payload, ensure_ascii=False)
 
 
 def test_system_status_does_not_let_tracking_or_integrations_block_core_ready():
@@ -403,3 +405,83 @@ def test_default_data_loader_is_side_effect_free(monkeypatch, tmp_path):
     assert payload["data"]["details"]["total_stocks"] == 0
     assert not svc_mod.DATA_DIR.exists()
     assert not svc_mod.WEB_STRATEGY_CACHE_DB_FILE.exists()
+
+
+def test_default_update_runs_query_filters_update_types_before_limit(monkeypatch, tmp_path):
+    db_path = tmp_path / "web_strategy_cache.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE strategy_runs (
+            run_id TEXT PRIMARY KEY,
+            run_type TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            strategy_filter TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            message TEXT,
+            matched_count INTEGER DEFAULT 0,
+            processed_count INTEGER DEFAULT 0,
+            total_count INTEGER DEFAULT 0
+        )
+        """
+    )
+    for index in range(20):
+        conn.execute(
+            """
+            INSERT INTO strategy_runs (
+                run_id, run_type, trade_date, strategy_filter, status,
+                started_at, completed_at, message, matched_count, processed_count, total_count
+            )
+            VALUES (?, 'rebuild_only', '2026-06-19', 'all', 'done', ?, ?, '非更新作业', 1, 1, 1)
+            """,
+            (
+                f"run_rebuild_{index}",
+                f"2026-06-19 16:{index:02d}:00",
+                f"2026-06-19 16:{index:02d}:30",
+            ),
+        )
+    conn.execute(
+        """
+        INSERT INTO strategy_runs (
+            run_id, run_type, trade_date, strategy_filter, status,
+            started_at, completed_at, message, matched_count, processed_count, total_count
+        )
+        VALUES (
+            'run_partial_update', 'update_and_rebuild', '2026-06-19', 'all', 'partial',
+            '2026-06-19 15:00:00', '2026-06-19 15:30:00', '数据更新未全量完成', 0, 80, 100
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(svc_mod, "WEB_STRATEGY_CACHE_DB_FILE", db_path)
+    service = SystemStatusService(
+        now_provider=lambda: NOW,
+        data_status_loader=lambda: {
+            "total_stocks": 5100,
+            "latest_date": "2026-06-19",
+            "stale_count": 0,
+            "checked_count": 40,
+            "is_fresh": True,
+        },
+        strategy_cache_loader=lambda: {
+            "status": "ready",
+            "requested_date": "2026-06-19",
+            "trade_date": "2026-06-19",
+            "is_latest": True,
+            "total": 120,
+            "unique_total": 98,
+        },
+        tracking_counts_loader=lambda status: 0,
+        alerts_loader=lambda ui_status, limit=1000: [],
+        config_loader=lambda: {},
+    )
+
+    payload = service.build_status()
+
+    assert payload["overall_status"] == "partial"
+    assert payload["update_pipeline"]["status"] == "partial"
+    assert payload["update_pipeline"]["details"]["latest_run"]["run_id"] == "run_partial_update"

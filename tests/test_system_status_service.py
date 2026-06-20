@@ -186,13 +186,20 @@ def test_default_strategy_cache_loader_is_read_only(monkeypatch, tmp_path):
     def forbidden_call(*args, **kwargs):
         raise AssertionError("system status must not call write-capable strategy cache status")
 
-    from web.backend.services import strategy_result_repository as repo
-    from web.backend.services import strategy_service
+    import web.backend.services as services_pkg
 
-    monkeypatch.setattr(strategy_service, "get_strategy_cache_status", forbidden_call)
-    monkeypatch.setattr(repo, "finish_run", forbidden_call)
-    monkeypatch.setattr(repo, "insert_event", forbidden_call)
+    fake_strategy_service = types.SimpleNamespace(get_strategy_cache_status=forbidden_call)
+    fake_repo_module = types.SimpleNamespace(
+        list_runs=forbidden_call,
+        finish_run=forbidden_call,
+        insert_event=forbidden_call,
+    )
+    monkeypatch.setitem(sys.modules, "web.backend.services.strategy_service", fake_strategy_service)
+    monkeypatch.setitem(sys.modules, "web.backend.services.strategy_result_repository", fake_repo_module)
+    monkeypatch.setattr(services_pkg, "strategy_service", fake_strategy_service, raising=False)
+    monkeypatch.setattr(services_pkg, "strategy_result_repository", fake_repo_module, raising=False)
     monkeypatch.setattr(svc_mod, "WEB_STRATEGY_RESULTS_FILE", tmp_path / "missing_strategy_cache.json", raising=False)
+    monkeypatch.setattr(svc_mod, "WEB_STRATEGY_CACHE_DB_FILE", tmp_path / "missing_web_strategy_cache.db", raising=False)
     monkeypatch.setattr(svc_mod, "_default_requested_trade_date", lambda: "2026-06-19", raising=False)
 
     payload = svc_mod._default_strategy_cache_loader()
@@ -205,9 +212,11 @@ def test_default_tracking_loader_is_read_only(monkeypatch):
     def forbidden_list_items(*args, **kwargs):
         raise AssertionError("system status must not call tracking_service.list_items")
 
-    from web.backend.services.tracking_service import tracking_service
+    fake_tracking_module = types.SimpleNamespace(
+        tracking_service=types.SimpleNamespace(list_items=forbidden_list_items)
+    )
 
-    monkeypatch.setattr(tracking_service, "list_items", forbidden_list_items)
+    monkeypatch.setitem(sys.modules, "web.backend.services.tracking_service", fake_tracking_module)
 
     service = SystemStatusService(
         now_provider=lambda: NOW,
@@ -327,3 +336,39 @@ def test_default_alerts_loader_is_read_only(monkeypatch):
     assert payload["overall_status"] == "ready"
     assert payload["tracking"]["status"] == "ready"
     assert payload["tracking"]["details"]["pending_alert_count"] >= 0
+
+
+def test_default_db_reads_do_not_use_project_sqlite_helpers(monkeypatch, tmp_path):
+    def forbidden_call(*args, **kwargs):
+        raise AssertionError("system status must use its own read-only sqlite connection")
+
+    import web.backend.services as services_pkg
+
+    fake_sqlite_module = types.SimpleNamespace(get_connection=forbidden_call)
+    fake_repo_module = types.SimpleNamespace(list_runs=forbidden_call)
+    monkeypatch.setitem(sys.modules, "web.backend.services.sqlite_service", fake_sqlite_module)
+    monkeypatch.setitem(sys.modules, "web.backend.services.strategy_result_repository", fake_repo_module)
+    monkeypatch.setattr(services_pkg, "sqlite_service", fake_sqlite_module, raising=False)
+    monkeypatch.setattr(services_pkg, "strategy_result_repository", fake_repo_module, raising=False)
+    monkeypatch.setattr(svc_mod, "WEB_STRATEGY_RESULTS_FILE", tmp_path / "missing_strategy_cache.json")
+    monkeypatch.setattr(svc_mod, "WEB_STRATEGY_CACHE_DB_FILE", tmp_path / "missing_web_strategy_cache.db", raising=False)
+    monkeypatch.setattr(svc_mod, "_default_requested_trade_date", lambda: "2026-06-19")
+
+    service = SystemStatusService(
+        now_provider=lambda: NOW,
+        data_status_loader=lambda: {
+            "total_stocks": 5100,
+            "latest_date": "2026-06-19",
+            "stale_count": 0,
+            "checked_count": 40,
+            "is_fresh": True,
+        },
+        config_loader=lambda: {},
+    )
+
+    payload = service.build_status()
+
+    assert payload["strategy_cache"]["status"] == "missing"
+    assert payload["update_pipeline"]["status"] == "missing"
+    assert payload["tracking"]["status"] == "ready"
+    assert not svc_mod.WEB_STRATEGY_CACHE_DB_FILE.exists()

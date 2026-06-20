@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ from utils.trading_calendar import previous_a_share_trading_day
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WEB_STRATEGY_RESULTS_FILE = PROJECT_ROOT / "data" / "web_strategy_results.json"
+WEB_STRATEGY_CACHE_DB_FILE = PROJECT_ROOT / "data" / "web_strategy_cache.db"
 WEB_STRATEGY_SCHEMA_VERSION = 1
 UPDATE_RUN_TYPES = {"update_and_rebuild", "update_only", "init_only"}
 EXPECTED_STRATEGY_GROUPS = ("b1", "b2", "bowl", "brick")
@@ -96,14 +98,34 @@ def _read_strategy_snapshot() -> dict | None:
     return snapshot
 
 
-def _latest_strategy_run(requested_date: str) -> dict | None:
-    from web.backend.services import strategy_result_repository as repo
+def _read_only_db_rows(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    if not WEB_STRATEGY_CACHE_DB_FILE.exists():
+        return []
 
+    uri = f"file:{WEB_STRATEGY_CACHE_DB_FILE.as_posix()}?mode=ro"
     try:
-        runs = repo.list_runs(date=requested_date, strategy_filter=None, page=1, per_page=1)
-    except Exception:
-        return None
-    items = runs.get("items") or []
+        conn = sqlite3.connect(uri, uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+    return [dict(row) for row in rows]
+
+
+def _latest_strategy_run(requested_date: str) -> dict | None:
+    items = _read_only_db_rows(
+        """
+        SELECT *
+        FROM strategy_runs
+        WHERE trade_date = ?
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        (requested_date,),
+    )
     return items[0] if items else None
 
 
@@ -188,51 +210,54 @@ def _default_strategy_cache_loader() -> dict:
 
 
 def _default_runs_loader() -> dict:
-    from web.backend.services import strategy_result_repository as repo
-
-    return repo.list_runs(page=1, per_page=20)
+    items = _read_only_db_rows(
+        """
+        SELECT *
+        FROM strategy_runs
+        ORDER BY started_at DESC
+        LIMIT 20
+        """
+    )
+    return {
+        "items": items,
+        "total": len(items),
+        "page": 1,
+        "per_page": 20,
+    }
 
 
 def _default_tracking_items_loader(status: str, limit: int = 1000) -> list[dict]:
-    from web.backend.services.sqlite_service import get_connection
-
-    rows = get_connection().execute(
-        "SELECT tracking_id FROM tracking_items WHERE status = ? ORDER BY updated_at DESC LIMIT ?",
+    return _read_only_db_rows(
+        """
+        SELECT tracking_id
+        FROM tracking_items
+        WHERE status = ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
         (status, max(1, int(limit))),
-    ).fetchall()
-    return [dict(row) for row in rows]
+    )
 
 
 def _default_tracking_status_count_loader(status: str) -> int:
-    from web.backend.services.sqlite_service import get_connection
-
-    try:
-        row = get_connection().execute(
-            "SELECT COUNT(*) AS cnt FROM tracking_items WHERE status = ?",
-            (status,),
-        ).fetchone()
-    except Exception:
-        return 0
-    return int(row["cnt"] if row else 0)
+    rows = _read_only_db_rows(
+        "SELECT COUNT(*) AS cnt FROM tracking_items WHERE status = ?",
+        (status,),
+    )
+    return int(rows[0]["cnt"]) if rows else 0
 
 
 def _default_alerts_loader(ui_status: str, limit: int = 1000) -> list[dict]:
-    from web.backend.services.sqlite_service import get_connection
-
-    try:
-        rows = get_connection().execute(
-            """
-            SELECT alert_id, tracking_id, ui_status, priority
-            FROM tracking_alert_events
-            WHERE ui_status = ?
-            ORDER BY priority ASC, alert_id ASC
-            LIMIT ?
-            """,
-            (ui_status, max(1, int(limit))),
-        ).fetchall()
-    except Exception:
-        return []
-    return [dict(row) for row in rows]
+    return _read_only_db_rows(
+        """
+        SELECT alert_id, tracking_id, ui_status, priority
+        FROM tracking_alert_events
+        WHERE ui_status = ?
+        ORDER BY priority ASC, alert_id ASC
+        LIMIT ?
+        """,
+        (ui_status, max(1, int(limit))),
+    )
 
 
 @dataclass(frozen=True)

@@ -7,15 +7,20 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
 import yaml
 
+from utils.trading_calendar import previous_a_share_trading_day
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+WEB_STRATEGY_RESULTS_FILE = PROJECT_ROOT / "data" / "web_strategy_results.json"
+WEB_STRATEGY_SCHEMA_VERSION = 1
 UPDATE_RUN_TYPES = {"update_and_rebuild", "update_only", "init_only"}
 ACTIVE_TRACKING_STATUSES = ("watch_buy", "holding", "partial_sold")
 CORE_STATUS_WEIGHT = {
@@ -60,10 +65,119 @@ def _default_data_status_loader() -> dict:
     return get_data_status()
 
 
-def _default_strategy_cache_loader() -> dict:
-    from web.backend.services.strategy_service import get_strategy_cache_status
+def _default_requested_trade_date() -> str:
+    now = datetime.now()
+    if now.time() >= dt_time(15, 0):
+        target = now.date()
+    else:
+        target = now.date() - timedelta(days=1)
+    return previous_a_share_trading_day(target).strftime("%Y-%m-%d")
 
-    return get_strategy_cache_status("all")
+
+def _read_strategy_snapshot() -> dict | None:
+    if not WEB_STRATEGY_RESULTS_FILE.exists():
+        return None
+
+    try:
+        with WEB_STRATEGY_RESULTS_FILE.open("r", encoding="utf-8") as file:
+            snapshot = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(snapshot, dict):
+        return None
+    if snapshot.get("schema_version") != WEB_STRATEGY_SCHEMA_VERSION:
+        return None
+    if not isinstance(snapshot.get("groups"), dict):
+        return None
+    if not isinstance(snapshot.get("results"), list):
+        return None
+    return snapshot
+
+
+def _latest_strategy_run(requested_date: str) -> dict | None:
+    from web.backend.services import strategy_result_repository as repo
+
+    try:
+        runs = repo.list_runs(date=requested_date, strategy_filter=None, page=1, per_page=1)
+    except Exception:
+        return None
+    items = runs.get("items") or []
+    return items[0] if items else None
+
+
+def _default_strategy_cache_loader() -> dict:
+    requested_date = _default_requested_trade_date()
+    snapshot = _read_strategy_snapshot()
+    last_run = _latest_strategy_run(requested_date)
+    base = {
+        "requested_date": requested_date,
+        "strategy_filter": "all",
+        "cache_file": str(WEB_STRATEGY_RESULTS_FILE),
+        "exists": snapshot is not None,
+        "trade_date": None,
+        "generated_at": None,
+        "total": 0,
+        "unique_total": 0,
+        "available_groups": [],
+        "missing_groups": [],
+        "group_totals": {},
+        "status": "missing",
+        "message": "策略缓存文件不存在，请先手动重建。",
+        "is_latest": False,
+        "latest_run_status": last_run.get("status") if last_run else None,
+        "last_run_id": last_run.get("run_id") if last_run else None,
+        "source": "empty",
+        "rebuild": {
+            "is_running": bool(last_run and last_run.get("status") == "running"),
+            "last_status": last_run.get("status") if last_run else None,
+        },
+    }
+
+    if snapshot is None:
+        return base
+
+    results = snapshot.get("results", [])
+    groups = snapshot.get("groups", {})
+    trade_date = snapshot.get("trade_date")
+    unique_total = len({str(item.get("code", "")) for item in results if item.get("code")})
+    is_latest = bool(trade_date and trade_date == requested_date)
+    status = "ready" if is_latest else "stale"
+    message = (
+        "当日策略缓存可直接复用。"
+        if is_latest
+        else f"策略缓存日期 {trade_date} 与目标日期 {requested_date} 不一致。"
+    )
+    if last_run and last_run.get("status") == "running":
+        status = "running"
+        message = last_run.get("message") or "策略缓存正在重建。"
+
+    base.update(
+        {
+            "exists": True,
+            "trade_date": trade_date,
+            "generated_at": snapshot.get("generated_at"),
+            "total": len(results),
+            "unique_total": unique_total,
+            "available_groups": sorted(groups.keys()),
+            "group_totals": {
+                group_name: group.get("total", 0)
+                for group_name, group in groups.items()
+                if isinstance(group, dict)
+            },
+            "status": status,
+            "message": message,
+            "is_latest": is_latest,
+            "source": "file",
+            "rebuild": {
+                "is_running": bool(last_run and last_run.get("status") == "running"),
+                "last_status": last_run.get("status") if last_run else None,
+                "target_date": requested_date,
+                "last_run_id": last_run.get("run_id") if last_run else None,
+            },
+        }
+    )
+    return base
 
 
 def _default_runs_loader() -> dict:

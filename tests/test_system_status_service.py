@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from web.backend.services import system_status_service as svc_mod
 from web.backend.services.system_status_service import SystemStatusService
 
 
@@ -179,3 +180,22 @@ def test_system_status_does_not_let_tracking_or_integrations_block_core_ready():
     assert payload["overall_status"] == "ready"
     assert payload["tracking"]["status"] == "error"
     assert payload["integrations"]["status"] == "disabled"
+
+
+def test_default_strategy_cache_loader_is_read_only(monkeypatch, tmp_path):
+    def forbidden_call(*args, **kwargs):
+        raise AssertionError("system status must not call write-capable strategy cache status")
+
+    from web.backend.services import strategy_result_repository as repo
+    from web.backend.services import strategy_service
+
+    monkeypatch.setattr(strategy_service, "get_strategy_cache_status", forbidden_call)
+    monkeypatch.setattr(repo, "finish_run", forbidden_call)
+    monkeypatch.setattr(repo, "insert_event", forbidden_call)
+    monkeypatch.setattr(svc_mod, "WEB_STRATEGY_RESULTS_FILE", tmp_path / "missing_strategy_cache.json", raising=False)
+    monkeypatch.setattr(svc_mod, "_default_requested_trade_date", lambda: "2026-06-19", raising=False)
+
+    payload = svc_mod._default_strategy_cache_loader()
+
+    assert payload["status"] == "missing"
+    assert payload["requested_date"] == "2026-06-19"

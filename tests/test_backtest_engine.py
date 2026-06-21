@@ -484,6 +484,9 @@ def test_profit_runner_delays_ladder_exit_when_limit_down_locked():
     assert ladder_exits[0]["price"] == 9.3
     assert any(action["action"] == "sell_partial" and action["date"] == "2026-04-29" for action in trade["profit_actions"])
     assert sum(item["portion_pct"] for item in trade["exits"]) <= 100.0
+    assert [item["reason"] for item in trade["exits"]] == ["profit_ladder_10.0pct", "holding_days"]
+    assert [item["date"] for item in trade["exits"]] == ["2026-04-29", "2026-04-29"]
+    assert [item["portion_pct"] for item in trade["exits"]] == [25.0, 75.0]
 
 
 def test_engine_limits_single_code_signals_before_execution():

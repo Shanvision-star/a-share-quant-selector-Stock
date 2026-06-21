@@ -271,6 +271,18 @@ def test_backtest_repository_backfills_legacy_summary_from_result_json():
     assert len(detail_item["result_hash"]) == 16
 
 
+def test_backtest_repository_schema_creates_manifest_indexes():
+    conn = _memory_connection()
+
+    BacktestTaskRepository(lambda: conn)
+
+    indexes = {
+        row["name"] for row in conn.execute("PRAGMA index_list(backtest_tasks)").fetchall()
+    }
+    assert "idx_backtest_tasks_request_hash" in indexes
+    assert "idx_backtest_tasks_finished_at" in indexes
+
+
 def test_backtest_repository_detail_can_include_events():
     conn = _memory_connection()
     repository = BacktestTaskRepository(lambda: conn)

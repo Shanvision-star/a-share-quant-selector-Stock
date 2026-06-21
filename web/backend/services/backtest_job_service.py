@@ -209,6 +209,8 @@ class BacktestTaskRepository:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_created_at ON backtest_tasks(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_status ON backtest_tasks(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_request_hash ON backtest_tasks(request_hash)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_finished_at ON backtest_tasks(finished_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_events_task_id ON backtest_task_events(task_id)")
         conn.commit()
 

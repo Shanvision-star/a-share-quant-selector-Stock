@@ -160,6 +160,8 @@ Implementation requirements:
 - Reject a trade with event reason `max_positions` if open positions are at the limit.
 - Reject a trade with event reason `cash_shortage` if target quantity cannot be bought.
 - For quantity, use `trade["quantity"]` when positive; otherwise calculate `floor(target_cash / buy_price / lot_size) * lot_size`.
+- When `position_pct == 0`, keep default fixed-slots sizing and ignore legacy `trade.weight == 1.0`; use `initial_cash / max_positions` so Task 2 default requests do not become full-account trades.
+- When `position_pct > 0`, `trade.weight` may size target cash because execution writes it from `position_pct / 100`.
 - Treat each `exits[*].portion_pct` as a percentage of the original position quantity, bounded by remaining quantity; a partial-only final exit must keep the remaining position open and mark it at the latest exit price.
 - Keep `equity_curve[*].equity` as normalized `total_equity / initial_cash`.
 - Keep `capital_summary.final_equity`, `capital_summary.cash + capital_summary.market_value`, and `equity_curve[-1].total_equity` on the same actual account-ledger basis; do not synthesize old return-curve equity for the summary.

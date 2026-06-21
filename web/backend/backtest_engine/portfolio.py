@@ -155,10 +155,10 @@ def _target_cash(trade: dict, config: dict, buy_price: float) -> float:
     quantity = _safe_float(trade.get("quantity"), 0.0)
     if quantity > 0:
         return quantity * buy_price
-    weight = _safe_float(trade.get("weight"), 0.0)
-    if weight > 0:
-        return config["initial_cash"] * weight
     if config["position_pct"] > 0:
+        weight = _safe_float(trade.get("weight"), 0.0)
+        if weight > 0:
+            return config["initial_cash"] * weight
         return config["initial_cash"] * config["position_pct"] / 100.0
     if config["max_positions"] > 0:
         return config["initial_cash"] / config["max_positions"]

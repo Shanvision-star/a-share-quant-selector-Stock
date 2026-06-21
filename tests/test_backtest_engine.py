@@ -929,3 +929,42 @@ def test_build_equity_curve_keeps_legacy_weighted_sell_date_behavior():
     ]
     assert cumulative_return == -5.0
     assert max_drawdown == -5.0
+
+
+def test_portfolio_ledger_ignores_legacy_full_weight_in_fixed_slots_mode():
+    from web.backend.backtest_engine.portfolio import build_portfolio_ledger
+
+    trades = [
+        {
+            "code": "000001",
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-28",
+            "buy_price": 10.0,
+            "sell_price": 10.0,
+            "return_pct": 0.0,
+            "weight": 1.0,
+            "exits": [{"date": "2026-04-28", "price": 10.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        },
+        {
+            "code": "000002",
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-28",
+            "buy_price": 10.0,
+            "sell_price": 10.0,
+            "return_pct": 0.0,
+            "weight": 1.0,
+            "exits": [{"date": "2026-04-28", "price": 10.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        },
+    ]
+
+    ledger = build_portfolio_ledger(
+        trades,
+        {"initial_cash": 100000, "position_pct": 0, "max_positions_per_day": 10, "lot_size": 100},
+    )
+
+    buy_events = [event for event in ledger["portfolio_events"] if event["event_type"] == "buy"]
+    assert ledger["capital_summary"]["invested_count"] == 2
+    assert ledger["capital_summary"]["rejected_count"] == 0
+    assert all(event["reason"] != "cash_shortage" for event in ledger["portfolio_events"] if event["event_type"] == "reject")
+    assert [event["cost"] for event in buy_events] == [10000.0, 10000.0]
+    assert ledger["equity_curve"][0]["cash"] == 80000.0

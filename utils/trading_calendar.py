@@ -40,7 +40,9 @@ def advance_a_share_trading_days(day: date_cls, days: int) -> date_cls:
     it is normalized to the previous trading day before advancing.
     """
     cursor = day if is_a_share_trading_day(day) else previous_a_share_trading_day(day)
-    if days <= 0:
+    if days < 0:
+        raise ValueError("days must be non-negative")
+    if days == 0:
         return cursor
     for _ in range(days):
         cursor = next_a_share_trading_day(cursor)

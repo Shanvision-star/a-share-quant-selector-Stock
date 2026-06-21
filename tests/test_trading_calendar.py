@@ -39,6 +39,11 @@ def test_advance_trading_days_skips_2023_mid_autumn_national_day_holiday():
     assert advance_a_share_trading_days(date(2023, 9, 28), 1) == date(2023, 10, 9)
 
 
+def test_advance_trading_days_handles_closed_start_of_supported_calendar():
+    assert advance_a_share_trading_days(date(2016, 1, 1), 0) == date(2016, 1, 4)
+    assert advance_a_share_trading_days(date(2016, 1, 1), 1) == date(2016, 1, 4)
+
+
 @pytest.mark.parametrize(
     ("day", "expected"),
     [

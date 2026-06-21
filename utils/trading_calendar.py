@@ -127,7 +127,17 @@ def advance_a_share_trading_days(day: date_cls, days: int) -> date_cls:
     """
     if days < 0:
         raise ValueError("days must be non-negative")
-    cursor = day if is_a_share_trading_day(day) else previous_a_share_trading_day(day)
+    _ensure_calendar_supported(day)
+    if is_a_share_trading_day(day):
+        cursor = day
+    else:
+        try:
+            cursor = previous_a_share_trading_day(day)
+        except ValueError:
+            # 支持窗口起点可能正好闭市，此时没有窗口内上一交易日，只能从该闭市日向后推进。
+            if days == 0:
+                return next_a_share_trading_day(day)
+            cursor = day
     if days == 0:
         return cursor
     for _ in range(days):

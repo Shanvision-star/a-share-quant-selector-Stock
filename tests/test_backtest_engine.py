@@ -458,6 +458,37 @@ def test_daily_engine_delays_stop_loss_exit_when_limit_down_locked():
     assert trade["exits"][0]["portion_pct"] == 100.0
 
 
+def test_daily_engine_ignores_untradeable_exit_trigger_day():
+    """无量或停牌日的价格不能触发止损，再顺延成虚假成交。"""
+    candidate = SignalCandidate(
+        code="000001",
+        name="平安银行",
+        strategy_name="manual",
+        trade_date="2026-04-24",
+        signal_date="2026-04-24",
+        source="manual",
+    )
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-27"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-28"), "open": 9.0, "high": 9.1, "low": 9.0, "close": 9.0},
+            {"date": pd.Timestamp("2026-04-29"), "open": 10.1, "high": 10.5, "low": 10.0, "close": 10.4, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-30"), "open": 10.4, "high": 10.8, "low": 10.2, "close": 10.6, "volume": 1000},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource([candidate]),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(_default_params(holding_days=3, stop_loss_pct=5))
+
+    assert result["summary"]["trade_count"] == 1
+    assert result["trades"][0]["sell_date"] == "2026-04-30"
+    assert result["trades"][0]["exit_reason"] == "holding_days"
+
+
 def test_profit_runner_keeps_core_position_and_records_hold_action():
     """放飞后按阶梯卖出，但达到保留底仓比例后记录继续持有。"""
     candidate = SignalCandidate(
@@ -514,7 +545,7 @@ def test_profit_runner_delays_ladder_exit_when_limit_down_locked():
             {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.0, "low": 9.8, "close": 10.0, "volume": 1000},
             {"date": pd.Timestamp("2026-04-27"), "open": 10.0, "high": 13.5, "low": 9.9, "close": 13.33, "volume": 1000, "short_term_trend": 9.5},
             {"date": pd.Timestamp("2026-04-28"), "open": 12.0, "high": 12.0, "low": 12.0, "close": 12.0, "volume": 1000, "short_term_trend": 8.5},
-            {"date": pd.Timestamp("2026-04-29"), "open": 11.2, "high": 11.5, "low": 11.1, "close": 11.3, "volume": 1000, "short_term_trend": 8.7},
+            {"date": pd.Timestamp("2026-04-29"), "open": 11.2, "high": 11.49, "low": 11.1, "close": 11.3, "volume": 1000, "short_term_trend": 8.7},
         ]
     )
     engine = BacktestEngine(
@@ -543,6 +574,47 @@ def test_profit_runner_delays_ladder_exit_when_limit_down_locked():
     assert [item["reason"] for item in trade["exits"]] == ["profit_ladder_10.0pct", "holding_days"]
     assert [item["date"] for item in trade["exits"]] == ["2026-04-29", "2026-04-29"]
     assert [item["portion_pct"] for item in trade["exits"]] == [25.0, 75.0]
+
+
+def test_profit_runner_ignores_untradeable_trigger_day():
+    """无量或停牌日的高点不能触发 Profit Runner 动作。"""
+    candidate = SignalCandidate(
+        code="000001",
+        name="平安银行",
+        strategy_name="manual",
+        trade_date="2026-04-24",
+        signal_date="2026-04-24",
+        source="manual",
+    )
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.0, "low": 9.8, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-27"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000, "short_term_trend": 9.5},
+            {"date": pd.Timestamp("2026-04-28"), "open": 13.0, "high": 14.0, "low": 12.8, "close": 13.5, "short_term_trend": 9.5},
+            {"date": pd.Timestamp("2026-04-29"), "open": 10.1, "high": 10.4, "low": 10.0, "close": 10.3, "volume": 1000, "short_term_trend": 9.5},
+            {"date": pd.Timestamp("2026-04-30"), "open": 10.3, "high": 10.49, "low": 10.2, "close": 10.4, "volume": 1000, "short_term_trend": 9.5},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource([candidate]),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(
+        _default_params(
+            holding_days=3,
+            profit_run_enabled=True,
+            profit_trigger_pct=5,
+            profit_step_pct=5,
+            profit_sell_pct=25,
+            hold_above_short_trend_after_trigger=False,
+        )
+    )
+
+    trade = result["trades"][0]
+    assert trade["exit_reason"] == "holding_days"
+    assert trade["profit_actions"] == []
+    assert all(not item["reason"].startswith("profit_ladder") for item in trade["exits"])
 
 
 def test_engine_limits_single_code_signals_before_execution():

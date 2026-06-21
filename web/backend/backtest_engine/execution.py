@@ -377,6 +377,8 @@ class DailyExecutionSimulator:
 
         for index in range(buy_index + 1, target_exit_index + 1):
             row = frame.iloc[index]
+            if not _is_tradeable_row(row):
+                continue
             low_price = _safe_float(row.get("low"), 0.0)
             high_price = _safe_float(row.get("high"), 0.0)
             close_price = _safe_float(row.get("close"), 0.0)

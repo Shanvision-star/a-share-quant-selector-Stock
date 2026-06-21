@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from web.backend.backtest_engine.models import BacktestParams, OrderIntent, SignalCandidate
-from web.backend.backtest_engine.portfolio import build_equity_curve
+from web.backend.backtest_engine.portfolio import build_portfolio_ledger
 
 
 def build_result(
@@ -18,7 +18,12 @@ def build_result(
     """生成兼容旧 API 的回测响应结构，并附加 order_intents。"""
     runtime = runtime or {}
     trades = sorted(trades, key=lambda item: (item["buy_date"], item["code"]))
-    equity_curve, cumulative_return, max_drawdown = build_equity_curve(trades)
+    portfolio = build_portfolio_ledger(trades, params.to_mapping())
+    equity_curve = portfolio["equity_curve"]
+    capital_summary = portfolio["capital_summary"]
+    portfolio_events = portfolio["portfolio_events"]
+    cumulative_return = capital_summary["cumulative_return_pct"]
+    max_drawdown = capital_summary["max_drawdown_pct"]
     win_count = sum(1 for trade in trades if trade["return_pct"] > 0)
     trade_count = len(trades)
     avg_return = sum(trade["return_pct"] for trade in trades) / trade_count if trade_count else 0.0
@@ -54,6 +59,8 @@ def build_result(
         "summary": summary,
         "trades": trades,
         "equity_curve": equity_curve,
+        "capital_summary": capital_summary,
+        "portfolio_events": portfolio_events,
         "order_intents": [intent.to_mapping() for intent in order_intents],
         "runtime": runtime,
     }

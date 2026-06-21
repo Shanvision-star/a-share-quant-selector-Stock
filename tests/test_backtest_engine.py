@@ -751,3 +751,314 @@ def test_daily_engine_stops_when_runtime_budget_is_exhausted():
     assert result["runtime"]["stopped_early"] is True
     assert result["summary"]["runtime_stopped_early"] is True
     assert result["summary"]["runtime_processed_count"] < result["summary"]["candidate_count"]
+
+
+def test_portfolio_ledger_rejects_overlapping_trade_when_max_positions_is_one():
+    from web.backend.backtest_engine.portfolio import build_portfolio_ledger
+
+    trades = [
+        {
+            "code": "000001",
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-29",
+            "buy_price": 10.0,
+            "sell_price": 11.0,
+            "return_pct": 10.0,
+            "exits": [{"date": "2026-04-29", "price": 11.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        },
+        {
+            "code": "000002",
+            "buy_date": "2026-04-28",
+            "sell_date": "2026-04-30",
+            "buy_price": 20.0,
+            "sell_price": 21.0,
+            "return_pct": 5.0,
+            "exits": [{"date": "2026-04-30", "price": 21.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        },
+    ]
+
+    ledger = build_portfolio_ledger(
+        trades,
+        {"initial_cash": 100000, "position_pct": 50, "max_positions": 1, "lot_size": 100},
+    )
+
+    assert ledger["capital_summary"]["invested_count"] == 1
+    assert ledger["capital_summary"]["rejected_count"] == 1
+    assert ledger["capital_summary"]["final_equity"] == 105000.0
+    assert ledger["capital_summary"]["final_equity"] == ledger["equity_curve"][-1]["total_equity"]
+    assert any(event["event_type"] == "reject" and event["reason"] == "max_positions" for event in ledger["portfolio_events"])
+    assert ledger["equity_curve"][-1]["open_positions"] == 0
+
+
+def test_portfolio_ledger_uses_cash_released_by_non_overlapping_trades():
+    from web.backend.backtest_engine.portfolio import build_portfolio_ledger
+
+    trades = [
+        {
+            "code": "000001",
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-28",
+            "buy_price": 10.0,
+            "sell_price": 11.0,
+            "return_pct": 10.0,
+            "exits": [{"date": "2026-04-28", "price": 11.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        },
+        {
+            "code": "000002",
+            "buy_date": "2026-04-29",
+            "sell_date": "2026-04-30",
+            "buy_price": 20.0,
+            "sell_price": 18.0,
+            "return_pct": -10.0,
+            "exits": [{"date": "2026-04-30", "price": 18.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        },
+    ]
+
+    ledger = build_portfolio_ledger(
+        trades,
+        {"initial_cash": 100000, "position_pct": 50, "max_positions": 1, "lot_size": 100},
+    )
+
+    assert ledger["capital_summary"]["invested_count"] == 2
+    assert ledger["capital_summary"]["rejected_count"] == 0
+    assert ledger["capital_summary"]["final_equity"] == 100000.0
+    assert ledger["capital_summary"]["cumulative_return_pct"] == 0.0
+    assert ledger["capital_summary"]["final_equity"] == ledger["equity_curve"][-1]["total_equity"]
+    assert ledger["capital_summary"]["final_equity"] == ledger["capital_summary"]["cash"]
+    assert [row["date"] for row in ledger["equity_curve"]] == [
+        "2026-04-27",
+        "2026-04-28",
+        "2026-04-29",
+        "2026-04-30",
+    ]
+    assert ledger["equity_curve"][0]["cash"] == 50000.0
+    assert ledger["equity_curve"][1]["cash"] == 105000.0
+
+
+def test_portfolio_ledger_keeps_partial_exit_position_open():
+    from web.backend.backtest_engine.portfolio import build_portfolio_ledger
+
+    trades = [
+        {
+            "code": "000001",
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-28",
+            "buy_price": 10.0,
+            "sell_price": 12.0,
+            "quantity": 5000,
+            "return_pct": 20.0,
+            "exits": [{"date": "2026-04-28", "price": 12.0, "portion_pct": 25.0, "reason": "profit_ladder"}],
+        }
+    ]
+
+    ledger = build_portfolio_ledger(
+        trades,
+        {"initial_cash": 100000, "position_pct": 50, "max_positions": 1, "lot_size": 100},
+    )
+
+    final_row = ledger["equity_curve"][-1]
+    sell_events = [event for event in ledger["portfolio_events"] if event["event_type"] == "sell"]
+    assert ledger["capital_summary"]["invested_count"] == 1
+    assert ledger["capital_summary"]["rejected_count"] == 0
+    assert final_row["open_positions"] == 1
+    assert final_row["cash"] == 65000.0
+    assert final_row["market_value"] == 45000.0
+    assert final_row["total_equity"] == 110000.0
+    assert ledger["capital_summary"]["final_equity"] == 110000.0
+    assert ledger["capital_summary"]["market_value"] == 45000.0
+    assert sell_events[0]["quantity"] == 1250.0
+
+
+def test_portfolio_ledger_processes_same_day_sell_before_buy_by_plan():
+    from web.backend.backtest_engine.portfolio import build_portfolio_ledger
+
+    trades = [
+        {
+            "code": "000001",
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-28",
+            "buy_price": 10.0,
+            "sell_price": 11.0,
+            "quantity": 5000,
+            "return_pct": 10.0,
+            "exits": [{"date": "2026-04-28", "price": 11.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        },
+        {
+            "code": "000002",
+            "buy_date": "2026-04-28",
+            "sell_date": "2026-04-29",
+            "buy_price": 20.0,
+            "sell_price": 20.0,
+            "return_pct": 0.0,
+            "exits": [{"date": "2026-04-29", "price": 20.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        },
+    ]
+
+    ledger = build_portfolio_ledger(
+        trades,
+        {"initial_cash": 100000, "position_pct": 50, "max_positions": 1, "lot_size": 100},
+    )
+
+    same_day_events = [
+        event["event_type"]
+        for event in ledger["portfolio_events"]
+        if event["date"] == "2026-04-28"
+    ]
+    assert ledger["capital_summary"]["invested_count"] == 2
+    assert ledger["capital_summary"]["rejected_count"] == 0
+    assert same_day_events == ["sell", "buy"]
+
+
+def test_build_equity_curve_keeps_legacy_weighted_sell_date_behavior():
+    from web.backend.backtest_engine.portfolio import build_equity_curve
+
+    trades = [
+        {"code": "000001", "sell_date": "2026-04-28", "return_pct": 10.0, "weight": 0.25},
+        {"code": "000002", "sell_date": "2026-04-28", "return_pct": -10.0, "weight": 0.75},
+    ]
+
+    curve, cumulative_return, max_drawdown = build_equity_curve(trades)
+
+    assert curve == [
+        {
+            "date": "2026-04-28",
+            "daily_return_pct": -5.0,
+            "equity": 0.95,
+            "drawdown_pct": -5.0,
+        }
+    ]
+    assert cumulative_return == -5.0
+    assert max_drawdown == -5.0
+
+
+def test_portfolio_ledger_ignores_legacy_full_weight_in_fixed_slots_mode():
+    from web.backend.backtest_engine.portfolio import build_portfolio_ledger
+
+    trades = [
+        {
+            "code": "000001",
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-28",
+            "buy_price": 10.0,
+            "sell_price": 10.0,
+            "return_pct": 0.0,
+            "weight": 1.0,
+            "exits": [{"date": "2026-04-28", "price": 10.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        },
+        {
+            "code": "000002",
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-28",
+            "buy_price": 10.0,
+            "sell_price": 10.0,
+            "return_pct": 0.0,
+            "weight": 1.0,
+            "exits": [{"date": "2026-04-28", "price": 10.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        },
+    ]
+
+    ledger = build_portfolio_ledger(
+        trades,
+        {"initial_cash": 100000, "position_pct": 0, "max_positions_per_day": 10, "lot_size": 100},
+    )
+
+    buy_events = [event for event in ledger["portfolio_events"] if event["event_type"] == "buy"]
+    assert ledger["capital_summary"]["invested_count"] == 2
+    assert ledger["capital_summary"]["rejected_count"] == 0
+    assert all(event["reason"] != "cash_shortage" for event in ledger["portfolio_events"] if event["event_type"] == "reject")
+    assert [event["cost"] for event in buy_events] == [10000.0, 10000.0]
+    assert ledger["equity_curve"][0]["cash"] == 80000.0
+
+
+def test_portfolio_ledger_uses_default_slot_sizing_when_position_cap_disabled():
+    from web.backend.backtest_engine.portfolio import build_portfolio_ledger
+
+    trades = [
+        {
+            "code": code,
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-29",
+            "buy_price": 10.0,
+            "sell_price": 10.0,
+            "return_pct": 0.0,
+            "weight": 1.0,
+            "exits": [{"date": "2026-04-29", "price": 10.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        }
+        for code in ["000001", "000002", "000003"]
+    ]
+
+    ledger = build_portfolio_ledger(
+        trades,
+        {"initial_cash": 100000, "position_pct": 0, "max_positions_per_day": 0, "lot_size": 100},
+    )
+
+    buy_events = [event for event in ledger["portfolio_events"] if event["event_type"] == "buy"]
+    reject_events = [event for event in ledger["portfolio_events"] if event["event_type"] == "reject"]
+    assert ledger["capital_summary"]["invested_count"] == 3
+    assert ledger["capital_summary"]["rejected_count"] == 0
+    assert all(event["reason"] != "cash_shortage" for event in reject_events)
+    assert [event["cost"] for event in buy_events] == [5000.0, 5000.0, 5000.0]
+    assert ledger["equity_curve"][0]["cash"] == 85000.0
+    assert ledger["capital_summary"]["max_open_positions"] == 3
+
+
+def test_portfolio_ledger_rejects_trade_above_per_code_weight_cap():
+    from web.backend.backtest_engine.portfolio import build_portfolio_ledger
+
+    trades = [
+        {
+            "code": "000001",
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-28",
+            "buy_price": 10.0,
+            "sell_price": 11.0,
+            "return_pct": 10.0,
+            "weight": 0.5,
+            "exits": [{"date": "2026-04-28", "price": 11.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        }
+    ]
+
+    ledger = build_portfolio_ledger(
+        trades,
+        {"initial_cash": 100000, "position_pct": 50, "max_positions": 5, "max_weight_per_code": 20},
+    )
+
+    assert ledger["capital_summary"]["invested_count"] == 0
+    assert ledger["capital_summary"]["rejected_count"] == 1
+    assert ledger["capital_summary"]["final_equity"] == 100000.0
+    assert ledger["portfolio_events"][0]["reason"] == "max_weight_per_code"
+
+
+def test_daily_engine_returns_capital_summary_and_portfolio_events():
+    candidate = SignalCandidate(
+        code="000001",
+        name="平安银行",
+        strategy_name="manual",
+        trade_date="2026-04-24",
+        signal_date="2026-04-24",
+        source="manual",
+    )
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-27"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-28"), "open": 11.0, "high": 11.2, "low": 10.9, "close": 11.0, "volume": 1000},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource([candidate]),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(
+        _default_params(initial_cash=100000, position_pct=50, max_positions=1)
+    )
+
+    assert result["capital_summary"]["initial_cash"] == 100000.0
+    assert result["capital_summary"]["invested_count"] == 1
+    assert result["capital_summary"]["final_equity"] == 105000.0
+    assert result["summary"]["cumulative_return_pct"] == 5.0
+    assert result["summary"]["max_drawdown_pct"] == 0.0
+    assert result["portfolio_events"][0]["event_type"] == "buy"
+    assert result["portfolio_events"][-1]["event_type"] == "sell"
+    assert "equity" in result["equity_curve"][0]

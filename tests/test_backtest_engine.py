@@ -456,9 +456,9 @@ def test_profit_runner_delays_ladder_exit_when_limit_down_locked():
     frame = pd.DataFrame(
         [
             {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.0, "low": 9.8, "close": 10.0, "volume": 1000},
-            {"date": pd.Timestamp("2026-04-27"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000, "short_term_trend": 9.5},
-            {"date": pd.Timestamp("2026-04-28"), "open": 9.0, "high": 12.0, "low": 9.0, "close": 9.0, "volume": 1000, "short_term_trend": 8.5},
-            {"date": pd.Timestamp("2026-04-29"), "open": 9.2, "high": 9.5, "low": 9.1, "close": 9.3, "volume": 1000, "short_term_trend": 8.7},
+            {"date": pd.Timestamp("2026-04-27"), "open": 10.0, "high": 13.5, "low": 9.9, "close": 13.33, "volume": 1000, "short_term_trend": 9.5},
+            {"date": pd.Timestamp("2026-04-28"), "open": 12.0, "high": 12.0, "low": 12.0, "close": 12.0, "volume": 1000, "short_term_trend": 8.5},
+            {"date": pd.Timestamp("2026-04-29"), "open": 11.2, "high": 11.5, "low": 11.1, "close": 11.3, "volume": 1000, "short_term_trend": 8.7},
         ]
     )
     engine = BacktestEngine(
@@ -481,7 +481,7 @@ def test_profit_runner_delays_ladder_exit_when_limit_down_locked():
     trade = result["trades"][0]
     ladder_exits = [item for item in trade["exits"] if item["reason"].startswith("profit_ladder")]
     assert ladder_exits[0]["date"] == "2026-04-29"
-    assert ladder_exits[0]["price"] == 9.3
+    assert ladder_exits[0]["price"] == 11.3
     assert any(action["action"] == "sell_partial" and action["date"] == "2026-04-29" for action in trade["profit_actions"])
     assert sum(item["portion_pct"] for item in trade["exits"]) <= 100.0
     assert [item["reason"] for item in trade["exits"]] == ["profit_ladder_10.0pct", "holding_days"]

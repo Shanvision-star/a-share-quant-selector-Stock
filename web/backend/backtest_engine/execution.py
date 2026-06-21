@@ -129,10 +129,9 @@ def _is_limit_down_locked(row, prev_close: float, limit_pct: float) -> bool:
     if prev_close <= 0:
         return False
     limit_price = round(prev_close * (1 - limit_pct), 2)
-    low_price = _safe_float(row.get("low"), 0.0)
     open_price = _safe_float(row.get("open"), 0.0)
-    # 日线没有盘口队列和盘中解封顺序，开盘且最低价贴近跌停时按不可即时卖出处理。
-    return low_price <= limit_price * 1.001 and open_price <= limit_price * 1.001
+    high_price = _safe_float(row.get("high"), 0.0)
+    return high_price <= limit_price * 1.001 and open_price <= limit_price * 1.001
 
 
 def _find_sellable_index(frame: pd.DataFrame, start_index: int, end_index: int, candidate: SignalCandidate) -> Optional[int]:

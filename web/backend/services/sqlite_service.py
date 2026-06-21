@@ -199,6 +199,10 @@ def init_database():
             error TEXT,
             params_json TEXT,
             result_json TEXT,
+            request_hash TEXT,
+            result_hash TEXT,
+            engine_version TEXT,
+            summary_json TEXT,
             total_count INTEGER DEFAULT 0,
             processed_count INTEGER DEFAULT 0,
             current_code TEXT,
@@ -206,8 +210,27 @@ def init_database():
             message TEXT
         )
     """)
+    existing_backtest_task_columns = {
+        row["name"] for row in cursor.execute("PRAGMA table_info(backtest_tasks)").fetchall()
+    }
+    for column_name, column_definition in {
+        "request_hash": "request_hash TEXT",
+        "result_hash": "result_hash TEXT",
+        "engine_version": "engine_version TEXT",
+        "summary_json": "summary_json TEXT",
+    }.items():
+        if column_name in existing_backtest_task_columns:
+            continue
+        try:
+            cursor.execute(f"ALTER TABLE backtest_tasks ADD COLUMN {column_definition}")
+        except sqlite3.OperationalError as exc:
+            # 多进程同时启动时，另一个进程可能已完成补列；此处只容忍这类幂等竞态。
+            if "duplicate column name" not in str(exc).lower():
+                raise
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_created_at ON backtest_tasks(created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_status ON backtest_tasks(status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_request_hash ON backtest_tasks(request_hash)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_finished_at ON backtest_tasks(finished_at)")
 
     # 表 9: backtest_task_events - 回测任务进度事件流
     cursor.execute("""

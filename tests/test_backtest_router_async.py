@@ -23,10 +23,10 @@ class FakeBacktestJobManager:
             "params": dict(params),
         }
 
-    def get(self, task_id):
+    def get(self, task_id, include_events=False):
         if task_id != "bt_test":
             return None
-        return {
+        task = {
             "task_id": task_id,
             "status": "done",
             "created_at": "2026-05-07 10:00:00",
@@ -34,11 +34,33 @@ class FakeBacktestJobManager:
             "finished_at": "2026-05-07 10:00:02",
             "error": "",
             "result": {"summary": {"trade_count": 1}},
+            "summary": {"trade_count": 1},
+            "request_hash": "reqhash123456789",
+            "result_hash": "reshash123456789",
+            "engine_version": "backtest-engine-v1-phase-c",
             "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
         }
+        if include_events:
+            task["events"] = self.list_events(task_id)
+        return task
 
     def list_recent(self, limit=20):
-        return [self.get("bt_test")]
+        return [
+            {
+                "task_id": "bt_test",
+                "status": "done",
+                "created_at": "2026-05-07 10:00:00",
+                "started_at": "2026-05-07 10:00:01",
+                "finished_at": "2026-05-07 10:00:02",
+                "error": "",
+                "result": None,
+                "summary": {"trade_count": 1},
+                "request_hash": "reqhash123456789",
+                "result_hash": "reshash123456789",
+                "engine_version": "backtest-engine-v1-phase-c",
+                "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            }
+        ]
 
     def list_events(self, task_id, limit=500):
         if task_id != "bt_test":
@@ -123,7 +145,7 @@ def test_get_unknown_backtest_task_returns_404(monkeypatch):
     assert response.status_code == 404
 
 
-def test_list_backtest_tasks_returns_history(monkeypatch):
+def test_list_backtest_tasks_returns_lightweight_history(monkeypatch):
     monkeypatch.setattr(backtest, "backtest_job_manager", FakeBacktestJobManager())
 
     response = _client().get("/api/backtest/tasks")
@@ -131,7 +153,22 @@ def test_list_backtest_tasks_returns_history(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is True
-    assert body["data"]["items"][0]["task_id"] == "bt_test"
+    item = body["data"]["items"][0]
+    assert item["task_id"] == "bt_test"
+    assert item["summary"]["trade_count"] == 1
+    assert item["request_hash"] == "reqhash123456789"
+    assert item["result_hash"] == "reshash123456789"
+    assert item["engine_version"] == "backtest-engine-v1-phase-c"
+    assert item["result"] is None
+
+
+def test_get_backtest_task_can_include_events(monkeypatch):
+    monkeypatch.setattr(backtest, "backtest_job_manager", FakeBacktestJobManager())
+
+    response = _client().get("/api/backtest/tasks/bt_test", params={"include_events": "true"})
+
+    body = response.json()
+    assert body["data"]["events"][0]["event_type"] == "progress"
 
 
 def test_list_backtest_task_events_returns_progress_events(monkeypatch):

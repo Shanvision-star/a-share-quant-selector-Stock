@@ -397,6 +397,9 @@ def test_daily_engine_delays_stop_loss_exit_when_limit_down_locked():
     assert result["trades"][0]["sell_date"] == "2026-04-29"
     assert result["trades"][0]["sell_price"] == 9.2
     assert result["trades"][0]["exit_reason"] == "fixed_stop_loss"
+    trade = result["trades"][0]
+    assert len(trade["exits"]) == 1
+    assert trade["exits"][0]["portion_pct"] == 100.0
 
 
 def test_profit_runner_keeps_core_position_and_records_hold_action():
@@ -438,6 +441,49 @@ def test_profit_runner_keeps_core_position_and_records_hold_action():
     ladder_exits = [item for item in trade["exits"] if item["reason"].startswith("profit_ladder")]
     assert [item["portion_pct"] for item in ladder_exits] == [25.0, 25.0]
     assert any(action["action"] == "hold_core" for action in trade["profit_actions"])
+
+
+def test_profit_runner_delays_ladder_exit_when_limit_down_locked():
+    """Profit Runner 阶梯减仓触发日不可卖时，应使用实际可卖日和价格。"""
+    candidate = SignalCandidate(
+        code="000001",
+        name="平安银行",
+        strategy_name="manual",
+        trade_date="2026-04-24",
+        signal_date="2026-04-24",
+        source="manual",
+    )
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.0, "low": 9.8, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-27"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000, "short_term_trend": 9.5},
+            {"date": pd.Timestamp("2026-04-28"), "open": 9.0, "high": 12.0, "low": 9.0, "close": 9.0, "volume": 1000, "short_term_trend": 8.5},
+            {"date": pd.Timestamp("2026-04-29"), "open": 9.2, "high": 9.5, "low": 9.1, "close": 9.3, "volume": 1000, "short_term_trend": 8.7},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource([candidate]),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(
+        _default_params(
+            holding_days=2,
+            profit_run_enabled=True,
+            profit_trigger_pct=5,
+            profit_step_pct=5,
+            profit_sell_pct=25,
+            profit_keep_pct=50,
+            hold_above_short_trend_after_trigger=False,
+        )
+    )
+
+    trade = result["trades"][0]
+    ladder_exits = [item for item in trade["exits"] if item["reason"].startswith("profit_ladder")]
+    assert ladder_exits[0]["date"] == "2026-04-29"
+    assert ladder_exits[0]["price"] == 9.3
+    assert any(action["action"] == "sell_partial" and action["date"] == "2026-04-29" for action in trade["profit_actions"])
+    assert sum(item["portion_pct"] for item in trade["exits"]) <= 100.0
 
 
 def test_engine_limits_single_code_signals_before_execution():

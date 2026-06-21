@@ -1,15 +1,17 @@
 """回测异步任务服务。
 
-当前阶段使用进程内任务表和线程池，把长回测从 HTTP 请求生命周期中拆出去。
-后续如果需要跨进程恢复，再替换为 SQLite/Redis 持久化队列。
+SQLite 是可复现回测历史的权威读模型，保存完整结果、manifest 和事件流。
+线程池只负责当前进程内执行长回测，避免 HTTP 请求生命周期阻塞。
 """
 
 from __future__ import annotations
 
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from datetime import datetime
+import hashlib
 import inspect
 import json
+import sqlite3
 from threading import Lock
 from typing import Callable
 from uuid import uuid4
@@ -20,8 +22,48 @@ from web.backend.services.backtest_service import run_backtest
 
 BacktestRunner = Callable[[dict], dict]
 
+BACKTEST_ENGINE_VERSION = "backtest-engine-v1-phase-c"
 TERMINAL_STATUSES = {"done", "failed", "canceled"}
 CANCEL_STATUSES = {"cancel_requested", "canceled"}
+BACKTEST_TASK_LIGHTWEIGHT_COLUMNS = (
+    "task_id",
+    "status",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "updated_at",
+    "error",
+    "params_json",
+    "total_count",
+    "processed_count",
+    "current_code",
+    "progress_pct",
+    "message",
+    "request_hash",
+    "result_hash",
+    "engine_version",
+    "summary_json",
+)
+BACKTEST_TASK_DETAIL_COLUMNS = (
+    "task_id",
+    "status",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "updated_at",
+    "error",
+    "params_json",
+    "result_json",
+    "total_count",
+    "processed_count",
+    "current_code",
+    "progress_pct",
+    "message",
+    "request_hash",
+    "result_hash",
+    "engine_version",
+    "summary_json",
+)
 
 
 class BacktestJobCancelled(Exception):
@@ -43,6 +85,70 @@ def _decode_json(value, default):
 
 def _encode_json(value) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _stable_json(value) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _hash_json(value) -> str:
+    return hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()[:16]
+
+
+def _result_for_reproducible_hash(result, path: tuple[str, ...] = ()):
+    if isinstance(result, list):
+        return [_result_for_reproducible_hash(item, path) for item in result]
+    if not isinstance(result, dict):
+        return result
+
+    normalized = {}
+    for key, value in result.items():
+        if path == () and key == "summary" and isinstance(value, dict):
+            summary = {
+                summary_key: _result_for_reproducible_hash(summary_value, (*path, key, summary_key))
+                for summary_key, summary_value in value.items()
+                if summary_key != "runtime_elapsed_seconds"
+            }
+            normalized[key] = summary
+            continue
+        if path == () and key == "runtime" and isinstance(value, dict):
+            runtime = {
+                runtime_key: _result_for_reproducible_hash(runtime_value, (*path, key, runtime_key))
+                for runtime_key, runtime_value in value.items()
+                if runtime_key != "elapsed_seconds"
+            }
+            normalized[key] = runtime
+            continue
+        if path == () and key == "order_intents" and isinstance(value, list):
+            # intent_id 默认来自随机 uuid，只影响追踪展示，不参与可复现业务结果判定。
+            normalized[key] = [
+                {
+                    intent_key: _result_for_reproducible_hash(intent_value, (*path, key, intent_key))
+                    for intent_key, intent_value in item.items()
+                    if intent_key != "intent_id"
+                }
+                if isinstance(item, dict)
+                else _result_for_reproducible_hash(item, (*path, key))
+                for item in value
+            ]
+            continue
+        normalized[key] = _result_for_reproducible_hash(value, (*path, key))
+    return normalized
+
+
+def _result_hash(result) -> str:
+    return _hash_json(_result_for_reproducible_hash(result))
+
+
+def _summary_from_result(result) -> dict:
+    if not isinstance(result, dict):
+        return {}
+    summary = result.get("summary")
+    return summary if isinstance(summary, dict) else {}
+
+
+def _is_blank(value) -> bool:
+    return value is None or value == ""
 
 
 def _progress_pct(processed_count: int, total_count: int) -> int:
@@ -79,10 +185,15 @@ class BacktestTaskRepository:
                 processed_count INTEGER DEFAULT 0,
                 current_code TEXT,
                 progress_pct INTEGER DEFAULT 0,
-                message TEXT
+                message TEXT,
+                request_hash TEXT,
+                result_hash TEXT,
+                engine_version TEXT,
+                summary_json TEXT
             )
             """
         )
+        self._ensure_columns(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS backtest_task_events (
@@ -98,17 +209,94 @@ class BacktestTaskRepository:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_created_at ON backtest_tasks(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_status ON backtest_tasks(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_request_hash ON backtest_tasks(request_hash)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_tasks_finished_at ON backtest_tasks(finished_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_events_task_id ON backtest_task_events(task_id)")
         conn.commit()
 
+    def _ensure_columns(self, conn):
+        def column_name(row):
+            return row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+
+        existing_columns = {column_name(row) for row in conn.execute("PRAGMA table_info(backtest_tasks)").fetchall()}
+        required_columns = {
+            "request_hash": "TEXT",
+            "result_hash": "TEXT",
+            "engine_version": "TEXT",
+            "summary_json": "TEXT",
+        }
+        # 旧 SQLite 文件可能已存在，仓储初始化时幂等补齐 Phase C manifest 列。
+        for column_name, column_type in required_columns.items():
+            if column_name not in existing_columns:
+                try:
+                    conn.execute(f"ALTER TABLE backtest_tasks ADD COLUMN {column_name} {column_type}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+        self._backfill_manifest_columns(conn)
+
+    def _backfill_manifest_columns(self, conn):
+        columns = (
+            "task_id",
+            "params_json",
+            "result_json",
+            "request_hash",
+            "result_hash",
+            "engine_version",
+            "summary_json",
+        )
+        rows = conn.execute(
+            """
+            SELECT task_id, params_json, result_json, request_hash, result_hash, engine_version, summary_json
+            FROM backtest_tasks
+            WHERE request_hash IS NULL
+               OR request_hash = ''
+               OR engine_version IS NULL
+               OR engine_version = ''
+               OR (
+                   result_json IS NOT NULL
+                   AND result_json != ''
+                   AND (
+                       result_hash IS NULL
+                       OR result_hash = ''
+                       OR summary_json IS NULL
+                       OR summary_json = ''
+                   )
+               )
+            """
+        ).fetchall()
+        for row in rows:
+            item = dict(row) if hasattr(row, "keys") else dict(zip(columns, row))
+            updates = {}
+            if _is_blank(item.get("request_hash")):
+                updates["request_hash"] = _hash_json(_decode_json(item.get("params_json"), {}))
+            if _is_blank(item.get("engine_version")):
+                updates["engine_version"] = BACKTEST_ENGINE_VERSION
+            result = _decode_json(item.get("result_json"), None)
+            if result is not None:
+                if _is_blank(item.get("result_hash")):
+                    updates["result_hash"] = _result_hash(result)
+                if _is_blank(item.get("summary_json")):
+                    updates["summary_json"] = _stable_json(_summary_from_result(result))
+            if updates:
+                # 轻量历史依赖 summary_json，旧库只在初始化时从完整 result 回填一次。
+                assignments = ", ".join(f"{column} = ?" for column in updates)
+                conn.execute(
+                    f"UPDATE backtest_tasks SET {assignments} WHERE task_id = ?",
+                    (*updates.values(), item["task_id"]),
+                )
+
     def create(self, task: dict):
         conn = self._conn()
+        params = task.get("params") or {}
+        result = task.get("result")
         conn.execute(
             """
             INSERT OR REPLACE INTO backtest_tasks
             (task_id, status, created_at, started_at, finished_at, updated_at, error,
-             params_json, result_json, total_count, processed_count, current_code, progress_pct, message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             params_json, result_json, total_count, processed_count, current_code, progress_pct, message,
+             request_hash, result_hash, engine_version, summary_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task["task_id"],
@@ -118,13 +306,17 @@ class BacktestTaskRepository:
                 task.get("finished_at"),
                 _now_text(),
                 task.get("error", ""),
-                _encode_json(task.get("params") or {}),
-                _encode_json(task.get("result")) if task.get("result") is not None else None,
+                _encode_json(params),
+                _encode_json(result) if result is not None else None,
                 int(task.get("total_count") or 0),
                 int(task.get("processed_count") or 0),
                 task.get("current_code") or "",
                 int(task.get("progress_pct") or 0),
                 task.get("message") or "",
+                _hash_json(params),
+                _result_hash(result) if result is not None else None,
+                BACKTEST_ENGINE_VERSION,
+                _stable_json(_summary_from_result(result)),
             ),
         )
         conn.commit()
@@ -133,6 +325,11 @@ class BacktestTaskRepository:
     def update(self, task_id: str, **changes):
         if not changes:
             return
+        changes = dict(changes)
+        if "result" in changes:
+            result = changes["result"]
+            changes["result_hash"] = _result_hash(result) if result is not None else None
+            changes["summary_json"] = _stable_json(_summary_from_result(result))
         columns = []
         values = []
         mapping = {
@@ -152,16 +349,18 @@ class BacktestTaskRepository:
         conn.execute(f"UPDATE backtest_tasks SET {', '.join(columns)} WHERE task_id = ?", values)
         conn.commit()
 
-    def get(self, task_id: str) -> dict | None:
-        row = self._conn().execute("SELECT * FROM backtest_tasks WHERE task_id = ?", (task_id,)).fetchone()
-        return self._row_to_task(row) if row else None
+    def get(self, task_id: str, include_events: bool = False) -> dict | None:
+        columns = ", ".join(BACKTEST_TASK_DETAIL_COLUMNS)
+        row = self._conn().execute(f"SELECT {columns} FROM backtest_tasks WHERE task_id = ?", (task_id,)).fetchone()
+        return self._row_to_task(row, include_events=include_events) if row else None
 
-    def list_recent(self, limit: int = 20) -> list[dict]:
+    def list_recent(self, limit: int = 20, include_result: bool = False) -> list[dict]:
+        columns = BACKTEST_TASK_DETAIL_COLUMNS if include_result else BACKTEST_TASK_LIGHTWEIGHT_COLUMNS
         rows = self._conn().execute(
-            "SELECT * FROM backtest_tasks ORDER BY created_at DESC LIMIT ?",
+            f"SELECT {', '.join(columns)} FROM backtest_tasks ORDER BY created_at DESC LIMIT ?",
             (max(1, int(limit)),),
         ).fetchall()
-        return [self._row_to_task(row) for row in rows]
+        return [self._row_to_task(row, include_result=include_result) for row in rows]
 
     def add_event(self, task_id: str, event_type: str, payload: dict | None = None, message: str = ""):
         payload = payload or {}
@@ -194,16 +393,24 @@ class BacktestTaskRepository:
             events.append(item)
         return events
 
-    def _row_to_task(self, row) -> dict:
+    def _row_to_task(self, row, include_result: bool = True, include_events: bool = False) -> dict:
         item = dict(row)
         item["params"] = _decode_json(item.pop("params_json", None), {})
-        item["result"] = _decode_json(item.pop("result_json", None), None)
+        result_json = item.pop("result_json", None)
+        result = _decode_json(result_json, None) if include_result else None
+        item["result"] = result
+        summary = _decode_json(item.pop("summary_json", None), {})
+        if not summary and isinstance(result, dict):
+            summary = _summary_from_result(result)
+        item["summary"] = summary if isinstance(summary, dict) else {}
         item["error"] = item.get("error") or ""
         item["current_code"] = item.get("current_code") or ""
         item["message"] = item.get("message") or ""
         item["total_count"] = int(item.get("total_count") or 0)
         item["processed_count"] = int(item.get("processed_count") or 0)
         item["progress_pct"] = int(item.get("progress_pct") or 0)
+        if include_events:
+            item["events"] = self.list_events(item["task_id"])
         return item
 
 
@@ -248,15 +455,22 @@ class BacktestJobManager:
             self._futures[task_id] = future
         return self.get(task_id)
 
-    def get(self, task_id: str) -> dict | None:
+    def get(self, task_id: str, include_events: bool = False) -> dict | None:
+        stored = self.repository.get(task_id, include_events=include_events)
+        if stored is not None:
+            return stored
         with self._lock:
             task = self._tasks.get(task_id)
             if task:
-                return dict(task)
-        return self.repository.get(task_id)
+                # SQLite 是可复现历史的权威读模型；内存只作为极端未落库场景的兜底。
+                item = dict(task)
+                if include_events:
+                    item["events"] = self.repository.list_events(task_id)
+                return item
+        return None
 
-    def list_recent(self, limit: int = 20) -> list[dict]:
-        return self.repository.list_recent(limit)
+    def list_recent(self, limit: int = 20, include_result: bool = False) -> list[dict]:
+        return self.repository.list_recent(limit, include_result=include_result)
 
     def list_events(self, task_id: str, limit: int = 500) -> list[dict]:
         return self.repository.list_events(task_id, limit)

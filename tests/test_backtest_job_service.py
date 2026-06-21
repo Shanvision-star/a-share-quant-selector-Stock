@@ -1,5 +1,7 @@
 """验证回测异步任务服务的提交、完成、失败和持久化记录。"""
 
+from copy import deepcopy
+import json
 import sqlite3
 import time
 from threading import Event
@@ -11,6 +13,345 @@ def _memory_connection():
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+class _RecordingConnection:
+    def __init__(self, conn):
+        self.conn = conn
+        self.task_list_sql = []
+
+    def execute(self, sql, parameters=()):
+        normalized = " ".join(sql.split()).lower()
+        if "from backtest_tasks" in normalized and "order by created_at" in normalized:
+            self.task_list_sql.append(normalized)
+            assert "select *" not in normalized
+            assert "result_json" not in normalized
+        return self.conn.execute(sql, parameters)
+
+    def commit(self):
+        return self.conn.commit()
+
+
+def test_backtest_repository_records_reproducible_manifest_hashes():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+    task = {
+        "task_id": "bt_manifest",
+        "status": "queued",
+        "created_at": "2026-05-08 09:30:00",
+        "params": {"end_date": "2026-04-24", "start_date": "2026-04-24"},
+        "message": "排队中",
+    }
+
+    repository.create(task)
+    created = repository.get("bt_manifest")
+    repository.update("bt_manifest", status="done", result={"summary": {"trade_count": 1, "return_pct": 2.5}})
+    finished = repository.get("bt_manifest")
+
+    assert created["engine_version"] == "backtest-engine-v1-phase-c"
+    assert len(created["request_hash"]) == 16
+    assert finished["request_hash"] == created["request_hash"]
+    assert len(finished["result_hash"]) == 16
+    assert finished["summary"]["trade_count"] == 1
+
+
+def test_backtest_repository_request_hash_is_stable_for_param_key_order():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+
+    repository.create(
+        {
+            "task_id": "bt_order_a",
+            "status": "queued",
+            "created_at": "2026-05-08 09:30:00",
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "message": "排队中",
+        }
+    )
+    repository.create(
+        {
+            "task_id": "bt_order_b",
+            "status": "queued",
+            "created_at": "2026-05-08 09:31:00",
+            "params": {"end_date": "2026-04-24", "start_date": "2026-04-24"},
+            "message": "排队中",
+        }
+    )
+
+    assert repository.get("bt_order_a")["request_hash"] == repository.get("bt_order_b")["request_hash"]
+
+
+def test_backtest_repository_result_hash_ignores_only_non_reproducible_runtime_fields():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+    base_result = {
+        "summary": {
+            "trade_count": 1,
+            "return_pct": 2.5,
+            "runtime_elapsed_seconds": 1.23,
+        },
+        "runtime": {
+            "elapsed_seconds": 1.24,
+            "engine": "phase-c",
+        },
+        "trades": [{"code": "000001", "side": "buy", "price": 10.2}],
+        "equity_curve": [{"date": "2026-04-24", "equity": 100025.0}],
+        "order_intents": [
+            {
+                "intent_id": "random-intent-a",
+                "code": "000001",
+                "side": "buy",
+                "target_weight": 0.1,
+                "reason": "signal",
+            }
+        ],
+    }
+    result_b = deepcopy(base_result)
+    result_b["summary"]["runtime_elapsed_seconds"] = 9.87
+    result_b["runtime"]["elapsed_seconds"] = 9.88
+    result_b["order_intents"][0]["intent_id"] = "random-intent-b"
+
+    repository.create(
+        {
+            "task_id": "bt_semantic_a",
+            "status": "done",
+            "created_at": "2026-05-08 09:30:00",
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "result": base_result,
+            "message": "完成",
+        }
+    )
+    repository.create(
+        {
+            "task_id": "bt_semantic_b",
+            "status": "queued",
+            "created_at": "2026-05-08 09:31:00",
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "message": "排队中",
+        }
+    )
+    repository.update("bt_semantic_b", status="done", result=result_b)
+
+    detail_a = repository.get("bt_semantic_a")
+    detail_b = repository.get("bt_semantic_b")
+
+    assert detail_a["result_hash"] == detail_b["result_hash"]
+    assert detail_a["result"]["summary"]["runtime_elapsed_seconds"] == 1.23
+    assert detail_b["result"]["summary"]["runtime_elapsed_seconds"] == 9.87
+    assert detail_a["result"]["runtime"]["elapsed_seconds"] == 1.24
+    assert detail_b["result"]["runtime"]["elapsed_seconds"] == 9.88
+    assert detail_a["result"]["order_intents"][0]["intent_id"] == "random-intent-a"
+    assert detail_b["result"]["order_intents"][0]["intent_id"] == "random-intent-b"
+
+
+def test_backtest_repository_update_none_result_clears_result_manifest():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+    repository.create(
+        {
+            "task_id": "bt_clear_result",
+            "status": "queued",
+            "created_at": "2026-05-08 09:30:00",
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "result": {"summary": {"trade_count": 1}},
+            "message": "排队中",
+        }
+    )
+
+    repository.update("bt_clear_result", result=None)
+
+    detail = repository.get("bt_clear_result")
+    assert detail["result"] is None
+    assert detail["result_hash"] is None
+    assert detail["summary"] == {}
+
+
+def test_backtest_repository_list_recent_omits_heavy_result_by_default():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+    repository.create(
+        {
+            "task_id": "bt_history",
+            "status": "queued",
+            "created_at": "2026-05-08 09:30:00",
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "message": "排队中",
+        }
+    )
+    repository.update("bt_history", status="done", result={"summary": {"trade_count": 1}, "trades": [{"code": "000001"}]})
+
+    history_item = repository.list_recent(limit=1)[0]
+    detail_item = repository.get("bt_history")
+
+    assert history_item["result"] is None
+    assert history_item["summary"]["trade_count"] == 1
+    assert detail_item["result"]["trades"][0]["code"] == "000001"
+
+
+def test_backtest_repository_lightweight_list_query_does_not_select_result_json():
+    conn = _memory_connection()
+    recording = _RecordingConnection(conn)
+    repository = BacktestTaskRepository(lambda: recording)
+    repository.create(
+        {
+            "task_id": "bt_lightweight_sql",
+            "status": "queued",
+            "created_at": "2026-05-08 09:30:00",
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "message": "排队中",
+        }
+    )
+    repository.update(
+        "bt_lightweight_sql",
+        status="done",
+        result={"summary": {"trade_count": 1}, "trades": [{"code": "000001", "payload": "x" * 1024}]},
+    )
+
+    history_item = repository.list_recent(limit=1)[0]
+
+    assert recording.task_list_sql
+    assert history_item["result"] is None
+    assert history_item["summary"]["trade_count"] == 1
+
+
+def test_backtest_repository_backfills_legacy_summary_from_result_json():
+    conn = _memory_connection()
+    conn.execute(
+        """
+        CREATE TABLE backtest_tasks (
+            task_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            error TEXT,
+            params_json TEXT,
+            result_json TEXT,
+            total_count INTEGER DEFAULT 0,
+            processed_count INTEGER DEFAULT 0,
+            current_code TEXT,
+            progress_pct INTEGER DEFAULT 0,
+            message TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO backtest_tasks
+        (task_id, status, created_at, updated_at, error, params_json, result_json, total_count,
+         processed_count, current_code, progress_pct, message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "bt_legacy",
+            "done",
+            "2026-05-08 09:30:00",
+            "2026-05-08 09:31:00",
+            "",
+            json.dumps({"start_date": "2026-04-24", "end_date": "2026-04-24"}, ensure_ascii=False),
+            json.dumps({"summary": {"trade_count": 7}, "trades": [{"code": "000001"}]}, ensure_ascii=False),
+            0,
+            0,
+            "",
+            100,
+            "完成",
+        ),
+    )
+    conn.commit()
+
+    repository = BacktestTaskRepository(lambda: conn)
+    history_item = repository.list_recent(limit=1)[0]
+    detail_item = repository.get("bt_legacy")
+
+    assert history_item["result"] is None
+    assert history_item["summary"]["trade_count"] == 7
+    assert detail_item["summary"]["trade_count"] == 7
+    assert detail_item["engine_version"] == "backtest-engine-v1-phase-c"
+    assert len(detail_item["result_hash"]) == 16
+
+
+def test_backtest_repository_schema_creates_manifest_indexes():
+    conn = _memory_connection()
+
+    BacktestTaskRepository(lambda: conn)
+
+    indexes = {
+        row["name"] for row in conn.execute("PRAGMA index_list(backtest_tasks)").fetchall()
+    }
+    assert "idx_backtest_tasks_request_hash" in indexes
+    assert "idx_backtest_tasks_finished_at" in indexes
+
+
+def test_backtest_repository_detail_can_include_events():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+    repository.create(
+        {
+            "task_id": "bt_events",
+            "status": "queued",
+            "created_at": "2026-05-08 09:30:00",
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "message": "排队中",
+        }
+    )
+    repository.add_event("bt_events", "progress", {"current_code": "000001"})
+
+    detail = repository.get("bt_events", include_events=True)
+
+    assert detail["events"][-1]["event_type"] == "progress"
+    assert detail["events"][-1]["payload"]["current_code"] == "000001"
+
+
+def test_backtest_job_manager_get_returns_repository_manifest_and_events():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+
+    def runner(params, progress_callback=None):
+        progress_callback({"total_count": 1, "processed_count": 1, "current_code": "000001"})
+        return {"summary": {"trade_count": 3}, "params": params}
+
+    manager = BacktestJobManager(runner=runner, repository=repository, max_workers=1)
+    submitted = manager.submit({"start_date": "2026-04-24", "end_date": "2026-04-24"})
+    manager.wait(submitted["task_id"], timeout=2)
+
+    detail = manager.get(submitted["task_id"])
+    detail_with_events = manager.get(submitted["task_id"], include_events=True)
+
+    assert detail["engine_version"] == "backtest-engine-v1-phase-c"
+    assert len(detail["request_hash"]) == 16
+    assert len(detail["result_hash"]) == 16
+    assert detail["summary"]["trade_count"] == 3
+    assert detail_with_events["events"][-1]["event_type"] == "done"
+
+
+def test_backtest_job_manager_get_running_detail_includes_manifest_and_progress_events():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+    first_progress = Event()
+    release_runner = Event()
+
+    def runner(params, progress_callback=None):
+        progress_callback({"total_count": 2, "processed_count": 1, "current_code": "000001"})
+        first_progress.set()
+        assert release_runner.wait(2)
+        return {"summary": {"trade_count": 1}, "params": params}
+
+    manager = BacktestJobManager(runner=runner, repository=repository, max_workers=1)
+    submitted = manager.submit({"start_date": "2026-04-24", "end_date": "2026-04-24"})
+
+    progress_seen = first_progress.wait(2)
+    detail = manager.get(submitted["task_id"], include_events=True)
+    release_runner.set()
+    task = manager.wait(submitted["task_id"], timeout=2)
+
+    assert progress_seen
+    assert detail["status"] == "running"
+    assert detail["engine_version"] == "backtest-engine-v1-phase-c"
+    assert len(detail["request_hash"]) == 16
+    assert detail["summary"] == {}
+    assert any(event["event_type"] == "progress" for event in detail["events"])
+    assert task["status"] == "done"
 
 
 def test_backtest_job_manager_returns_task_status_and_result():

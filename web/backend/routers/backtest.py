@@ -124,9 +124,9 @@ async def cancel_backtest_task(task_id: str):
 
 
 @router.get("/backtest/tasks/{task_id}")
-async def get_backtest_task(task_id: str):
+async def get_backtest_task(task_id: str, include_events: bool = Query(default=False)):
     """查询异步回测任务状态。"""
-    task = backtest_job_manager.get(task_id)
+    task = backtest_job_manager.get(task_id, include_events=include_events)
     if not task:
         raise HTTPException(status_code=404, detail=f"回测任务不存在或已过期: {task_id}")
     return {"success": True, "data": task}

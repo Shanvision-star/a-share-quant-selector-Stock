@@ -255,7 +255,7 @@ class DailyExecutionSimulator:
             return None
 
         buy_index = _find_buy_index(frame, candidate.signal_date, int(params.get("buy_offset_days", 1)))
-        if buy_index is None:
+        if buy_index is None or buy_index < signal_index:
             return None
 
         simulation_end_date = (

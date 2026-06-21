@@ -125,6 +125,36 @@ def test_daily_engine_buys_on_next_real_trading_day_after_holiday_gap():
     assert result["trades"][0]["sell_date"] == "2026-05-07"
 
 
+def test_daily_engine_does_not_buy_before_closed_signal_date():
+    """闭市信号日不能被归一化到前一交易日买入，避免信号前成交。"""
+    candidate = SignalCandidate(
+        code="000001",
+        name="平安银行",
+        strategy_name="manual",
+        trade_date="2026-05-01",
+        signal_date="2026-05-01",
+        source="manual",
+    )
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-04-30"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-05-06"), "open": 10.2, "high": 10.4, "low": 10.1, "close": 10.3, "volume": 1000},
+            {"date": pd.Timestamp("2026-05-07"), "open": 10.3, "high": 10.5, "low": 10.2, "close": 10.4, "volume": 1000},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource([candidate]),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(
+        _default_params(start_date="2026-05-01", end_date="2026-05-01", buy_offset_days=0)
+    )
+
+    assert result["summary"]["trade_count"] == 0
+    assert result["summary"]["skipped_count"] == 1
+
+
 def test_minute_engine_generates_order_intents_without_live_order():
     """分钟级回测不能当天买当天卖，且只生成 OrderIntent，不触达券商实盘接口。"""
     candidate = SignalCandidate(

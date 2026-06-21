@@ -184,6 +184,62 @@ def test_daily_engine_buys_after_2025_national_day_holiday_gap():
     assert result["trades"][0]["sell_date"] == "2025-10-10"
 
 
+def test_daily_engine_buys_after_2023_mid_autumn_national_day_holiday_gap():
+    """2023 及更早历史窗口不能把节假日工作日误判为买入目标日。"""
+    candidate = SignalCandidate(
+        code="000001",
+        name="平安银行",
+        strategy_name="manual",
+        trade_date="2023-09-28",
+        signal_date="2023-09-28",
+        source="manual",
+    )
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2023-09-28"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2023-10-09"), "open": 10.2, "high": 10.4, "low": 10.1, "close": 10.3, "volume": 1000},
+            {"date": pd.Timestamp("2023-10-10"), "open": 10.3, "high": 10.5, "low": 10.2, "close": 10.4, "volume": 1000},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource([candidate]),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(_default_params(start_date="2023-09-28", end_date="2023-09-28"))
+
+    assert result["summary"]["trade_count"] == 1
+    assert result["trades"][0]["buy_date"] == "2023-10-09"
+    assert result["trades"][0]["sell_date"] == "2023-10-10"
+
+
+def test_daily_engine_skips_signal_outside_offline_calendar_window():
+    """超出离线日历窗口的候选应跳过，不能让单个旧信号打断整次回测。"""
+    candidate = SignalCandidate(
+        code="000001",
+        name="平安银行",
+        strategy_name="manual",
+        trade_date="2015-12-31",
+        signal_date="2015-12-31",
+        source="manual",
+    )
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2015-12-31"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2016-01-04"), "open": 10.2, "high": 10.4, "low": 10.1, "close": 10.3, "volume": 1000},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource([candidate]),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(_default_params(start_date="2015-12-31", end_date="2015-12-31"))
+
+    assert result["summary"]["trade_count"] == 0
+    assert result["summary"]["skipped_count"] == 1
+
+
 def test_minute_engine_generates_order_intents_without_live_order():
     """分钟级回测不能当天买当天卖，且只生成 OrderIntent，不触达券商实盘接口。"""
     candidate = SignalCandidate(

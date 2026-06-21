@@ -78,7 +78,10 @@ def _find_exact_date_index(frame: pd.DataFrame, target_day) -> Optional[int]:
 
 def _find_buy_index(frame: pd.DataFrame, signal_date: str, buy_offset_days: int) -> Optional[int]:
     signal_day = pd.to_datetime(signal_date).date()
-    buy_day = advance_a_share_trading_days(signal_day, buy_offset_days)
+    try:
+        buy_day = advance_a_share_trading_days(signal_day, buy_offset_days)
+    except ValueError:
+        return None
     return _find_exact_date_index(frame, buy_day)
 
 

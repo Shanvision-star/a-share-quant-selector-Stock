@@ -227,9 +227,8 @@ def build_portfolio_ledger(trades: list[dict], params: dict | None = None) -> di
                 break
             _, _, position_index, event = sorted(due, key=lambda item: (item[0], item[1]))[0]
             position = positions[position_index]
-            is_last_exit = position["exit_index"] == len(position["exit_events"]) - 1
             planned_qty = position["quantity"] * event["portion_pct"] / 100.0
-            sell_qty = position["remaining_qty"] if is_last_exit else min(position["remaining_qty"], planned_qty)
+            sell_qty = min(position["remaining_qty"], planned_qty)
             proceeds = sell_qty * event["price"]
             cash += proceeds
             position["remaining_qty"] -= sell_qty
@@ -248,7 +247,7 @@ def build_portfolio_ledger(trades: list[dict], params: dict | None = None) -> di
                     "reason": event["reason"],
                 }
             )
-            if position["remaining_qty"] <= 1e-9 or position["exit_index"] >= len(position["exit_events"]):
+            if position["remaining_qty"] <= 1e-9:
                 positions.pop(position_index)
             _snapshot(snapshots, event["date"], cash, positions)
             max_open_positions = max(max_open_positions, len(positions))

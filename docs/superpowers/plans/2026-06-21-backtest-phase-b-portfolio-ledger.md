@@ -156,11 +156,14 @@ Implementation requirements:
 - Sort trades by `(buy_date, code, strategy_name)`.
 - Before each buy, process pending sell events with `sell_date <= buy_date`.
 - Process sells before buys on the same date.
+- Keep the same-day sell-before-buy rule as an intentional portfolio boundary: same-day sells release cash and a position slot before same-day buys.
 - Reject a trade with event reason `max_positions` if open positions are at the limit.
 - Reject a trade with event reason `cash_shortage` if target quantity cannot be bought.
 - For quantity, use `trade["quantity"]` when positive; otherwise calculate `floor(target_cash / buy_price / lot_size) * lot_size`.
+- Treat each `exits[*].portion_pct` as a percentage of the original position quantity, bounded by remaining quantity; a partial-only final exit must keep the remaining position open and mark it at the latest exit price.
 - Keep `equity_curve[*].equity` as normalized `total_equity / initial_cash`.
 - Keep `capital_summary.final_equity`, `capital_summary.cash + capital_summary.market_value`, and `equity_curve[-1].total_equity` on the same actual account-ledger basis; do not synthesize old return-curve equity for the summary.
+- Keep `build_equity_curve(trades)` with no `params` on the legacy weighted sell-date aggregation path.
 - Round money fields to 2 decimals and percentages to 2 decimals.
 
 - [ ] **Step 4: Run green tests**

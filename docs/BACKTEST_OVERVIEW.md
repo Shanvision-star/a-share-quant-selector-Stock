@@ -64,13 +64,23 @@ Profit Runner，避免用不可成交日的价格生成顺延成交。
 - `position_pct` → 每笔交易在组合中分配的资金比例
 - `max_weight_per_code` → 单只股票累计资金占比上限
 
-## 5. OrderIntent 与跟踪联动
+## 5. 可复现历史记录（Phase C）
+
+异步回测任务会写入 SQLite `backtest_tasks` 和 `backtest_task_events`。任务创建时记录
+`engine_version` 与稳定 `request_hash`；任务完成后记录 `result_hash` 和轻量 `summary`，
+用于判断同一输入、同一引擎版本下的结果是否可追溯。
+
+`GET /api/backtest/tasks` 默认返回轻量历史列表，不携带完整 `result` 和交易明细，避免列表页
+一次性加载大 JSON。`GET /api/backtest/tasks/{task_id}` 返回完整 `result`；需要事件流时追加
+`include_events=true`。同步接口 `POST /api/backtest` 保持兼容，本阶段不写入历史任务。
+
+## 6. OrderIntent 与跟踪联动
 
 - 每笔成功模拟的回测都会产出 `OrderIntent`
 - 跟踪运营页（Tracking）从 `order_intents` 中挑选条目转为人工跟踪
 - **OrderIntent 不会自动下单**，必须经人工“确认 / 否决”流程
 
-## 6. 相关文档
+## 7. 相关文档
 
 - [B1 案例战法](b1-case)
 - [B2 战法说明](b2-strategy)

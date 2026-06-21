@@ -12,6 +12,7 @@ from typing import Optional
 
 import pandas as pd
 
+from utils.trading_calendar import advance_a_share_trading_days
 from web.backend.backtest_engine.data_portal import DailyDataPortal, MinuteDataPortal
 from web.backend.backtest_engine.models import BacktestParams, MinuteBar, OrderIntent, SignalCandidate
 
@@ -66,6 +67,19 @@ def _find_signal_index(frame: pd.DataFrame, signal_date: str) -> Optional[int]:
     if len(matched) == 0:
         return None
     return int(matched[0])
+
+
+def _find_exact_date_index(frame: pd.DataFrame, target_day) -> Optional[int]:
+    matched = frame.index[frame["date"].dt.date == target_day]
+    if len(matched) == 0:
+        return None
+    return int(matched[0])
+
+
+def _find_buy_index(frame: pd.DataFrame, signal_date: str, buy_offset_days: int) -> Optional[int]:
+    signal_day = pd.to_datetime(signal_date).date()
+    buy_day = advance_a_share_trading_days(signal_day, buy_offset_days)
+    return _find_exact_date_index(frame, buy_day)
 
 
 def _pick_price(row, field: str) -> float:
@@ -240,8 +254,8 @@ class DailyExecutionSimulator:
         if signal_index is None:
             return None
 
-        buy_index = signal_index + int(params.get("buy_offset_days", 1))
-        if buy_index >= len(frame):
+        buy_index = _find_buy_index(frame, candidate.signal_date, int(params.get("buy_offset_days", 1)))
+        if buy_index is None:
             return None
 
         simulation_end_date = (

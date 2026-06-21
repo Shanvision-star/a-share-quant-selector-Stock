@@ -34,7 +34,7 @@
 - Modify: `web/backend/backtest_engine/portfolio.py`
 - Modify: `tests/test_backtest_engine.py`
 
-- [ ] **Step 1: Add failing max-position and cash-ledger tests**
+- [x] **Step 1: Add failing max-position and cash-ledger tests**
 
 Append these tests to `tests/test_backtest_engine.py`:
 
@@ -122,7 +122,7 @@ def test_portfolio_ledger_uses_cash_released_by_non_overlapping_trades():
     assert ledger["equity_curve"][1]["cash"] == 105000.0
 ```
 
-- [ ] **Step 2: Run red tests**
+- [x] **Step 2: Run red tests**
 
 Run:
 
@@ -132,7 +132,7 @@ python -m pytest tests/test_backtest_engine.py::test_portfolio_ledger_rejects_ov
 
 Expected: FAIL because `build_portfolio_ledger` does not exist.
 
-- [ ] **Step 3: Implement minimal ledger**
+- [x] **Step 3: Implement minimal ledger**
 
 In `web/backend/backtest_engine/portfolio.py`, keep the module docstring and add these public helpers:
 
@@ -168,7 +168,7 @@ Implementation requirements:
 - Keep `build_equity_curve(trades)` with no `params` on the legacy weighted sell-date aggregation path.
 - Round money fields to 2 decimals and percentages to 2 decimals.
 
-- [ ] **Step 4: Run green tests**
+- [x] **Step 4: Run green tests**
 
 Run:
 
@@ -178,7 +178,7 @@ python -m pytest tests/test_backtest_engine.py::test_portfolio_ledger_rejects_ov
 
 Expected: PASS.
 
-- [ ] **Step 5: Run portfolio-related regression**
+- [x] **Step 5: Run portfolio-related regression**
 
 Run:
 
@@ -188,7 +188,7 @@ python -m pytest tests/test_backtest_engine.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 1**
+- [x] **Step 6: Commit Task 1**
 
 ```powershell
 git add web/backend/backtest_engine/portfolio.py tests/test_backtest_engine.py

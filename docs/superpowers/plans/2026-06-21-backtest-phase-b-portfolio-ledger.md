@@ -505,3 +505,20 @@ git status --short --branch
 ```
 
 Dispatch final code reviewer for `0115aa1..HEAD`.
+
+---
+
+## Final Review Fix: Position Cap Disabled Keeps Fixed-Slot Sizing
+
+Original: `max_positions_per_day=0` was normalized into the same value used by
+fixed-slot sizing, so the ledger fell back to one full-account trade and rejected
+later same-day overlapping trades with `cash_shortage`.
+
+Revised: keep `max_positions` as the open-position cap where `0` means no cap,
+and use a separate internal `sizing_slots` denominator. Positive
+`max_positions_per_day` values size fixed slots with that value; zero or missing
+values size fixed slots with the default 20 slots.
+
+Reason / Impact: preserves legacy API behavior where `max_positions_per_day=0`
+disables candidate/position truncation without turning fixed-slot mode into
+full-account sizing.

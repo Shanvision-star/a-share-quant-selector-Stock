@@ -6,6 +6,7 @@ import math
 from collections import defaultdict
 
 DEFAULT_INITIAL_CASH = 100000.0
+DEFAULT_FIXED_SLOT_COUNT = 20
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -108,14 +109,17 @@ def _normalise_params(params: dict) -> dict:
     max_positions_value = params.get("max_positions")
     if max_positions_value is None:
         max_positions_value = params.get("max_positions_per_day")
-    max_positions = _safe_int(max_positions_value, 20)
+    max_positions = max(0, _safe_int(max_positions_value, DEFAULT_FIXED_SLOT_COUNT))
+    # max_positions_per_day=0 是旧 API 的“不限制持仓”语义，fixed slots 仍用默认 20 档做资金分母。
+    sizing_slots = max_positions if max_positions > 0 else DEFAULT_FIXED_SLOT_COUNT
     lot_size = _safe_int(params.get("lot_size"), 100)
     if lot_size <= 0:
         lot_size = 100
     return {
         "initial_cash": initial_cash,
         "position_pct": max(0.0, _safe_float(params.get("position_pct"), 0.0)),
-        "max_positions": max(0, max_positions),
+        "max_positions": max_positions,
+        "sizing_slots": sizing_slots,
         "max_weight_per_code": max(0.0, _safe_float(params.get("max_weight_per_code"), 0.0)),
         "lot_size": lot_size,
     }
@@ -163,9 +167,7 @@ def _target_cash(trade: dict, config: dict, buy_price: float) -> float:
         if weight > 0:
             return config["initial_cash"] * weight
         return config["initial_cash"] * config["position_pct"] / 100.0
-    if config["max_positions"] > 0:
-        return config["initial_cash"] / config["max_positions"]
-    return config["initial_cash"]
+    return config["initial_cash"] / config["sizing_slots"]
 
 
 def _quantity_for_trade(trade: dict, target_cash: float, buy_price: float, lot_size: int) -> float:

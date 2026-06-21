@@ -77,10 +77,13 @@ mark-to-market 估值留给后续 DataPortal 估值层。
 `portfolio_events`。`summary.cumulative_return_pct` 与 `summary.max_drawdown_pct`
 使用组合资金账本结果；胜率、平均收益、持仓天数等交易统计仍按原交易列表计算。
 
-账本会处理 `initial_cash`、`position_pct`、`max_positions`、`max_weight_per_code`
-和 `lot_size` 的最小资金约束。`position_pct=0` 时保留 fixed slots 语义，按
-`initial_cash / max_positions` 分配目标资金，不把旧执行层写入的 `weight=1.0`
-当成全仓买入。`max_weight_per_code` 在账本层表示单笔目标资金超上限时拒绝交易；
+账本会处理 `initial_cash`、`position_pct`、`max_positions_per_day`、
+`max_weight_per_code` 和 `lot_size` 的最小资金约束。`initial_cash` 是后端账本
+参数，默认 `100000.0`；当前公开 API 暴露的是 `max_positions_per_day`，不是单独的
+`max_positions` 字段。`position_pct=0` 时保留 fixed slots 语义：当
+`max_positions_per_day > 0` 时按该值作为资金分母；当 `max_positions_per_day=0`
+时只关闭持仓数量上限，资金分母仍使用默认 20 档，避免旧执行层写入的 `weight=1.0`
+被当成全仓买入。`max_weight_per_code` 在账本层表示单笔目标资金超上限时拒绝交易；
 同股累计权重过滤仍属于 `weight_cap` 候选层。
 
 同日存在卖出和买入时，本阶段按计划先处理同日卖出，再处理同日买入，让当天卖出释放

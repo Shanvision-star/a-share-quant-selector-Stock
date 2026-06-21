@@ -970,6 +970,38 @@ def test_portfolio_ledger_ignores_legacy_full_weight_in_fixed_slots_mode():
     assert ledger["equity_curve"][0]["cash"] == 80000.0
 
 
+def test_portfolio_ledger_uses_default_slot_sizing_when_position_cap_disabled():
+    from web.backend.backtest_engine.portfolio import build_portfolio_ledger
+
+    trades = [
+        {
+            "code": code,
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-29",
+            "buy_price": 10.0,
+            "sell_price": 10.0,
+            "return_pct": 0.0,
+            "weight": 1.0,
+            "exits": [{"date": "2026-04-29", "price": 10.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        }
+        for code in ["000001", "000002", "000003"]
+    ]
+
+    ledger = build_portfolio_ledger(
+        trades,
+        {"initial_cash": 100000, "position_pct": 0, "max_positions_per_day": 0, "lot_size": 100},
+    )
+
+    buy_events = [event for event in ledger["portfolio_events"] if event["event_type"] == "buy"]
+    reject_events = [event for event in ledger["portfolio_events"] if event["event_type"] == "reject"]
+    assert ledger["capital_summary"]["invested_count"] == 3
+    assert ledger["capital_summary"]["rejected_count"] == 0
+    assert all(event["reason"] != "cash_shortage" for event in reject_events)
+    assert [event["cost"] for event in buy_events] == [5000.0, 5000.0, 5000.0]
+    assert ledger["equity_curve"][0]["cash"] == 85000.0
+    assert ledger["capital_summary"]["max_open_positions"] == 3
+
+
 def test_portfolio_ledger_rejects_trade_above_per_code_weight_cap():
     from web.backend.backtest_engine.portfolio import build_portfolio_ledger
 

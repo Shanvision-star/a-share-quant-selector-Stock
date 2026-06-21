@@ -1,7 +1,7 @@
 """回测异步任务服务。
 
-当前阶段使用进程内任务表和线程池，把长回测从 HTTP 请求生命周期中拆出去。
-后续如果需要跨进程恢复，再替换为 SQLite/Redis 持久化队列。
+SQLite 是可复现回测历史的权威读模型，保存完整结果、manifest 和事件流。
+线程池只负责当前进程内执行长回测，避免 HTTP 请求生命周期阻塞。
 """
 
 from __future__ import annotations
@@ -93,6 +93,51 @@ def _stable_json(value) -> str:
 
 def _hash_json(value) -> str:
     return hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()[:16]
+
+
+def _result_for_reproducible_hash(result, path: tuple[str, ...] = ()):
+    if isinstance(result, list):
+        return [_result_for_reproducible_hash(item, path) for item in result]
+    if not isinstance(result, dict):
+        return result
+
+    normalized = {}
+    for key, value in result.items():
+        if path == () and key == "summary" and isinstance(value, dict):
+            summary = {
+                summary_key: _result_for_reproducible_hash(summary_value, (*path, key, summary_key))
+                for summary_key, summary_value in value.items()
+                if summary_key != "runtime_elapsed_seconds"
+            }
+            normalized[key] = summary
+            continue
+        if path == () and key == "runtime" and isinstance(value, dict):
+            runtime = {
+                runtime_key: _result_for_reproducible_hash(runtime_value, (*path, key, runtime_key))
+                for runtime_key, runtime_value in value.items()
+                if runtime_key != "elapsed_seconds"
+            }
+            normalized[key] = runtime
+            continue
+        if path == () and key == "order_intents" and isinstance(value, list):
+            # intent_id 默认来自随机 uuid，只影响追踪展示，不参与可复现业务结果判定。
+            normalized[key] = [
+                {
+                    intent_key: _result_for_reproducible_hash(intent_value, (*path, key, intent_key))
+                    for intent_key, intent_value in item.items()
+                    if intent_key != "intent_id"
+                }
+                if isinstance(item, dict)
+                else _result_for_reproducible_hash(item, (*path, key))
+                for item in value
+            ]
+            continue
+        normalized[key] = _result_for_reproducible_hash(value, (*path, key))
+    return normalized
+
+
+def _result_hash(result) -> str:
+    return _hash_json(_result_for_reproducible_hash(result))
 
 
 def _summary_from_result(result) -> dict:
@@ -228,7 +273,7 @@ class BacktestTaskRepository:
             result = _decode_json(item.get("result_json"), None)
             if result is not None:
                 if _is_blank(item.get("result_hash")):
-                    updates["result_hash"] = _hash_json(result)
+                    updates["result_hash"] = _result_hash(result)
                 if _is_blank(item.get("summary_json")):
                     updates["summary_json"] = _stable_json(_summary_from_result(result))
             if updates:
@@ -267,7 +312,7 @@ class BacktestTaskRepository:
                 int(task.get("progress_pct") or 0),
                 task.get("message") or "",
                 _hash_json(params),
-                _hash_json(result) if result is not None else None,
+                _result_hash(result) if result is not None else None,
                 BACKTEST_ENGINE_VERSION,
                 _stable_json(_summary_from_result(result)),
             ),
@@ -281,7 +326,7 @@ class BacktestTaskRepository:
         changes = dict(changes)
         if "result" in changes:
             result = changes["result"]
-            changes["result_hash"] = _hash_json(result) if result is not None else None
+            changes["result_hash"] = _result_hash(result) if result is not None else None
             changes["summary_json"] = _stable_json(_summary_from_result(result))
         columns = []
         values = []

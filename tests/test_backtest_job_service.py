@@ -1,5 +1,6 @@
 """验证回测异步任务服务的提交、完成、失败和持久化记录。"""
 
+from copy import deepcopy
 import json
 import sqlite3
 import time
@@ -78,6 +79,69 @@ def test_backtest_repository_request_hash_is_stable_for_param_key_order():
     )
 
     assert repository.get("bt_order_a")["request_hash"] == repository.get("bt_order_b")["request_hash"]
+
+
+def test_backtest_repository_result_hash_ignores_only_non_reproducible_runtime_fields():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+    base_result = {
+        "summary": {
+            "trade_count": 1,
+            "return_pct": 2.5,
+            "runtime_elapsed_seconds": 1.23,
+        },
+        "runtime": {
+            "elapsed_seconds": 1.24,
+            "engine": "phase-c",
+        },
+        "trades": [{"code": "000001", "side": "buy", "price": 10.2}],
+        "equity_curve": [{"date": "2026-04-24", "equity": 100025.0}],
+        "order_intents": [
+            {
+                "intent_id": "random-intent-a",
+                "code": "000001",
+                "side": "buy",
+                "target_weight": 0.1,
+                "reason": "signal",
+            }
+        ],
+    }
+    result_b = deepcopy(base_result)
+    result_b["summary"]["runtime_elapsed_seconds"] = 9.87
+    result_b["runtime"]["elapsed_seconds"] = 9.88
+    result_b["order_intents"][0]["intent_id"] = "random-intent-b"
+
+    repository.create(
+        {
+            "task_id": "bt_semantic_a",
+            "status": "done",
+            "created_at": "2026-05-08 09:30:00",
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "result": base_result,
+            "message": "完成",
+        }
+    )
+    repository.create(
+        {
+            "task_id": "bt_semantic_b",
+            "status": "queued",
+            "created_at": "2026-05-08 09:31:00",
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "message": "排队中",
+        }
+    )
+    repository.update("bt_semantic_b", status="done", result=result_b)
+
+    detail_a = repository.get("bt_semantic_a")
+    detail_b = repository.get("bt_semantic_b")
+
+    assert detail_a["result_hash"] == detail_b["result_hash"]
+    assert detail_a["result"]["summary"]["runtime_elapsed_seconds"] == 1.23
+    assert detail_b["result"]["summary"]["runtime_elapsed_seconds"] == 9.87
+    assert detail_a["result"]["runtime"]["elapsed_seconds"] == 1.24
+    assert detail_b["result"]["runtime"]["elapsed_seconds"] == 9.88
+    assert detail_a["result"]["order_intents"][0]["intent_id"] == "random-intent-a"
+    assert detail_b["result"]["order_intents"][0]["intent_id"] == "random-intent-b"
 
 
 def test_backtest_repository_update_none_result_clears_result_manifest():

@@ -105,7 +105,10 @@ def _normalise_params(params: dict) -> dict:
     initial_cash = _safe_float(params.get("initial_cash"), DEFAULT_INITIAL_CASH)
     if initial_cash <= 0:
         initial_cash = DEFAULT_INITIAL_CASH
-    max_positions = _safe_int(params.get("max_positions", params.get("max_positions_per_day", 20)), 20)
+    max_positions_value = params.get("max_positions")
+    if max_positions_value is None:
+        max_positions_value = params.get("max_positions_per_day")
+    max_positions = _safe_int(max_positions_value, 20)
     lot_size = _safe_int(params.get("lot_size"), 100)
     if lot_size <= 0:
         lot_size = 100
@@ -210,9 +213,6 @@ def build_portfolio_ledger(trades: list[dict], params: dict | None = None) -> di
     rejected_count = 0
     max_open_positions = 0
 
-    # max_weight_per_code 在 Task 1 只完成参数解析，单票权重硬限制留给 Task 3。
-    _ = config["max_weight_per_code"]
-
     def process_due_sells(until_date: str | None = None) -> None:
         nonlocal cash, max_open_positions
         while True:
@@ -256,6 +256,18 @@ def build_portfolio_ledger(trades: list[dict], params: dict | None = None) -> di
         buy_date = str(trade.get("buy_date") or "")
         process_due_sells(buy_date)
         buy_price = _safe_float(trade.get("buy_price"), 0.0)
+        target_cash = _target_cash(trade, config, buy_price)
+
+        if (
+            config["max_weight_per_code"] > 0
+            and initial_cash > 0
+            and target_cash / initial_cash * 100 > config["max_weight_per_code"]
+        ):
+            portfolio_events.append(_reject_event(trade, "max_weight_per_code", cash))
+            rejected_count += 1
+            if buy_date:
+                _snapshot(snapshots, buy_date, cash, positions)
+            continue
 
         if config["max_positions"] > 0 and len(positions) >= config["max_positions"]:
             portfolio_events.append(_reject_event(trade, "max_positions", cash))
@@ -264,7 +276,6 @@ def build_portfolio_ledger(trades: list[dict], params: dict | None = None) -> di
                 _snapshot(snapshots, buy_date, cash, positions)
             continue
 
-        target_cash = _target_cash(trade, config, buy_price)
         quantity = _quantity_for_trade(trade, target_cash, buy_price, config["lot_size"])
         cost = quantity * buy_price
         if quantity <= 0 or cost <= 0 or cost > cash + 1e-9:

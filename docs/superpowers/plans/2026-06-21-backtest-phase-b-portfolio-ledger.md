@@ -308,7 +308,7 @@ git commit -m "feat: expose portfolio ledger in backtest results"
 - Modify: `tests/test_backtest_engine.py`
 - Modify: `web/backend/backtest_engine/portfolio.py`
 
-- [ ] **Step 1: Add service compatibility test**
+- [x] **Step 1: Add service compatibility test**
 
 Append this test to `tests/test_backtest_service.py`:
 
@@ -374,7 +374,7 @@ def test_backtest_service_returns_capital_summary_with_default_cash(monkeypatch)
     assert result["equity_curve"][-1]["total_equity"] > 100000.0
 ```
 
-- [ ] **Step 2: Add per-code cap test**
+- [x] **Step 2: Add per-code cap test**
 
 Append this test to `tests/test_backtest_engine.py`:
 
@@ -406,7 +406,7 @@ def test_portfolio_ledger_rejects_trade_above_per_code_weight_cap():
     assert ledger["portfolio_events"][0]["reason"] == "max_weight_per_code"
 ```
 
-- [ ] **Step 3: Run red tests**
+- [x] **Step 3: Run red tests**
 
 Run:
 
@@ -416,7 +416,7 @@ python -m pytest tests/test_backtest_service.py::test_backtest_service_returns_c
 
 Expected: service test may pass if Task 2 already wired defaults; per-code cap should fail until rejection reason is implemented exactly.
 
-- [ ] **Step 4: Implement compatibility and cap behavior**
+- [x] **Step 4: Implement compatibility and cap behavior**
 
 In `portfolio.py`:
 
@@ -425,7 +425,7 @@ In `portfolio.py`:
 - If `max_weight_per_code > 0` and a trade target weight is greater than the cap, reject with reason `max_weight_per_code`.
 - Keep `trade_count` as raw input trade count and `invested_count` as accepted count.
 
-- [ ] **Step 5: Run green tests**
+- [x] **Step 5: Run green tests**
 
 Run:
 
@@ -435,7 +435,7 @@ python -m pytest tests/test_backtest_service.py tests/test_backtest_engine.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 3**
+- [x] **Step 6: Commit Task 3**
 
 ```powershell
 git add web/backend/backtest_engine/portfolio.py tests/test_backtest_engine.py tests/test_backtest_service.py

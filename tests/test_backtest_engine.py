@@ -970,6 +970,33 @@ def test_portfolio_ledger_ignores_legacy_full_weight_in_fixed_slots_mode():
     assert ledger["equity_curve"][0]["cash"] == 80000.0
 
 
+def test_portfolio_ledger_rejects_trade_above_per_code_weight_cap():
+    from web.backend.backtest_engine.portfolio import build_portfolio_ledger
+
+    trades = [
+        {
+            "code": "000001",
+            "buy_date": "2026-04-27",
+            "sell_date": "2026-04-28",
+            "buy_price": 10.0,
+            "sell_price": 11.0,
+            "return_pct": 10.0,
+            "weight": 0.5,
+            "exits": [{"date": "2026-04-28", "price": 11.0, "portion_pct": 100.0, "reason": "holding_days"}],
+        }
+    ]
+
+    ledger = build_portfolio_ledger(
+        trades,
+        {"initial_cash": 100000, "position_pct": 50, "max_positions": 5, "max_weight_per_code": 20},
+    )
+
+    assert ledger["capital_summary"]["invested_count"] == 0
+    assert ledger["capital_summary"]["rejected_count"] == 1
+    assert ledger["capital_summary"]["final_equity"] == 100000.0
+    assert ledger["portfolio_events"][0]["reason"] == "max_weight_per_code"
+
+
 def test_daily_engine_returns_capital_summary_and_portfolio_events():
     candidate = SignalCandidate(
         code="000001",

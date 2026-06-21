@@ -195,20 +195,6 @@ def _reject_event(trade: dict, reason: str, cash: float) -> dict:
     }
 
 
-def _summary_equity(initial_cash: float, closed_positions: list[dict], position_pct: float, actual_equity: float) -> float:
-    if not closed_positions or position_pct <= 0:
-        return actual_equity
-
-    equity = initial_cash
-    position_weight = position_pct / 100.0
-    for index, position in enumerate(closed_positions):
-        return_pct = _safe_float(position["trade"].get("return_pct"), 0.0) / 100.0
-        # 首笔交易沿用旧收益曲线的满仓基准，后续交易按组合权重推进。
-        exposure = 1.0 if index == 0 and "quantity" not in position["trade"] else position_weight
-        equity *= 1 + return_pct * exposure
-    return equity
-
-
 def build_portfolio_ledger(trades: list[dict], params: dict | None = None) -> dict:
     """构建最小组合资金账本。"""
     if params is None:
@@ -218,7 +204,6 @@ def build_portfolio_ledger(trades: list[dict], params: dict | None = None) -> di
     initial_cash = config["initial_cash"]
     cash = initial_cash
     positions: list[dict] = []
-    closed_positions: list[dict] = []
     portfolio_events: list[dict] = []
     snapshots: dict[str, dict] = {}
     invested_count = 0
@@ -264,7 +249,6 @@ def build_portfolio_ledger(trades: list[dict], params: dict | None = None) -> di
                 }
             )
             if position["remaining_qty"] <= 1e-9 or position["exit_index"] >= len(position["exit_events"]):
-                closed_positions.append(position)
                 positions.pop(position_index)
             _snapshot(snapshots, event["date"], cash, positions)
             max_open_positions = max(max_open_positions, len(positions))
@@ -346,13 +330,15 @@ def build_portfolio_ledger(trades: list[dict], params: dict | None = None) -> di
         )
         previous_equity = total_equity
 
-    actual_final_equity = curve[-1]["total_equity"] if curve else initial_cash
-    final_equity = _money(_summary_equity(initial_cash, closed_positions, config["position_pct"], actual_final_equity))
+    final_equity = curve[-1]["total_equity"] if curve else _money(cash)
+    summary_cash = _money(cash)
+    # summary 三个资金字段必须同源，避免再出现收益曲线和账户账本两套口径。
+    summary_market_value = _money(final_equity - summary_cash)
     capital_summary = {
         "initial_cash": _money(initial_cash),
         "final_equity": final_equity,
-        "cash": _money(cash),
-        "market_value": _money(sum(position["remaining_qty"] * position["current_price"] for position in positions)),
+        "cash": summary_cash,
+        "market_value": summary_market_value,
         "cumulative_return_pct": _pct((final_equity / initial_cash - 1) * 100 if initial_cash > 0 else 0.0),
         "max_drawdown_pct": _pct(max_drawdown),
         "trade_count": len(trades),

@@ -784,7 +784,8 @@ def test_portfolio_ledger_rejects_overlapping_trade_when_max_positions_is_one():
 
     assert ledger["capital_summary"]["invested_count"] == 1
     assert ledger["capital_summary"]["rejected_count"] == 1
-    assert ledger["capital_summary"]["final_equity"] == 110000.0
+    assert ledger["capital_summary"]["final_equity"] == 105000.0
+    assert ledger["capital_summary"]["final_equity"] == ledger["equity_curve"][-1]["total_equity"]
     assert any(event["event_type"] == "reject" and event["reason"] == "max_positions" for event in ledger["portfolio_events"])
     assert ledger["equity_curve"][-1]["open_positions"] == 0
 
@@ -820,8 +821,10 @@ def test_portfolio_ledger_uses_cash_released_by_non_overlapping_trades():
 
     assert ledger["capital_summary"]["invested_count"] == 2
     assert ledger["capital_summary"]["rejected_count"] == 0
-    assert ledger["capital_summary"]["final_equity"] == 104500.0
-    assert ledger["capital_summary"]["cumulative_return_pct"] == 4.5
+    assert ledger["capital_summary"]["final_equity"] == 100000.0
+    assert ledger["capital_summary"]["cumulative_return_pct"] == 0.0
+    assert ledger["capital_summary"]["final_equity"] == ledger["equity_curve"][-1]["total_equity"]
+    assert ledger["capital_summary"]["final_equity"] == ledger["capital_summary"]["cash"]
     assert [row["date"] for row in ledger["equity_curve"]] == [
         "2026-04-27",
         "2026-04-28",

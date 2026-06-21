@@ -368,6 +368,37 @@ def test_daily_engine_skips_when_no_t_plus_one_sell_day():
     assert result["summary"]["skipped_count"] == 1
 
 
+def test_daily_engine_delays_stop_loss_exit_when_limit_down_locked():
+    """止损触发日跌停锁死时，应顺延到下一可卖日，不能按止损价虚假成交。"""
+    candidate = SignalCandidate(
+        code="000001",
+        name="平安银行",
+        strategy_name="manual",
+        trade_date="2026-04-24",
+        signal_date="2026-04-24",
+        source="manual",
+    )
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-27"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-28"), "open": 9.0, "high": 9.0, "low": 9.0, "close": 9.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-29"), "open": 9.1, "high": 9.4, "low": 9.0, "close": 9.2, "volume": 1000},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource([candidate]),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(_default_params(holding_days=2, stop_loss_pct=5))
+
+    assert result["summary"]["trade_count"] == 1
+    assert result["trades"][0]["sell_date"] == "2026-04-29"
+    assert result["trades"][0]["sell_price"] == 9.2
+    assert result["trades"][0]["exit_reason"] == "fixed_stop_loss"
+
+
 def test_profit_runner_keeps_core_position_and_records_hold_action():
     """放飞后按阶梯卖出，但达到保留底仓比例后记录继续持有。"""
     candidate = SignalCandidate(

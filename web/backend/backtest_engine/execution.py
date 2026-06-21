@@ -146,6 +146,65 @@ def _find_sellable_index(frame: pd.DataFrame, start_index: int, end_index: int, 
     return None
 
 
+def _resolve_sellable_exit(
+    frame: pd.DataFrame,
+    trigger_index: int,
+    end_index: int,
+    candidate: SignalCandidate,
+    requested_price: float,
+    sell_price_field: str,
+) -> Optional[tuple[int, object, float]]:
+    sell_index = _find_sellable_index(frame, trigger_index, end_index, candidate)
+    if sell_index is None:
+        return None
+    sell_row = frame.iloc[sell_index]
+    if sell_index == trigger_index:
+        sell_price = requested_price
+    else:
+        sell_price = _pick_price(sell_row, sell_price_field)
+    if sell_price <= 0:
+        return None
+    return sell_index, sell_row, sell_price
+
+
+def _append_sellable_exit(
+    exits: list[dict],
+    frame: pd.DataFrame,
+    trigger_index: int,
+    end_index: int,
+    candidate: SignalCandidate,
+    requested_price: float,
+    portion: float,
+    reason: str,
+    remaining_before: float,
+    fee_rate: float,
+    slippage_rate: float,
+    sell_price_field: str,
+) -> tuple[float, Optional[int]]:
+    resolved = _resolve_sellable_exit(
+        frame,
+        trigger_index,
+        end_index,
+        candidate,
+        requested_price,
+        sell_price_field,
+    )
+    if resolved is None:
+        return remaining_before, None
+    sell_index, sell_row, sell_price = resolved
+    remaining_after = _append_exit(
+        exits,
+        sell_row,
+        sell_price,
+        portion,
+        reason,
+        remaining_before,
+        fee_rate,
+        slippage_rate,
+    )
+    return remaining_after, sell_index
+
+
 def _resolve_minute_sell_date(
     bars: list[MinuteBar],
     buy_date,
@@ -327,32 +386,98 @@ class DailyExecutionSimulator:
                 short_break_streak = 0
 
             if stop_loss_pct > 0 and low_price <= buy_price * (1 - stop_loss_pct / 100):
-                remaining = _append_exit(
+                remaining, sell_index = _append_sellable_exit(
                     exits,
-                    row,
+                    frame,
+                    index,
+                    end_bound_index,
+                    candidate,
                     buy_price * (1 - stop_loss_pct / 100),
                     remaining,
                     "fixed_stop_loss",
                     remaining,
                     fee_rate,
                     slippage_rate,
+                    sell_price_field,
                 )
+                if sell_index is None:
+                    return None
                 break
 
             if bool(params.get("enable_no_gain_exit", True)) and index - buy_index >= no_gain_days and close_price <= buy_price:
-                remaining = _append_exit(exits, row, close_price, remaining, "no_gain_exit", remaining, fee_rate, slippage_rate)
+                remaining, sell_index = _append_sellable_exit(
+                    exits,
+                    frame,
+                    index,
+                    end_bound_index,
+                    candidate,
+                    close_price,
+                    remaining,
+                    "no_gain_exit",
+                    remaining,
+                    fee_rate,
+                    slippage_rate,
+                    sell_price_field,
+                )
+                if sell_index is None:
+                    return None
                 break
 
             if bool(params.get("exit_on_bull_bear_break", True)) and bull_bear_line > 0 and close_price < bull_bear_line:
-                remaining = _append_exit(exits, row, close_price, remaining, "bull_bear_break", remaining, fee_rate, slippage_rate)
+                remaining, sell_index = _append_sellable_exit(
+                    exits,
+                    frame,
+                    index,
+                    end_bound_index,
+                    candidate,
+                    close_price,
+                    remaining,
+                    "bull_bear_break",
+                    remaining,
+                    fee_rate,
+                    slippage_rate,
+                    sell_price_field,
+                )
+                if sell_index is None:
+                    return None
                 break
 
             if bool(params.get("exit_on_short_trend_drawdown", True)) and short_line > 0 and close_price <= short_line * (1 - short_drawdown_pct / 100):
-                remaining = _append_exit(exits, row, close_price, remaining, "short_trend_drawdown", remaining, fee_rate, slippage_rate)
+                remaining, sell_index = _append_sellable_exit(
+                    exits,
+                    frame,
+                    index,
+                    end_bound_index,
+                    candidate,
+                    close_price,
+                    remaining,
+                    "short_trend_drawdown",
+                    remaining,
+                    fee_rate,
+                    slippage_rate,
+                    sell_price_field,
+                )
+                if sell_index is None:
+                    return None
                 break
 
             if bool(params.get("exit_on_short_trend_break", True)) and short_break_streak >= short_break_days:
-                remaining = _append_exit(exits, row, close_price, remaining, "short_trend_break_days", remaining, fee_rate, slippage_rate)
+                remaining, sell_index = _append_sellable_exit(
+                    exits,
+                    frame,
+                    index,
+                    end_bound_index,
+                    candidate,
+                    close_price,
+                    remaining,
+                    "short_trend_break_days",
+                    remaining,
+                    fee_rate,
+                    slippage_rate,
+                    sell_price_field,
+                )
+                if sell_index is None:
+                    return None
                 break
 
             current_high_pct = (high_price / buy_price - 1) * 100 if buy_price > 0 else 0.0
@@ -387,19 +512,25 @@ class DailyExecutionSimulator:
                         continue
                     exit_price = buy_price * (1 + next_profit_ladder_pct / 100)
                     portion = min(remaining, sellable_portion, profit_sell_pct / 100)
-                    remaining = _append_exit(
+                    remaining, sell_index = _append_sellable_exit(
                         exits,
-                        row,
+                        frame,
+                        index,
+                        end_bound_index,
+                        candidate,
                         exit_price,
                         portion,
                         f"profit_ladder_{next_profit_ladder_pct:.1f}pct",
                         remaining,
                         fee_rate,
                         slippage_rate,
+                        sell_price_field,
                     )
+                    if sell_index is None:
+                        return None
                     profit_actions.append(
                         {
-                            "date": row["date"].strftime("%Y-%m-%d"),
+                            "date": exits[-1]["date"],
                             "action": "sell_partial",
                             "profit_pct": round(next_profit_ladder_pct, 2),
                             "sell_pct": round(portion * 100, 2),
@@ -407,22 +538,45 @@ class DailyExecutionSimulator:
                         }
                     )
                     next_profit_ladder_pct += profit_step_pct
+                    if sell_index > index:
+                        break
 
             if runner_triggered and bool(params.get("hold_above_short_trend_after_trigger", True)) and short_line > 0 and close_price < short_line:
-                remaining = _append_exit(exits, row, close_price, remaining, "profit_runner_short_trend_break", remaining, fee_rate, slippage_rate)
+                remaining, sell_index = _append_sellable_exit(
+                    exits,
+                    frame,
+                    index,
+                    end_bound_index,
+                    candidate,
+                    close_price,
+                    remaining,
+                    "profit_runner_short_trend_break",
+                    remaining,
+                    fee_rate,
+                    slippage_rate,
+                    sell_price_field,
+                )
+                if sell_index is None:
+                    return None
                 break
 
             if not profit_run_enabled and legacy_take_profit_pct > 0 and high_price >= buy_price * (1 + legacy_take_profit_pct / 100):
-                remaining = _append_exit(
+                remaining, sell_index = _append_sellable_exit(
                     exits,
-                    row,
+                    frame,
+                    index,
+                    end_bound_index,
+                    candidate,
                     buy_price * (1 + legacy_take_profit_pct / 100),
                     remaining,
                     "take_profit",
                     remaining,
                     fee_rate,
                     slippage_rate,
+                    sell_price_field,
                 )
+                if sell_index is None:
+                    return None
                 break
 
         if remaining > 0:

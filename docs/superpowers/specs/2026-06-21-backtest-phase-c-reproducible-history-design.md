@@ -141,4 +141,3 @@ git diff --check
 - 旧 SQLite 库已有 `backtest_tasks` 表但缺新列，必须用 `ALTER TABLE` 幂等补列。
 - 历史列表瘦身会改变前端如果依赖列表里 `result` 的行为；当前 worktree 没有 nested frontend `src`，因此本阶段以 API contract 和 router tests 固化，前端适配放后续。
 - `result_hash` 只证明结果 JSON 一致，不证明底层 CSV 未变；完整数据源版本化属于后续 DataPortal/快照层。
-

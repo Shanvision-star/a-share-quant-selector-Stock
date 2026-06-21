@@ -30,6 +30,10 @@ def test_advance_trading_days_handles_zero_and_holiday_gap():
     assert advance_a_share_trading_days(date(2026, 5, 1), 1) == date(2026, 5, 6)
 
 
+def test_advance_trading_days_skips_2025_national_day_holiday():
+    assert advance_a_share_trading_days(date(2025, 9, 30), 1) == date(2025, 10, 9)
+
+
 def test_advance_trading_days_rejects_negative_days():
     with pytest.raises(ValueError, match="days must be non-negative"):
         advance_a_share_trading_days(date(2026, 4, 30), -1)

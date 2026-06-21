@@ -171,6 +171,50 @@ def test_get_backtest_task_can_include_events(monkeypatch):
     assert body["data"]["events"][0]["event_type"] == "progress"
 
 
+def test_sqlite_startup_migrates_backtest_task_manifest_columns(monkeypatch):
+    import sqlite3
+
+    from web.backend.services import sqlite_service
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE backtest_tasks (
+            task_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL,
+            error TEXT,
+            params_json TEXT,
+            result_json TEXT,
+            total_count INTEGER DEFAULT 0,
+            processed_count INTEGER DEFAULT 0,
+            current_code TEXT,
+            progress_pct INTEGER DEFAULT 0,
+            message TEXT
+        )
+        """
+    )
+    conn.commit()
+    monkeypatch.setattr(sqlite_service._local, "conn", conn, raising=False)
+
+    sqlite_service.init_database()
+    sqlite_service.init_database()
+
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(backtest_tasks)").fetchall()
+    }
+    indexes = {
+        row["name"] for row in conn.execute("PRAGMA index_list(backtest_tasks)").fetchall()
+    }
+    assert {"request_hash", "result_hash", "engine_version", "summary_json"}.issubset(columns)
+    assert "idx_backtest_tasks_request_hash" in indexes
+    assert "idx_backtest_tasks_finished_at" in indexes
+
+
 def test_list_backtest_task_events_returns_progress_events(monkeypatch):
     monkeypatch.setattr(backtest, "backtest_job_manager", FakeBacktestJobManager())
 

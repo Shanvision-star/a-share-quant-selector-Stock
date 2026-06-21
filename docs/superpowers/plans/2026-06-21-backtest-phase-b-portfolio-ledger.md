@@ -203,7 +203,7 @@ git commit -m "feat: add backtest portfolio ledger"
 - Modify: `web/backend/backtest_engine/analyzer.py`
 - Modify: `tests/test_backtest_engine.py`
 
-- [ ] **Step 1: Add failing analyzer contract test**
+- [x] **Step 1: Add failing analyzer contract test**
 
 Append this test to `tests/test_backtest_engine.py`:
 
@@ -243,7 +243,7 @@ def test_daily_engine_returns_capital_summary_and_portfolio_events():
     assert "equity" in result["equity_curve"][0]
 ```
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Run:
 
@@ -253,7 +253,7 @@ python -m pytest tests/test_backtest_engine.py::test_daily_engine_returns_capita
 
 Expected: FAIL because `capital_summary` and `portfolio_events` are not returned by `build_result`.
 
-- [ ] **Step 3: Wire analyzer to ledger**
+- [x] **Step 3: Wire analyzer to ledger**
 
 In `web/backend/backtest_engine/analyzer.py`:
 
@@ -272,7 +272,7 @@ max_drawdown = capital_summary["max_drawdown_pct"]
 - Return `capital_summary` and `portfolio_events` in the final dict.
 - Keep all existing summary fields that are not portfolio return/drawdown related.
 
-- [ ] **Step 4: Run green test**
+- [x] **Step 4: Run green test**
 
 Run:
 
@@ -282,7 +282,7 @@ python -m pytest tests/test_backtest_engine.py::test_daily_engine_returns_capita
 
 Expected: PASS.
 
-- [ ] **Step 5: Run engine regression**
+- [x] **Step 5: Run engine regression**
 
 Run:
 
@@ -292,7 +292,7 @@ python -m pytest tests/test_backtest_engine.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 2**
+- [x] **Step 6: Commit Task 2**
 
 ```powershell
 git add web/backend/backtest_engine/analyzer.py tests/test_backtest_engine.py

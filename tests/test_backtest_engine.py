@@ -968,3 +968,38 @@ def test_portfolio_ledger_ignores_legacy_full_weight_in_fixed_slots_mode():
     assert all(event["reason"] != "cash_shortage" for event in ledger["portfolio_events"] if event["event_type"] == "reject")
     assert [event["cost"] for event in buy_events] == [10000.0, 10000.0]
     assert ledger["equity_curve"][0]["cash"] == 80000.0
+
+
+def test_daily_engine_returns_capital_summary_and_portfolio_events():
+    candidate = SignalCandidate(
+        code="000001",
+        name="平安银行",
+        strategy_name="manual",
+        trade_date="2026-04-24",
+        signal_date="2026-04-24",
+        source="manual",
+    )
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-27"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-28"), "open": 11.0, "high": 11.2, "low": 10.9, "close": 11.0, "volume": 1000},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource([candidate]),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(
+        _default_params(initial_cash=100000, position_pct=50, max_positions=1)
+    )
+
+    assert result["capital_summary"]["initial_cash"] == 100000.0
+    assert result["capital_summary"]["invested_count"] == 1
+    assert result["capital_summary"]["final_equity"] == 105000.0
+    assert result["summary"]["cumulative_return_pct"] == 5.0
+    assert result["summary"]["max_drawdown_pct"] == 0.0
+    assert result["portfolio_events"][0]["event_type"] == "buy"
+    assert result["portfolio_events"][-1]["event_type"] == "sell"
+    assert "equity" in result["equity_curve"][0]

@@ -203,6 +203,7 @@ def test_backtest_repository_backfills_legacy_summary_from_result_json():
     assert history_item["result"] is None
     assert history_item["summary"]["trade_count"] == 7
     assert detail_item["summary"]["trade_count"] == 7
+    assert detail_item["engine_version"] == "backtest-engine-v1-phase-c"
     assert len(detail_item["result_hash"]) == 16
 
 
@@ -246,6 +247,35 @@ def test_backtest_job_manager_get_returns_repository_manifest_and_events():
     assert len(detail["result_hash"]) == 16
     assert detail["summary"]["trade_count"] == 3
     assert detail_with_events["events"][-1]["event_type"] == "done"
+
+
+def test_backtest_job_manager_get_running_detail_includes_manifest_and_progress_events():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+    first_progress = Event()
+    release_runner = Event()
+
+    def runner(params, progress_callback=None):
+        progress_callback({"total_count": 2, "processed_count": 1, "current_code": "000001"})
+        first_progress.set()
+        assert release_runner.wait(2)
+        return {"summary": {"trade_count": 1}, "params": params}
+
+    manager = BacktestJobManager(runner=runner, repository=repository, max_workers=1)
+    submitted = manager.submit({"start_date": "2026-04-24", "end_date": "2026-04-24"})
+
+    progress_seen = first_progress.wait(2)
+    detail = manager.get(submitted["task_id"], include_events=True)
+    release_runner.set()
+    task = manager.wait(submitted["task_id"], timeout=2)
+
+    assert progress_seen
+    assert detail["status"] == "running"
+    assert detail["engine_version"] == "backtest-engine-v1-phase-c"
+    assert len(detail["request_hash"]) == 16
+    assert detail["summary"] == {}
+    assert any(event["event_type"] == "progress" for event in detail["events"])
+    assert task["status"] == "done"
 
 
 def test_backtest_job_manager_returns_task_status_and_result():

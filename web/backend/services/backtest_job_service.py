@@ -189,13 +189,23 @@ class BacktestTaskRepository:
         self._backfill_manifest_columns(conn)
 
     def _backfill_manifest_columns(self, conn):
-        columns = ("task_id", "params_json", "result_json", "request_hash", "result_hash", "summary_json")
+        columns = (
+            "task_id",
+            "params_json",
+            "result_json",
+            "request_hash",
+            "result_hash",
+            "engine_version",
+            "summary_json",
+        )
         rows = conn.execute(
             """
-            SELECT task_id, params_json, result_json, request_hash, result_hash, summary_json
+            SELECT task_id, params_json, result_json, request_hash, result_hash, engine_version, summary_json
             FROM backtest_tasks
             WHERE request_hash IS NULL
                OR request_hash = ''
+               OR engine_version IS NULL
+               OR engine_version = ''
                OR (
                    result_json IS NOT NULL
                    AND result_json != ''
@@ -213,6 +223,8 @@ class BacktestTaskRepository:
             updates = {}
             if _is_blank(item.get("request_hash")):
                 updates["request_hash"] = _hash_json(_decode_json(item.get("params_json"), {}))
+            if _is_blank(item.get("engine_version")):
+                updates["engine_version"] = BACKTEST_ENGINE_VERSION
             result = _decode_json(item.get("result_json"), None)
             if result is not None:
                 if _is_blank(item.get("result_hash")):

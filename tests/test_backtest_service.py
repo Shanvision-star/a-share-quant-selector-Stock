@@ -24,9 +24,9 @@ def test_manual_same_day_signal_backtest_uses_future_bars(monkeypatch):
         "_load_price_frame",
         lambda code: pd.DataFrame(
             [
-                {"date": pd.Timestamp("2026-04-24"), "open": 7.50, "high": 7.70, "low": 7.40, "close": 7.55},
-                {"date": pd.Timestamp("2026-04-27"), "open": 7.60, "high": 7.90, "low": 7.50, "close": 7.80},
-                {"date": pd.Timestamp("2026-04-28"), "open": 7.82, "high": 8.10, "low": 7.70, "close": 8.00},
+                {"date": pd.Timestamp("2026-04-24"), "open": 7.50, "high": 7.70, "low": 7.40, "close": 7.55, "volume": 1000},
+                {"date": pd.Timestamp("2026-04-27"), "open": 7.60, "high": 7.90, "low": 7.50, "close": 7.80, "volume": 1000},
+                {"date": pd.Timestamp("2026-04-28"), "open": 7.82, "high": 8.10, "low": 7.70, "close": 8.00, "volume": 1000},
             ]
         ),
     )
@@ -94,9 +94,9 @@ def test_backtest_service_caches_daily_frame_for_duplicate_code(monkeypatch):
         calls["count"] += 1
         return pd.DataFrame(
             [
-                {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0},
-                {"date": pd.Timestamp("2026-04-27"), "open": 10.1, "high": 10.4, "low": 10.0, "close": 10.3},
-                {"date": pd.Timestamp("2026-04-28"), "open": 10.3, "high": 10.6, "low": 10.2, "close": 10.5},
+                {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+                {"date": pd.Timestamp("2026-04-27"), "open": 10.1, "high": 10.4, "low": 10.0, "close": 10.3, "volume": 1000},
+                {"date": pd.Timestamp("2026-04-28"), "open": 10.3, "high": 10.6, "low": 10.2, "close": 10.5, "volume": 1000},
             ]
         )
 
@@ -162,9 +162,9 @@ def test_backtest_service_reports_progress_per_candidate(monkeypatch):
         "_load_price_frame",
         lambda code: pd.DataFrame(
             [
-                {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0},
-                {"date": pd.Timestamp("2026-04-27"), "open": 10.1, "high": 10.4, "low": 10.0, "close": 10.3},
-                {"date": pd.Timestamp("2026-04-28"), "open": 10.3, "high": 10.6, "low": 10.2, "close": 10.5},
+                {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+                {"date": pd.Timestamp("2026-04-27"), "open": 10.1, "high": 10.4, "low": 10.0, "close": 10.3, "volume": 1000},
+                {"date": pd.Timestamp("2026-04-28"), "open": 10.3, "high": 10.6, "low": 10.2, "close": 10.5, "volume": 1000},
             ]
         ),
     )

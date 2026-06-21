@@ -1,7 +1,8 @@
 # 回测系统说明
 
 > 本文档解释当前 Web 端回测的执行链路与参数语义，让策略开发者和使用者快速理解
-> 回测产出的 `summary / trades / equity_curve / order_intents` 是怎么来的。
+> 回测产出的 `summary / trades / equity_curve / capital_summary / portfolio_events /
+> order_intents` 是怎么来的。
 
 ## 1. 执行链路
 
@@ -14,7 +15,8 @@
               │     ├─ SignalSource.fetch
               │     ├─ cap_positions_per_day / max_signals_per_code
               │     ├─ DailyExecutionSimulator.simulate_trade（按单股独立模拟）
-              │     └─ build_result（summary + trades + equity_curve + order_intents）
+              │     ├─ PortfolioLedger（现金、持仓、权益曲线）
+              │     └─ build_result（summary + trades + equity_curve + capital_summary + portfolio_events + order_intents）
               └─ 返回结构化 dict
 ```
 
@@ -26,7 +28,7 @@
 | `web/backend/backtest_engine/signal_source.py` | 信号源协议、StaticSignalSource、`cap_positions_per_day`、组合策略 resolver |
 | `web/backend/backtest_engine/engine.py` | 编排：信号筛选 → 执行 → 结果聚合 |
 | `web/backend/backtest_engine/execution.py` | 日线 / 分钟线执行模拟，止盈止损、profit runner |
-| `web/backend/backtest_engine/portfolio.py` | 资金曲线、最大回撤计算 |
+| `web/backend/backtest_engine/portfolio.py` | 组合资金账本、逐日权益、最大回撤和组合事件 |
 | `web/backend/backtest_engine/analyzer.py` | 把执行结果包成最终响应结构 |
 
 ## 3. 单股退出规则（已固化）
@@ -62,9 +64,29 @@ Profit Runner，避免用不可成交日的价格生成顺延成交。
 - `signal_merge_mode=multi_strategy` → 启用同股同日多策略合成，按
   `signal_priority_mode` 选最高优先级
 - `position_pct` → 每笔交易在组合中分配的资金比例
-- `max_weight_per_code` → 单只股票累计资金占比上限
+- `max_weight_per_code` → `weight_cap` 候选层负责累计同股过滤；账本层负责单笔目标资金超上限时拒单
 
-## 5. 可复现历史记录（Phase C）
+## 5. 组合资金账本（Phase B）
+
+Phase B 将回测资金曲线从“按卖出日平均收益”升级为最小组合账本。账本从现有
+`trades` 推导买入占用、卖出回款、现金、持仓市值、逐日权益、最大回撤和组合事件。
+当前 MVP 不做持仓期间每日行情估值；`market_value` 以成本或已知退出事件推进，完整
+mark-to-market 估值留给后续 DataPortal 估值层。
+
+结果会继续保留 `summary / trades / equity_curve`，并新增 `capital_summary` 与
+`portfolio_events`。`summary.cumulative_return_pct` 与 `summary.max_drawdown_pct`
+使用组合资金账本结果；胜率、平均收益、持仓天数等交易统计仍按原交易列表计算。
+
+账本会处理 `initial_cash`、`position_pct`、`max_positions`、`max_weight_per_code`
+和 `lot_size` 的最小资金约束。`position_pct=0` 时保留 fixed slots 语义，按
+`initial_cash / max_positions` 分配目标资金，不把旧执行层写入的 `weight=1.0`
+当成全仓买入。`max_weight_per_code` 在账本层表示单笔目标资金超上限时拒绝交易；
+同股累计权重过滤仍属于 `weight_cap` 候选层。
+
+同日存在卖出和买入时，本阶段按计划先处理同日卖出，再处理同日买入，让当天卖出释放
+现金和持仓名额。`OrderIntent` 仍然只是下单意图，不会触发模拟盘或真实券商。
+
+## 6. 可复现历史记录（Phase C）
 
 异步回测任务会写入 SQLite `backtest_tasks` 和 `backtest_task_events`。任务创建时记录
 `engine_version` 与稳定 `request_hash`；任务完成后记录 `result_hash` 和轻量 `summary`，
@@ -74,13 +96,13 @@ Profit Runner，避免用不可成交日的价格生成顺延成交。
 一次性加载大 JSON。`GET /api/backtest/tasks/{task_id}` 返回完整 `result`；需要事件流时追加
 `include_events=true`。同步接口 `POST /api/backtest` 保持兼容，本阶段不写入历史任务。
 
-## 6. OrderIntent 与跟踪联动
+## 7. OrderIntent 与跟踪联动
 
 - 每笔成功模拟的回测都会产出 `OrderIntent`
 - 跟踪运营页（Tracking）从 `order_intents` 中挑选条目转为人工跟踪
 - **OrderIntent 不会自动下单**，必须经人工“确认 / 否决”流程
 
-## 7. 相关文档
+## 8. 相关文档
 
 - [B1 案例战法](b1-case)
 - [B2 战法说明](b2-strategy)

@@ -449,7 +449,7 @@ git commit -m "fix: keep portfolio ledger compatible with service defaults"
 **Files:**
 - Modify: `docs/BACKTEST_OVERVIEW.md`
 
-- [ ] **Step 1: Update backtest overview**
+- [x] **Step 1: Update backtest overview**
 
 Add this section after “组合策略模式” and before “可复现历史记录”:
 
@@ -471,7 +471,7 @@ Renumber following sections:
 - `OrderIntent 与跟踪联动` becomes section 7.
 - `相关文档` becomes section 8.
 
-- [ ] **Step 2: Run focused regression**
+- [x] **Step 2: Run focused regression**
 
 Run:
 
@@ -484,7 +484,7 @@ git status --short --branch
 
 Expected: all tests pass, import prints `import-ok`, diff check has no output.
 
-- [ ] **Step 3: Commit docs**
+- [x] **Step 3: Commit docs**
 
 ```powershell
 git add docs/BACKTEST_OVERVIEW.md

@@ -13,6 +13,71 @@ def _memory_connection():
     return conn
 
 
+def test_backtest_repository_records_reproducible_manifest_hashes():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+    task = {
+        "task_id": "bt_manifest",
+        "status": "queued",
+        "created_at": "2026-05-08 09:30:00",
+        "params": {"end_date": "2026-04-24", "start_date": "2026-04-24"},
+        "message": "排队中",
+    }
+
+    repository.create(task)
+    created = repository.get("bt_manifest")
+    repository.update("bt_manifest", status="done", result={"summary": {"trade_count": 1, "return_pct": 2.5}})
+    finished = repository.get("bt_manifest")
+
+    assert created["engine_version"] == "backtest-engine-v1-phase-c"
+    assert len(created["request_hash"]) == 16
+    assert finished["request_hash"] == created["request_hash"]
+    assert len(finished["result_hash"]) == 16
+    assert finished["summary"]["trade_count"] == 1
+
+
+def test_backtest_repository_list_recent_omits_heavy_result_by_default():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+    repository.create(
+        {
+            "task_id": "bt_history",
+            "status": "queued",
+            "created_at": "2026-05-08 09:30:00",
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "message": "排队中",
+        }
+    )
+    repository.update("bt_history", status="done", result={"summary": {"trade_count": 1}, "trades": [{"code": "000001"}]})
+
+    history_item = repository.list_recent(limit=1)[0]
+    detail_item = repository.get("bt_history")
+
+    assert history_item["result"] is None
+    assert history_item["summary"]["trade_count"] == 1
+    assert detail_item["result"]["trades"][0]["code"] == "000001"
+
+
+def test_backtest_repository_detail_can_include_events():
+    conn = _memory_connection()
+    repository = BacktestTaskRepository(lambda: conn)
+    repository.create(
+        {
+            "task_id": "bt_events",
+            "status": "queued",
+            "created_at": "2026-05-08 09:30:00",
+            "params": {"start_date": "2026-04-24", "end_date": "2026-04-24"},
+            "message": "排队中",
+        }
+    )
+    repository.add_event("bt_events", "progress", {"current_code": "000001"})
+
+    detail = repository.get("bt_events", include_events=True)
+
+    assert detail["events"][-1]["event_type"] == "progress"
+    assert detail["events"][-1]["payload"]["current_code"] == "000001"
+
+
 def test_backtest_job_manager_returns_task_status_and_result():
     """任务提交后应立即返回 task_id，后台完成后可查询结果。"""
     def slow_runner(params):

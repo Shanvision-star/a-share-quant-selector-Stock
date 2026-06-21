@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from datetime import datetime
+import hashlib
 import inspect
 import json
 from threading import Lock
@@ -20,6 +21,7 @@ from web.backend.services.backtest_service import run_backtest
 
 BacktestRunner = Callable[[dict], dict]
 
+BACKTEST_ENGINE_VERSION = "backtest-engine-v1-phase-c"
 TERMINAL_STATUSES = {"done", "failed", "canceled"}
 CANCEL_STATUSES = {"cancel_requested", "canceled"}
 
@@ -43,6 +45,21 @@ def _decode_json(value, default):
 
 def _encode_json(value) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _stable_json(value) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _hash_json(value) -> str:
+    return hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()[:16]
+
+
+def _summary_from_result(result) -> dict:
+    if not isinstance(result, dict):
+        return {}
+    summary = result.get("summary")
+    return summary if isinstance(summary, dict) else {}
 
 
 def _progress_pct(processed_count: int, total_count: int) -> int:
@@ -79,10 +96,15 @@ class BacktestTaskRepository:
                 processed_count INTEGER DEFAULT 0,
                 current_code TEXT,
                 progress_pct INTEGER DEFAULT 0,
-                message TEXT
+                message TEXT,
+                request_hash TEXT,
+                result_hash TEXT,
+                engine_version TEXT,
+                summary_json TEXT
             )
             """
         )
+        self._ensure_columns(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS backtest_task_events (
@@ -101,14 +123,33 @@ class BacktestTaskRepository:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_backtest_events_task_id ON backtest_task_events(task_id)")
         conn.commit()
 
+    def _ensure_columns(self, conn):
+        def column_name(row):
+            return row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+
+        existing_columns = {column_name(row) for row in conn.execute("PRAGMA table_info(backtest_tasks)").fetchall()}
+        required_columns = {
+            "request_hash": "TEXT",
+            "result_hash": "TEXT",
+            "engine_version": "TEXT",
+            "summary_json": "TEXT",
+        }
+        # 旧 SQLite 文件可能已存在，仓储初始化时幂等补齐 Phase C manifest 列。
+        for column_name, column_type in required_columns.items():
+            if column_name not in existing_columns:
+                conn.execute(f"ALTER TABLE backtest_tasks ADD COLUMN {column_name} {column_type}")
+
     def create(self, task: dict):
         conn = self._conn()
+        params = task.get("params") or {}
+        result = task.get("result")
         conn.execute(
             """
             INSERT OR REPLACE INTO backtest_tasks
             (task_id, status, created_at, started_at, finished_at, updated_at, error,
-             params_json, result_json, total_count, processed_count, current_code, progress_pct, message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             params_json, result_json, total_count, processed_count, current_code, progress_pct, message,
+             request_hash, result_hash, engine_version, summary_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task["task_id"],
@@ -118,13 +159,17 @@ class BacktestTaskRepository:
                 task.get("finished_at"),
                 _now_text(),
                 task.get("error", ""),
-                _encode_json(task.get("params") or {}),
-                _encode_json(task.get("result")) if task.get("result") is not None else None,
+                _encode_json(params),
+                _encode_json(result) if result is not None else None,
                 int(task.get("total_count") or 0),
                 int(task.get("processed_count") or 0),
                 task.get("current_code") or "",
                 int(task.get("progress_pct") or 0),
                 task.get("message") or "",
+                _hash_json(params),
+                _hash_json(result) if result is not None else None,
+                BACKTEST_ENGINE_VERSION,
+                _stable_json(_summary_from_result(result)),
             ),
         )
         conn.commit()
@@ -133,6 +178,11 @@ class BacktestTaskRepository:
     def update(self, task_id: str, **changes):
         if not changes:
             return
+        changes = dict(changes)
+        if "result" in changes:
+            result = changes["result"]
+            changes["result_hash"] = _hash_json(result) if result is not None else None
+            changes["summary_json"] = _stable_json(_summary_from_result(result))
         columns = []
         values = []
         mapping = {
@@ -152,16 +202,16 @@ class BacktestTaskRepository:
         conn.execute(f"UPDATE backtest_tasks SET {', '.join(columns)} WHERE task_id = ?", values)
         conn.commit()
 
-    def get(self, task_id: str) -> dict | None:
+    def get(self, task_id: str, include_events: bool = False) -> dict | None:
         row = self._conn().execute("SELECT * FROM backtest_tasks WHERE task_id = ?", (task_id,)).fetchone()
-        return self._row_to_task(row) if row else None
+        return self._row_to_task(row, include_events=include_events) if row else None
 
-    def list_recent(self, limit: int = 20) -> list[dict]:
+    def list_recent(self, limit: int = 20, include_result: bool = False) -> list[dict]:
         rows = self._conn().execute(
             "SELECT * FROM backtest_tasks ORDER BY created_at DESC LIMIT ?",
             (max(1, int(limit)),),
         ).fetchall()
-        return [self._row_to_task(row) for row in rows]
+        return [self._row_to_task(row, include_result=include_result) for row in rows]
 
     def add_event(self, task_id: str, event_type: str, payload: dict | None = None, message: str = ""):
         payload = payload or {}
@@ -194,16 +244,21 @@ class BacktestTaskRepository:
             events.append(item)
         return events
 
-    def _row_to_task(self, row) -> dict:
+    def _row_to_task(self, row, include_result: bool = True, include_events: bool = False) -> dict:
         item = dict(row)
         item["params"] = _decode_json(item.pop("params_json", None), {})
-        item["result"] = _decode_json(item.pop("result_json", None), None)
+        result_json = item.pop("result_json", None)
+        item["result"] = _decode_json(result_json, None) if include_result else None
+        summary = _decode_json(item.pop("summary_json", None), {})
+        item["summary"] = summary if isinstance(summary, dict) else {}
         item["error"] = item.get("error") or ""
         item["current_code"] = item.get("current_code") or ""
         item["message"] = item.get("message") or ""
         item["total_count"] = int(item.get("total_count") or 0)
         item["processed_count"] = int(item.get("processed_count") or 0)
         item["progress_pct"] = int(item.get("progress_pct") or 0)
+        if include_events:
+            item["events"] = self.list_events(item["task_id"])
         return item
 
 
@@ -248,15 +303,18 @@ class BacktestJobManager:
             self._futures[task_id] = future
         return self.get(task_id)
 
-    def get(self, task_id: str) -> dict | None:
+    def get(self, task_id: str, include_events: bool = False) -> dict | None:
         with self._lock:
             task = self._tasks.get(task_id)
             if task:
-                return dict(task)
-        return self.repository.get(task_id)
+                item = dict(task)
+                if include_events:
+                    item["events"] = self.repository.list_events(task_id)
+                return item
+        return self.repository.get(task_id, include_events=include_events)
 
-    def list_recent(self, limit: int = 20) -> list[dict]:
-        return self.repository.list_recent(limit)
+    def list_recent(self, limit: int = 20, include_result: bool = False) -> list[dict]:
+        return self.repository.list_recent(limit, include_result=include_result)
 
     def list_events(self, task_id: str, limit: int = 500) -> list[dict]:
         return self.repository.list_events(task_id, limit)

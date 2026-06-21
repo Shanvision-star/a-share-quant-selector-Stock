@@ -25,6 +25,28 @@ def previous_a_share_trading_day(day: date_cls) -> date_cls:
     return cursor
 
 
+def next_a_share_trading_day(day: date_cls) -> date_cls:
+    """Return the first A-share trading day after day."""
+    cursor = day + timedelta(days=1)
+    while not is_a_share_trading_day(cursor):
+        cursor += timedelta(days=1)
+    return cursor
+
+
+def advance_a_share_trading_days(day: date_cls, days: int) -> date_cls:
+    """Advance by real A-share trading days.
+
+    days=0 keeps a valid trading day unchanged. If the input day is closed,
+    it is normalized to the previous trading day before advancing.
+    """
+    cursor = day if is_a_share_trading_day(day) else previous_a_share_trading_day(day)
+    if days <= 0:
+        return cursor
+    for _ in range(days):
+        cursor = next_a_share_trading_day(cursor)
+    return cursor
+
+
 def count_a_share_trading_days(start_day: date_cls, end_day: date_cls) -> int:
     """Count trading days inclusively from start_day to end_day."""
     if start_day > end_day:

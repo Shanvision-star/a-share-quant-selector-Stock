@@ -46,8 +46,8 @@ def test_daily_engine_uses_future_price_window_after_same_day_signal():
             "002100": pd.DataFrame(
                 [
                     {"date": pd.Timestamp("2026-04-24"), "open": 7.50, "high": 7.70, "low": 7.40, "close": 7.55},
-                    {"date": pd.Timestamp("2026-04-27"), "open": 7.60, "high": 7.90, "low": 7.50, "close": 7.80},
-                    {"date": pd.Timestamp("2026-04-28"), "open": 7.82, "high": 8.10, "low": 7.70, "close": 8.00},
+                    {"date": pd.Timestamp("2026-04-27"), "open": 7.60, "high": 7.90, "low": 7.50, "close": 7.80, "volume": 1000},
+                    {"date": pd.Timestamp("2026-04-28"), "open": 7.82, "high": 8.10, "low": 7.70, "close": 8.00, "volume": 1000},
                 ]
             )
         }
@@ -291,6 +291,54 @@ def test_daily_engine_blocks_st_and_limit_up_buy_and_rounds_lot_quantity():
     assert result["summary"]["skipped_count"] == 2
     assert result["trades"][0]["code"] == "000001"
     assert result["order_intents"][0]["quantity"] == 100
+
+
+def test_daily_engine_requires_positive_volume_on_buy_day():
+    """买入日没有明确正成交量时视为不可交易，避免停牌或坏数据被成交。"""
+    candidates = [
+        SignalCandidate(
+            code="000001",
+            name="平安银行",
+            strategy_name="manual",
+            trade_date="2026-04-24",
+            signal_date="2026-04-24",
+            source="manual",
+        ),
+        SignalCandidate(
+            code="000002",
+            name="无成交量示例",
+            strategy_name="manual",
+            trade_date="2026-04-24",
+            signal_date="2026-04-24",
+            source="manual",
+        ),
+    ]
+    frames = {
+        "000001": pd.DataFrame(
+            [
+                {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+                {"date": pd.Timestamp("2026-04-27"), "open": 10.1, "high": 10.3, "low": 10.0, "close": 10.2, "volume": 1000},
+                {"date": pd.Timestamp("2026-04-28"), "open": 10.2, "high": 10.5, "low": 10.1, "close": 10.4, "volume": 1000},
+            ]
+        ),
+        "000002": pd.DataFrame(
+            [
+                {"date": pd.Timestamp("2026-04-24"), "open": 8.0, "high": 8.2, "low": 7.9, "close": 8.0, "volume": 1000},
+                {"date": pd.Timestamp("2026-04-27"), "open": 8.1, "high": 8.3, "low": 8.0, "close": 8.2},
+                {"date": pd.Timestamp("2026-04-28"), "open": 8.2, "high": 8.5, "low": 8.1, "close": 8.4, "volume": 1000},
+            ]
+        ),
+    }
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource(candidates),
+        daily_portal=InMemoryDailyDataPortal(frames),
+    )
+
+    result = engine.run_daily(_default_params())
+
+    assert result["summary"]["trade_count"] == 1
+    assert result["summary"]["skipped_count"] == 1
+    assert result["trades"][0]["code"] == "000001"
 
 
 def test_daily_engine_skips_when_no_t_plus_one_sell_day():

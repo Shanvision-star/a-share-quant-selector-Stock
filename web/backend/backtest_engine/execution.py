@@ -92,7 +92,8 @@ def _is_st_stock(candidate: SignalCandidate) -> bool:
 
 
 def _is_tradeable_row(row) -> bool:
-    volume = _safe_float(row.get("volume"), 1.0)
+    # A 股停牌或坏数据常表现为成交量缺失/为 0；没有明确正成交量时不能模拟成交。
+    volume = _safe_float(row.get("volume"), 0.0)
     prices = [_safe_float(row.get(field), 0.0) for field in ("open", "high", "low", "close")]
     return volume > 0 and all(price > 0 for price in prices)
 

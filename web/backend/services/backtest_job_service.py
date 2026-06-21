@@ -11,6 +11,7 @@ from datetime import datetime
 import hashlib
 import inspect
 import json
+import sqlite3
 from threading import Lock
 from typing import Callable
 from uuid import uuid4
@@ -24,6 +25,45 @@ BacktestRunner = Callable[[dict], dict]
 BACKTEST_ENGINE_VERSION = "backtest-engine-v1-phase-c"
 TERMINAL_STATUSES = {"done", "failed", "canceled"}
 CANCEL_STATUSES = {"cancel_requested", "canceled"}
+BACKTEST_TASK_LIGHTWEIGHT_COLUMNS = (
+    "task_id",
+    "status",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "updated_at",
+    "error",
+    "params_json",
+    "total_count",
+    "processed_count",
+    "current_code",
+    "progress_pct",
+    "message",
+    "request_hash",
+    "result_hash",
+    "engine_version",
+    "summary_json",
+)
+BACKTEST_TASK_DETAIL_COLUMNS = (
+    "task_id",
+    "status",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "updated_at",
+    "error",
+    "params_json",
+    "result_json",
+    "total_count",
+    "processed_count",
+    "current_code",
+    "progress_pct",
+    "message",
+    "request_hash",
+    "result_hash",
+    "engine_version",
+    "summary_json",
+)
 
 
 class BacktestJobCancelled(Exception):
@@ -60,6 +100,10 @@ def _summary_from_result(result) -> dict:
         return {}
     summary = result.get("summary")
     return summary if isinstance(summary, dict) else {}
+
+
+def _is_blank(value) -> bool:
+    return value is None or value == ""
 
 
 def _progress_pct(processed_count: int, total_count: int) -> int:
@@ -137,7 +181,51 @@ class BacktestTaskRepository:
         # 旧 SQLite 文件可能已存在，仓储初始化时幂等补齐 Phase C manifest 列。
         for column_name, column_type in required_columns.items():
             if column_name not in existing_columns:
-                conn.execute(f"ALTER TABLE backtest_tasks ADD COLUMN {column_name} {column_type}")
+                try:
+                    conn.execute(f"ALTER TABLE backtest_tasks ADD COLUMN {column_name} {column_type}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+        self._backfill_manifest_columns(conn)
+
+    def _backfill_manifest_columns(self, conn):
+        columns = ("task_id", "params_json", "result_json", "request_hash", "result_hash", "summary_json")
+        rows = conn.execute(
+            """
+            SELECT task_id, params_json, result_json, request_hash, result_hash, summary_json
+            FROM backtest_tasks
+            WHERE request_hash IS NULL
+               OR request_hash = ''
+               OR (
+                   result_json IS NOT NULL
+                   AND result_json != ''
+                   AND (
+                       result_hash IS NULL
+                       OR result_hash = ''
+                       OR summary_json IS NULL
+                       OR summary_json = ''
+                   )
+               )
+            """
+        ).fetchall()
+        for row in rows:
+            item = dict(row) if hasattr(row, "keys") else dict(zip(columns, row))
+            updates = {}
+            if _is_blank(item.get("request_hash")):
+                updates["request_hash"] = _hash_json(_decode_json(item.get("params_json"), {}))
+            result = _decode_json(item.get("result_json"), None)
+            if result is not None:
+                if _is_blank(item.get("result_hash")):
+                    updates["result_hash"] = _hash_json(result)
+                if _is_blank(item.get("summary_json")):
+                    updates["summary_json"] = _stable_json(_summary_from_result(result))
+            if updates:
+                # 轻量历史依赖 summary_json，旧库只在初始化时从完整 result 回填一次。
+                assignments = ", ".join(f"{column} = ?" for column in updates)
+                conn.execute(
+                    f"UPDATE backtest_tasks SET {assignments} WHERE task_id = ?",
+                    (*updates.values(), item["task_id"]),
+                )
 
     def create(self, task: dict):
         conn = self._conn()
@@ -203,12 +291,14 @@ class BacktestTaskRepository:
         conn.commit()
 
     def get(self, task_id: str, include_events: bool = False) -> dict | None:
-        row = self._conn().execute("SELECT * FROM backtest_tasks WHERE task_id = ?", (task_id,)).fetchone()
+        columns = ", ".join(BACKTEST_TASK_DETAIL_COLUMNS)
+        row = self._conn().execute(f"SELECT {columns} FROM backtest_tasks WHERE task_id = ?", (task_id,)).fetchone()
         return self._row_to_task(row, include_events=include_events) if row else None
 
     def list_recent(self, limit: int = 20, include_result: bool = False) -> list[dict]:
+        columns = BACKTEST_TASK_DETAIL_COLUMNS if include_result else BACKTEST_TASK_LIGHTWEIGHT_COLUMNS
         rows = self._conn().execute(
-            "SELECT * FROM backtest_tasks ORDER BY created_at DESC LIMIT ?",
+            f"SELECT {', '.join(columns)} FROM backtest_tasks ORDER BY created_at DESC LIMIT ?",
             (max(1, int(limit)),),
         ).fetchall()
         return [self._row_to_task(row, include_result=include_result) for row in rows]
@@ -248,8 +338,11 @@ class BacktestTaskRepository:
         item = dict(row)
         item["params"] = _decode_json(item.pop("params_json", None), {})
         result_json = item.pop("result_json", None)
-        item["result"] = _decode_json(result_json, None) if include_result else None
+        result = _decode_json(result_json, None) if include_result else None
+        item["result"] = result
         summary = _decode_json(item.pop("summary_json", None), {})
+        if not summary and isinstance(result, dict):
+            summary = _summary_from_result(result)
         item["summary"] = summary if isinstance(summary, dict) else {}
         item["error"] = item.get("error") or ""
         item["current_code"] = item.get("current_code") or ""
@@ -304,14 +397,18 @@ class BacktestJobManager:
         return self.get(task_id)
 
     def get(self, task_id: str, include_events: bool = False) -> dict | None:
+        stored = self.repository.get(task_id, include_events=include_events)
+        if stored is not None:
+            return stored
         with self._lock:
             task = self._tasks.get(task_id)
             if task:
+                # SQLite 是可复现历史的权威读模型；内存只作为极端未落库场景的兜底。
                 item = dict(task)
                 if include_events:
                     item["events"] = self.repository.list_events(task_id)
                 return item
-        return self.repository.get(task_id, include_events=include_events)
+        return None
 
     def list_recent(self, limit: int = 20, include_result: bool = False) -> list[dict]:
         return self.repository.list_recent(limit, include_result=include_result)

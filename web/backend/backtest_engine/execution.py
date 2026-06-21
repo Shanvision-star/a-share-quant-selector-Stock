@@ -106,9 +106,11 @@ def _previous_close(frame: pd.DataFrame, index: int) -> float:
     prev_close = _safe_float(row.get("prev_close"), 0.0)
     if prev_close > 0:
         return prev_close
-    if index <= 0:
-        return 0.0
-    return _safe_float(frame.iloc[index - 1].get("close"), 0.0)
+    for previous_index in range(index - 1, -1, -1):
+        previous_row = frame.iloc[previous_index]
+        if _is_tradeable_row(previous_row):
+            return _safe_float(previous_row.get("close"), 0.0)
+    return 0.0
 
 
 def _limit_pct(candidate: SignalCandidate) -> float:

@@ -458,6 +458,66 @@ def test_daily_engine_delays_stop_loss_exit_when_limit_down_locked():
     assert trade["exits"][0]["portion_pct"] == 100.0
 
 
+def test_daily_engine_uses_prior_tradeable_close_for_limit_down_delay():
+    """前一行坏数据不能污染跌停价计算，导致锁死跌停日被误判可卖。"""
+    candidate = SignalCandidate(
+        code="000001",
+        name="平安银行",
+        strategy_name="manual",
+        trade_date="2026-04-24",
+        signal_date="2026-04-24",
+        source="manual",
+    )
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-27"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-28"), "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0},
+            {"date": pd.Timestamp("2026-04-29"), "open": 9.0, "high": 9.0, "low": 9.0, "close": 9.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-30"), "open": 9.1, "high": 9.4, "low": 9.0, "close": 9.2, "volume": 1000},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource([candidate]),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(_default_params(holding_days=3, stop_loss_pct=5))
+
+    assert result["summary"]["trade_count"] == 1
+    assert result["trades"][0]["sell_date"] == "2026-04-30"
+    assert result["trades"][0]["sell_price"] == 9.2
+
+
+def test_daily_engine_uses_prior_tradeable_close_for_limit_up_buy_block():
+    """买入日涨停判断不能被前一行无量坏收盘价绕过。"""
+    candidate = SignalCandidate(
+        code="000001",
+        name="平安银行",
+        strategy_name="manual",
+        trade_date="2026-04-24",
+        signal_date="2026-04-24",
+        source="manual",
+    )
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-04-24"), "open": 10.0, "high": 10.2, "low": 9.9, "close": 10.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-25"), "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
+            {"date": pd.Timestamp("2026-04-27"), "open": 11.0, "high": 11.0, "low": 11.0, "close": 11.0, "volume": 1000},
+            {"date": pd.Timestamp("2026-04-28"), "open": 11.1, "high": 11.2, "low": 10.9, "close": 11.0, "volume": 1000},
+        ]
+    )
+    engine = BacktestEngine(
+        signal_source=StaticSignalSource([candidate]),
+        daily_portal=InMemoryDailyDataPortal({"000001": frame}),
+    )
+
+    result = engine.run_daily(_default_params())
+
+    assert result["summary"]["trade_count"] == 0
+    assert result["summary"]["skipped_count"] == 1
+
+
 def test_daily_engine_ignores_untradeable_exit_trigger_day():
     """无量或停牌日的价格不能触发止损，再顺延成虚假成交。"""
     candidate = SignalCandidate(

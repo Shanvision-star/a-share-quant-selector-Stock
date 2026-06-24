@@ -306,6 +306,22 @@ CREATE INDEX IF NOT EXISTS idx_alert_ui_status ON tracking_alert_events(ui_statu
 
 ---
 
+## MVP Loop Execution Contract
+
+Tracking Agent Loop MVP 以规则引擎为权威，Zettaranc 只作为建议 profile 与技术上下文来源。
+闭环顺序固定为：人工选股池或策略结果 → tracking_items → evaluate-rules →
+tracking_alert_events → LLM/mock advice → OrderIntent → 人工确认或否决 →
+tracking_events。
+
+约束：
+
+- `zettaranc_style` 不能覆盖规则引擎的 `action_label`。
+- `suggested_intent` 必须进入人工确认，不能触发自动下单。
+- 告警处理状态只允许 pending / dispatched / aggregated / acknowledged / ignored。
+- 默认测试使用 mock provider；真实 provider smoke 必须单独执行和记录。
+
+---
+
 ## 11. 风险登记
 
 | 风险 | 等级 | 缓解 |

@@ -380,3 +380,4 @@ spec before implementation.
   integration in three phases.
 - Ambiguity check: automatic trading, QMT, imported frameworks, Zettaranc authority override,
   and real provider smoke are explicitly out of scope.
+- Execution plan sync: `docs/superpowers/plans/2026-06-24-tracking-agent-loop-mvp.md` implements this spec through four task slices.

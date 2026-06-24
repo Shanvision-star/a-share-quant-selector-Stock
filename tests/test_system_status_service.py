@@ -91,6 +91,26 @@ def test_system_status_ready_when_data_and_strategy_cache_ready():
     assert "access_token" not in serialized
 
 
+def test_system_status_tracking_reports_alert_status_breakdown():
+    service = build_service(
+        tracking_items={
+            "watch_buy": [{"tracking_id": "trk_1"}],
+            "holding": [],
+            "partial_sold": [],
+        },
+        alerts=[
+            {"alert_id": 1, "ui_status": "pending", "priority": 10},
+            {"alert_id": 2, "ui_status": "pending", "priority": 20},
+        ],
+    )
+
+    payload = service.build_status()
+
+    details = payload["tracking"]["details"]
+    assert details["pending_alert_count"] == 2
+    assert details["alert_status_counts"]["pending"] == 2
+
+
 def test_system_status_reports_missing_when_data_ready_but_strategy_cache_missing():
     service = build_service(
         strategy_status={

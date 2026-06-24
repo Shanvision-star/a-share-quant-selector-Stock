@@ -590,6 +590,7 @@ class SystemStatusService:
             counts[status] = count
             total_active += count
         pending_alerts = self.alerts_loader("pending", 1000)
+        alert_status_counts = {"pending": len(pending_alerts)}
         return StatusBlock(
             status="ready",
             message=f"Tracking 活跃记录 {total_active} 条，待处理告警 {len(pending_alerts)} 条。",
@@ -599,6 +600,7 @@ class SystemStatusService:
                 "active_count": total_active,
                 "status_counts": counts,
                 "pending_alert_count": len(pending_alerts),
+                "alert_status_counts": alert_status_counts,
             },
         )
 

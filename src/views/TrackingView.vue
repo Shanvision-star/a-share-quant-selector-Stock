@@ -793,6 +793,13 @@ onMounted(refreshItems)
                   >
                     Zettaranc: {{ rowStateMap[row.tracking_id]!.advice?.zettaranc_data_source }}
                   </el-tag>
+                  <el-tag
+                    v-if="rowStateMap[row.tracking_id]!.advice?.llm_mismatch"
+                    type="warning"
+                    size="small"
+                  >
+                    规则覆盖: {{ rowStateMap[row.tracking_id]!.advice?.rule_action_label || 'priority' }}
+                  </el-tag>
                 </div>
                 <pre>{{ JSON.stringify(rowStateMap[row.tracking_id]!.advice, null, 2) }}</pre>
               </div>

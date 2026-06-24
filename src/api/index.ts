@@ -738,6 +738,9 @@ export interface TrackingAdvice {
   provider_error?: string
   profile?: LlmProfile | string
   zettaranc_data_source?: string
+  authority?: string
+  rule_action_label?: string
+  llm_mismatch?: Record<string, any>
   alerts_summary?: Record<string, any>
   analysis?: Record<string, string[]>
 }

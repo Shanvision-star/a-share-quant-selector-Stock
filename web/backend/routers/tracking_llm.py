@@ -41,5 +41,8 @@ async def get_llm_advice(
         profile = payload.get("profile")
 
     advice = tracking_llm_service.propose_action(item, alerts, frame=None, profile=profile)
+    advice.setdefault("provider", "mock")
+    advice.setdefault("provider_fallback", False)
+    advice.setdefault("profile", profile or "default")
     advice["tracking_id"] = tracking_id
     return {"success": True, "data": advice}

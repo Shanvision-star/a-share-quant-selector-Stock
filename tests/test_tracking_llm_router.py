@@ -29,14 +29,26 @@ def client(monkeypatch):
 
     class _StubLLM:
         def propose_action(self, item, alerts, frame=None, profile=None):
+            if profile == "minimal_contract":
+                return {
+                    "decision": "cut",
+                    "confidence": 0.85,
+                    "rationale": "mock",
+                    "suggested_action": "SELL",
+                    "suggested_intent": {"side": "SELL"},
+                    "alerts_summary": {"count": len(alerts)},
+                }
             return {
                 "decision": "cut",
                 "confidence": 0.85,
                 "rationale": "mock",
                 "suggested_action": "SELL",
-                "suggested_intent": {"side": "SELL"},
+                "suggested_intent": {"code": item["code"], "side": "SELL", "qty_hint": 100, "reason": "test"},
                 "alerts_summary": {"count": len(alerts)},
+                "provider": "mock",
+                "provider_fallback": False,
                 "profile": profile or "default",
+                "zettaranc_data_source": "local_csv" if profile == "zettaranc_style" else None,
             }
 
     monkeypatch.setattr(router_module, "tracking_service", _StubTrackingService())
@@ -57,6 +69,42 @@ def test_llm_advice_endpoint_returns_payload(client) -> None:
     assert data["decision"] == "cut"
     assert data["suggested_action"] == "SELL"
     assert "tracking_id" in data and data["tracking_id"] == "T-known"
+
+
+def test_llm_advice_endpoint_preserves_zettaranc_profile_and_data_source(client) -> None:
+    resp = client.post(
+        "/api/tracking/T-known/llm-advice",
+        json={"profile": "zettaranc_style"},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["profile"] == "zettaranc_style"
+    assert data["provider"] == "mock"
+    assert data["provider_fallback"] is False
+    assert data["zettaranc_data_source"] == "local_csv"
+    assert data["suggested_intent"] == {
+        "code": "000001",
+        "side": "SELL",
+        "qty_hint": 100,
+        "reason": "test",
+    }
+
+
+def test_llm_advice_endpoint_fills_schema_defaults_when_provider_omitted(client) -> None:
+    resp = client.post(
+        "/api/tracking/T-known/llm-advice",
+        json={"profile": "minimal_contract"},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["provider"] == "mock"
+    assert data["provider_fallback"] is False
+    assert data["profile"] == "minimal_contract"
+    assert data["tracking_id"] == "T-known"
+    assert "suggested_intent" in data
+    assert "intent" not in data
 
 
 def test_llm_advice_endpoint_404_unknown(client) -> None:

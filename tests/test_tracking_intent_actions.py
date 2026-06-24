@@ -59,6 +59,29 @@ def test_confirm_intent_writes_event_and_keeps_intent():
     assert confirmed["latest_intent"]["side"] == "SELL"
 
 
+def test_confirm_intent_accepts_suggested_intent_shape() -> None:
+    conn = _memory_connection()
+    service = TrackingService(connection_factory=lambda: conn, daily_loader=_loader)
+    item = service.create_item(
+        {
+            "code": "000559",
+            "name": "万向钱潮",
+            "strategy_name": "manual",
+            "source": "manual",
+            "source_date": "2026-05-01",
+            "signal_date": "2026-04-30",
+        }
+    )
+    suggested = {"code": "000559", "side": "SELL", "qty_hint": 100, "reason": "rule_break"}
+
+    updated = service.confirm_intent(item["tracking_id"], suggested)
+    events = service.list_events(item["tracking_id"])
+
+    assert updated["latest_intent"] == suggested
+    assert events[-1]["event_type"] == "intent_confirmed"
+    assert events[-1]["payload"]["intent"] == suggested
+
+
 def test_confirm_intent_unknown_raises():
     """未知 tracking_id 应抛 KeyError，避免静默成功。"""
     conn = _memory_connection()

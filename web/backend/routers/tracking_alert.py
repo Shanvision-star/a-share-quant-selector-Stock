@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from web.backend.services.tracking_alert_service import tracking_alert_service
 
@@ -42,3 +42,23 @@ async def dispatch_alerts(
         slot=slot, per_slot_limit=per_slot_limit
     )
     return {"success": True, "data": summary}
+
+
+@router.post("/{alert_id}/ack")
+async def acknowledge_alert(alert_id: int):
+    """标记告警已确认；只改变 UI 处理状态，不触发交易动作。"""
+    try:
+        item = tracking_alert_service.update_alert_status(alert_id, "acknowledged")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"alert_id 不存在: {alert_id}") from exc
+    return {"success": True, "data": item}
+
+
+@router.post("/{alert_id}/ignore")
+async def ignore_alert(alert_id: int):
+    """标记告警已忽略；保留事件证据，避免用户操作抹掉历史。"""
+    try:
+        item = tracking_alert_service.update_alert_status(alert_id, "ignored")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"alert_id 不存在: {alert_id}") from exc
+    return {"success": True, "data": item}

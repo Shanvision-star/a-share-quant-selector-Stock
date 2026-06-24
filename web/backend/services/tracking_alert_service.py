@@ -27,6 +27,13 @@ from web.backend.services.sqlite_service import get_connection
 PRIORITY_MUST_SEND_BELOW = 30
 PRIORITY_AGGREGATE_AT_OR_ABOVE = 60
 DEFAULT_PER_SLOT_LIMIT = 8  # 钉钉单次推送规模上限，避免刷屏
+ALERT_UI_STATUSES = {
+    "pending",
+    "dispatched",
+    "aggregated",
+    "acknowledged",
+    "ignored",
+}
 
 
 class AlertNotifier(Protocol):
@@ -164,6 +171,34 @@ class TrackingAlertService:
         args.append(int(limit))
         rows = conn.execute(" ".join(sql), args).fetchall()
         return [self._row_to_dict(r) for r in rows]
+
+    def update_alert_status(self, alert_id: int, ui_status: str) -> dict:
+        """更新前端处理状态；只允许显式枚举，避免把发送状态和用户处理状态混写。"""
+        normalized = str(ui_status or "").strip().lower()
+        if normalized not in ALERT_UI_STATUSES:
+            raise ValueError(f"unsupported alert status: {ui_status}")
+        conn = self._conn_factory()
+        with self._lock:
+            row = conn.execute(
+                "SELECT * FROM tracking_alert_events WHERE alert_id = ?",
+                (int(alert_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(alert_id)
+            conn.execute(
+                """
+                UPDATE tracking_alert_events
+                   SET ui_status = ?
+                 WHERE alert_id = ?
+                """,
+                (normalized, int(alert_id)),
+            )
+            conn.commit()
+            updated = conn.execute(
+                "SELECT * FROM tracking_alert_events WHERE alert_id = ?",
+                (int(alert_id),),
+            ).fetchone()
+        return self._row_to_dict(updated)
 
     # ------------------------------------------------------------------
     # 分发：按优先级分层处理 pending 事件

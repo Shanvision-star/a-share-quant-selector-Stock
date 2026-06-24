@@ -183,3 +183,26 @@ def test_dispatch_pending_alerts_priority_tier_scale_limited(service: TrackingAl
     # 剩余 1 条仍 pending，下个 slot 可以继续发
     pending = service.list_alerts(ui_status="pending")
     assert len(pending) == 1
+
+
+def test_update_alert_status_acknowledges_existing_alert(service: TrackingAlertService) -> None:
+    service.persist_alerts([
+        _make_alert("t1", "rule_break_short_trend", "2026-05-01", 10),
+    ])
+    alert = service.list_alerts()[0]
+
+    updated = service.update_alert_status(alert["alert_id"], "acknowledged")
+
+    assert updated["alert_id"] == alert["alert_id"]
+    assert updated["ui_status"] == "acknowledged"
+    assert service.list_alerts(ui_status="pending") == []
+
+
+def test_update_alert_status_rejects_invalid_status(service: TrackingAlertService) -> None:
+    service.persist_alerts([
+        _make_alert("t1", "rule_break_short_trend", "2026-05-01", 10),
+    ])
+    alert = service.list_alerts()[0]
+
+    with pytest.raises(ValueError, match="unsupported alert status"):
+        service.update_alert_status(alert["alert_id"], "sent")

@@ -104,3 +104,37 @@ def test_dispatch_endpoint_requires_slot(env) -> None:
     resp = client.post("/api/tracking/alerts/dispatch")
     # 缺少必填 slot 参数应返回 422
     assert resp.status_code == 422
+
+
+def test_ack_alert_endpoint_marks_alert_acknowledged(env) -> None:
+    client, svc, _ = env
+    _seed(svc)
+    alert_id = svc.list_alerts(tracking_id="t1")[0]["alert_id"]
+
+    resp = client.post(f"/api/tracking/alerts/{alert_id}/ack")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["data"]["ui_status"] == "acknowledged"
+
+
+def test_ignore_alert_endpoint_marks_alert_ignored(env) -> None:
+    client, svc, _ = env
+    _seed(svc)
+    alert_id = svc.list_alerts(tracking_id="t1")[0]["alert_id"]
+
+    resp = client.post(f"/api/tracking/alerts/{alert_id}/ignore")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["data"]["ui_status"] == "ignored"
+
+
+def test_ack_alert_endpoint_returns_404_for_unknown(env) -> None:
+    client, _, _ = env
+
+    resp = client.post("/api/tracking/alerts/999999/ack")
+
+    assert resp.status_code == 404

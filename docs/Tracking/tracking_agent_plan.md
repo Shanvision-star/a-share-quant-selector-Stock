@@ -65,7 +65,7 @@
                   ┌─────────────────────┼─────────────────────┐
                   ▼                     ▼                     ▼
             [钉钉推送]            [前端提醒中心]         [LLM 解读]
-       3 时段 + 去重 + 限流      待确认 / 已读 / 忽略    JSON 摘要 (P6)
+       3 时段 + 去重 + 限流      pending / acknowledged / ignored    JSON 摘要 (P6)
                                         │
                                         ▼
                           [OrderIntent 人工确认]
@@ -210,7 +210,7 @@ CREATE INDEX IF NOT EXISTS idx_alert_events_dingtalk_slot ON tracking_alert_even
 
 - 单条 `dedup_key` 全生命周期只发一次。
 - 单槽位单次推送最多 N 条（默认 N=20），超出按 `priority` 截断并在 markdown 末尾提示"另有 X 条待查看"。
-- 钉钉失败时 `dingtalk_status='failed'`，下次同槽位补发，仍失败计入 P4 监控日志，不阻塞流程。
+- 钉钉失败时保持 `ui_status='pending'`，下次同槽位仍可分发；分发成功写 `dispatched`，聚合类写 `aggregated`，不阻塞提醒中心查看。
 
 ### 6.3 调度入口
 
@@ -218,11 +218,11 @@ CREATE INDEX IF NOT EXISTS idx_alert_events_dingtalk_slot ON tracking_alert_even
 
 | 阶段 | 触发方式 | 实现 |
 | --- | --- | --- |
-| P4 必交 | 手动 API + 前端按钮 | `POST /api/tracking/alerts/dispatch?slot=pre_open|midday|post_close`，幂等（基于 `dingtalk_status` 状态） |
+| P4 必交 | 手动 API + 前端按钮 | `POST /api/tracking/alerts/dispatch?slot=pre_open|midday|post_close`，幂等（基于 `ui_status` 状态） |
 | P4 同期产出 | crontab 模板（默认注释） | 在 `config/crontab.txt` 追加 3 行注释样例，文档说明如何取消注释启用 |
 | 启用开关 | `config/strategy_params.yaml` | `tracking.alert_slots.auto_dispatch_enabled: false`，crontab 调用同一 API；前端展示当前是否已开启自动调度 |
 
-**幂等保证**：同一 `slot` 在同一交易日多次触发，仅推送 `dingtalk_status` 为 `pending` 或 `failed` 的记录；已 `sent` 的不重复发。
+**幂等保证**：同一 `slot` 在同一交易日多次触发，仅分发 `ui_status='pending'` 的记录；已 `dispatched` / `aggregated` / `acknowledged` / `ignored` 的不重复发。
 
 ---
 
@@ -237,7 +237,8 @@ CREATE INDEX IF NOT EXISTS idx_alert_events_dingtalk_slot ON tracking_alert_even
 | POST | `/api/tracking/evaluate-batch` | P2 | 触发当前 active tracking 全量规则评估 |
 | GET / POST / PUT / DELETE | `/api/tracking/rule-templates` | P3 | 模板 CRUD |
 | GET | `/api/tracking/alerts` | P4 | 查询提醒列表，支持 ui_status 筛选 |
-| POST | `/api/tracking/alerts/{alert_id}/ack` | P4 | 标记已读 / 已确认 / 忽略 |
+| POST | `/api/tracking/alerts/{alert_id}/ack` | P4 | 标记已确认 |
+| POST | `/api/tracking/alerts/{alert_id}/ignore` | P4 | 标记忽略 |
 | POST | `/api/tracking/alerts/dispatch` | P4 | 触发钉钉推送（按 slot） |
 
 **返回结构统一**：`{success: bool, data: ..., error: str|null}`，与现有 API 一致。
@@ -252,7 +253,7 @@ CREATE INDEX IF NOT EXISTS idx_alert_events_dingtalk_slot ON tracking_alert_even
 | 批量加入跟踪 | 上述视图内按钮 | P1 | 选中行 → 批量加入 |
 | 跟踪看板 | `web/frontend/src/views/TrackingView.vue`（新增或增强） | P2 | 按 status 分组展示 |
 | 规则模板管理 | `web/frontend/src/views/TrackingRuleTemplatesView.vue`（新增） | P3 | 表单 + 启用开关 |
-| 提醒中心 | `web/frontend/src/views/TrackingAlertCenterView.vue`（新增） | P4 | 提醒列表 + 已读/忽略 |
+| 提醒中心 | `web/frontend/src/views/TrackingAlertCenterView.vue`（新增） | P4 | 提醒列表 + 已确认/忽略 |
 
 **所有按钮文案约束**（与 agent.md 一致）：
 - ✅ "加入跟踪"、"评估跟踪"、"待确认"、"已处理"、"忽略"、"生成意图"

@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import api, {
+  acknowledgeTrackingAlert,
   createTrackingItem,
   evaluateTrackingItem,
+  getTrackingLLMAdvice,
+  ignoreTrackingAlert,
   listTrackingItems,
   type TrackingCreatePayload,
 } from '@/api'
@@ -38,5 +41,26 @@ describe('tracking API', () => {
 
     expect(getSpy).toHaveBeenCalledWith('/tracking', { params: { status: 'all', limit: 20 } })
     expect(postSpy).toHaveBeenCalledWith('/tracking/trk_test/evaluate', null, { params: { date: '2026-05-06' } })
+  })
+
+  it('marks tracking alerts acknowledged and ignored', async () => {
+    const postSpy = vi.spyOn(api, 'post').mockResolvedValue({ data: { success: true, data: {} } } as any)
+
+    await acknowledgeTrackingAlert(12)
+    await ignoreTrackingAlert(13)
+
+    expect(postSpy).toHaveBeenCalledWith('/tracking/alerts/12/ack')
+    expect(postSpy).toHaveBeenCalledWith('/tracking/alerts/13/ignore')
+  })
+
+  it('requests zettaranc profile advice', async () => {
+    const postSpy = vi.spyOn(api, 'post').mockResolvedValue({ data: { success: true, data: {} } } as any)
+
+    await getTrackingLLMAdvice('trk_test', 'zettaranc_style')
+
+    expect(postSpy).toHaveBeenCalledWith(
+      '/tracking/trk_test/llm-advice',
+      { profile: 'zettaranc_style' },
+    )
   })
 })

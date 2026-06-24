@@ -6,11 +6,13 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  acknowledgeTrackingAlert,
   listTrackingItems,
   listTrackingAlerts,
   evaluateTrackingRules,
   evaluateTrackingItem,
   getTrackingLLMAdvice,
+  ignoreTrackingAlert,
   confirmTrackingIntent,
   rejectTrackingIntent,
   batchCreateTrackingItems,
@@ -23,6 +25,7 @@ import {
   patchTrackingEntryPrice,
   type TrackingItem,
   type TrackingAlertItem,
+  type TrackingAdvice,
 } from '@/api'
 
 // —— 列表状态 ——
@@ -267,7 +270,7 @@ const deletingBatch = ref(false)
 // —— 展开行（每个跟踪项独立缓存告警 / 建议） ——
 interface RowState {
   alerts: TrackingAlertItem[]
-  advice: Record<string, any> | null
+  advice: TrackingAdvice | null
   alertsLoading: boolean
   adviceLoading: boolean
   actionLoading: boolean
@@ -496,6 +499,27 @@ async function handleExpand(row: TrackingItem, expandedRows: TrackingItem[]) {
   }
 }
 
+async function markAlert(row: TrackingItem, alert: TrackingAlertItem, action: 'ack' | 'ignore') {
+  if (!alert.alert_id) return
+  const state = ensureRowState(row.tracking_id)
+  state.actionLoading = true
+  try {
+    if (action === 'ack') {
+      await acknowledgeTrackingAlert(alert.alert_id)
+      ElMessage.success('已确认告警')
+    } else {
+      await ignoreTrackingAlert(alert.alert_id)
+      ElMessage.success('已忽略告警')
+    }
+    const resp = await listTrackingAlerts({ tracking_id: row.tracking_id, limit: 50 })
+    state.alerts = resp.data?.data?.items ?? []
+  } catch (e: any) {
+    ElMessage.error(`更新告警状态失败：${e?.message || e}`)
+  } finally {
+    state.actionLoading = false
+  }
+}
+
 // —— LLM 建议 ——
 async function fetchAdvice(row: TrackingItem) {
   const state = ensureRowState(row.tracking_id)
@@ -518,8 +542,8 @@ async function fetchAdvice(row: TrackingItem) {
 // —— 确认 OrderIntent ——
 async function confirmIntent(row: TrackingItem) {
   const state = ensureRowState(row.tracking_id)
-  // 优先使用建议里的 intent，其次使用 latest_intent
-  const intent = state.advice?.intent ?? row.latest_intent ?? null
+  // OrderIntent 必须走人工确认；建议服务返回的是 suggested_intent，不是自动下单指令。
+  const intent = state.advice?.suggested_intent ?? row.latest_intent ?? null
   state.actionLoading = true
   try {
     await confirmTrackingIntent(row.tracking_id, intent)
@@ -707,6 +731,28 @@ onMounted(refreshItems)
                 <el-table-column prop="rule_id" label="规则" width="160" show-overflow-tooltip />
                 <el-table-column prop="ui_status" label="状态" width="100" />
                 <el-table-column prop="message" label="说明" show-overflow-tooltip />
+                <el-table-column label="处理" width="150">
+                  <template #default="{ row: a }">
+                    <el-button
+                      size="small"
+                      link
+                      type="primary"
+                      :loading="rowStateMap[row.tracking_id]?.actionLoading"
+                      @click="markAlert(row, a, 'ack')"
+                    >
+                      已确认
+                    </el-button>
+                    <el-button
+                      size="small"
+                      link
+                      type="info"
+                      :loading="rowStateMap[row.tracking_id]?.actionLoading"
+                      @click="markAlert(row, a, 'ignore')"
+                    >
+                      忽略
+                    </el-button>
+                  </template>
+                </el-table-column>
               </el-table>
             </div>
 
@@ -730,6 +776,24 @@ onMounted(refreshItems)
                 获取 / 刷新建议
               </el-button>
               <div v-if="rowStateMap[row.tracking_id]?.advice" class="advice">
+                <div class="advice-meta">
+                  <el-tag size="small">
+                    {{ rowStateMap[row.tracking_id]!.advice?.profile || 'default' }}
+                  </el-tag>
+                  <el-tag
+                    :type="rowStateMap[row.tracking_id]!.advice?.provider_fallback ? 'warning' : 'success'"
+                    size="small"
+                  >
+                    provider fallback: {{ rowStateMap[row.tracking_id]!.advice?.provider_fallback ? 'yes' : 'no' }}
+                  </el-tag>
+                  <el-tag
+                    v-if="rowStateMap[row.tracking_id]!.advice?.zettaranc_data_source"
+                    type="info"
+                    size="small"
+                  >
+                    Zettaranc: {{ rowStateMap[row.tracking_id]!.advice?.zettaranc_data_source }}
+                  </el-tag>
+                </div>
                 <pre>{{ JSON.stringify(rowStateMap[row.tracking_id]!.advice, null, 2) }}</pre>
               </div>
             </div>
@@ -955,6 +1019,12 @@ onMounted(refreshItems)
   padding: 8px;
   max-height: 260px;
   overflow: auto;
+}
+.advice-meta {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
 }
 .advice pre {
   margin: 0;

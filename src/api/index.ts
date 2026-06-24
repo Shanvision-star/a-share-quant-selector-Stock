@@ -701,12 +701,22 @@ export interface TrackingAlertItem {
   rule_id?: string
   message?: string
   ui_status?: string
+  action_label?: string
+  category?: string
+  evidence?: Record<string, any> | null
+  evidence_json?: string
   payload?: Record<string, any>
 }
 
 export const listTrackingAlerts = (
   params?: { tracking_id?: string; eval_date?: string; ui_status?: string; limit?: number },
 ) => api.get('/tracking/alerts', { params })
+
+export const acknowledgeTrackingAlert = (alertId: number) =>
+  api.post(`/tracking/alerts/${encodeURIComponent(String(alertId))}/ack`)
+
+export const ignoreTrackingAlert = (alertId: number) =>
+  api.post(`/tracking/alerts/${encodeURIComponent(String(alertId))}/ignore`)
 
 // P5 批量按规则模板评估
 export const evaluateTrackingRules = (payload?: { eval_date?: string; only_codes?: string[] }) =>
@@ -716,8 +726,24 @@ export const evaluateTrackingRules = (payload?: { eval_date?: string; only_codes
 // 任务 D：profile 可选，default | zettaranc_style
 export type LlmProfile = 'default' | 'zettaranc_style'
 
+export interface TrackingAdvice {
+  tracking_id?: string
+  decision: string
+  confidence: number
+  rationale: string
+  suggested_action: string
+  suggested_intent?: Record<string, any>
+  provider?: string
+  provider_fallback?: boolean
+  provider_error?: string
+  profile?: LlmProfile | string
+  zettaranc_data_source?: string
+  alerts_summary?: Record<string, any>
+  analysis?: Record<string, string[]>
+}
+
 export const getTrackingLLMAdvice = (trackingId: string, profile?: LlmProfile) =>
-  api.post(
+  api.post<{ success: boolean; data: TrackingAdvice }>(
     `/tracking/${encodeURIComponent(trackingId)}/llm-advice`,
     profile ? { profile } : {},
   )

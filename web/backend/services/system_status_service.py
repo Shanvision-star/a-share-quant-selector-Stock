@@ -28,6 +28,13 @@ WEB_STRATEGY_SCHEMA_VERSION = 1
 UPDATE_RUN_TYPES = {"update_and_rebuild", "update_only", "init_only"}
 EXPECTED_STRATEGY_GROUPS = ("b1", "b2", "bowl", "brick")
 ACTIVE_TRACKING_STATUSES = ("watch_buy", "holding", "partial_sold")
+TRACKING_ALERT_UI_STATUSES = (
+    "pending",
+    "dispatched",
+    "aggregated",
+    "acknowledged",
+    "ignored",
+)
 CORE_STATUS_WEIGHT = {
     "ready": 0,
     "disabled": 0,
@@ -345,6 +352,23 @@ def _default_alerts_loader(ui_status: str, limit: int = 1000) -> list[dict]:
     )
 
 
+def _default_alert_status_counts_loader() -> dict[str, int]:
+    rows = _read_only_db_rows(
+        """
+        SELECT ui_status, COUNT(*) AS cnt
+        FROM tracking_alert_events
+        GROUP BY ui_status
+        """
+    )
+    counts = {status: 0 for status in TRACKING_ALERT_UI_STATUSES}
+    for row in rows:
+        status = str(row.get("ui_status") or "").strip().lower()
+        if not status:
+            continue
+        counts[status] = int(row.get("cnt") or 0)
+    return counts
+
+
 @dataclass(frozen=True)
 class StatusBlock:
     status: str
@@ -376,6 +400,7 @@ class SystemStatusService:
         tracking_items_loader: Callable[[str, int], list[dict]] = _default_tracking_items_loader,
         tracking_counts_loader: Callable[[str], int] | None = None,
         alerts_loader: Callable[[str, int], list[dict]] = _default_alerts_loader,
+        alert_status_counts_loader: Callable[[], dict[str, int]] | None = None,
         config_loader: Callable[[], dict] = _default_config_loader,
     ) -> None:
         self.now_provider = now_provider
@@ -393,6 +418,15 @@ class SystemStatusService:
             )
         )
         self.alerts_loader = alerts_loader
+        self.alert_status_counts_loader = (
+            alert_status_counts_loader
+            if alert_status_counts_loader is not None
+            else (
+                _default_alert_status_counts_loader
+                if alerts_loader is _default_alerts_loader
+                else None
+            )
+        )
         self.config_loader = config_loader
 
     def build_status(self) -> dict[str, Any]:
@@ -590,7 +624,17 @@ class SystemStatusService:
             counts[status] = count
             total_active += count
         pending_alerts = self.alerts_loader("pending", 1000)
-        alert_status_counts = {"pending": len(pending_alerts)}
+        if self.alert_status_counts_loader is not None:
+            alert_status_counts = {
+                **{status: 0 for status in TRACKING_ALERT_UI_STATUSES},
+                **self.alert_status_counts_loader(),
+            }
+        else:
+            # 测试或外部注入 loader 时无法安全假设有 SQL count 能力，只按显式状态逐项读取。
+            alert_status_counts = {
+                status: len(self.alerts_loader(status, 1000))
+                for status in TRACKING_ALERT_UI_STATUSES
+            }
         return StatusBlock(
             status="ready",
             message=f"Tracking 活跃记录 {total_active} 条，待处理告警 {len(pending_alerts)} 条。",

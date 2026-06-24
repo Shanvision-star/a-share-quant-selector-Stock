@@ -9,6 +9,7 @@ POST /api/tracking/{tracking_id}/llm-advice
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Body, HTTPException
@@ -19,6 +20,7 @@ from web.backend.services.tracking_service import tracking_service
 
 
 router = APIRouter(prefix="/api/tracking", tags=["跟踪 LLM 建议"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/{tracking_id}/llm-advice")
@@ -43,6 +45,25 @@ async def get_llm_advice(
     advice = tracking_llm_service.propose_action(item, alerts, frame=None, profile=profile)
     advice.setdefault("provider", "mock")
     advice.setdefault("provider_fallback", False)
-    advice.setdefault("profile", profile or "default")
+    advice.setdefault("profile", "default")
+    mismatch = advice.get("llm_mismatch")
+    if isinstance(mismatch, dict) and mismatch:
+        try:
+            tracking_service.add_event(
+                tracking_id=tracking_id,
+                event_type="llm_mismatch",
+                event_date=item.get("last_eval_date"),
+                action=str(advice.get("suggested_action") or "RULE"),
+                message="LLM/Zettaranc 建议与规则告警冲突，已按规则引擎覆盖。",
+                payload={
+                    "mismatch": mismatch,
+                    "profile": advice.get("profile"),
+                    "provider": advice.get("provider"),
+                    "rule_action_label": advice.get("rule_action_label"),
+                },
+            )
+        except Exception as exc:  # pragma: no cover - 审计失败不能阻断用户查看建议
+            logger.warning("[tracking_llm] llm_mismatch 审计事件写入失败: %s", exc)
+            advice["llm_mismatch_event_error"] = str(exc)
     advice["tracking_id"] = tracking_id
     return {"success": True, "data": advice}

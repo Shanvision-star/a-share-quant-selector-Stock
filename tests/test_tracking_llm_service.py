@@ -87,3 +87,54 @@ def test_propose_action_is_deterministic(llm_service) -> None:
 
     assert a["decision"] == b["decision"]
     assert a["confidence"] == b["confidence"]
+
+
+def test_deepseek_mismatch_uses_rule_authority(monkeypatch) -> None:
+    """真实 provider 输出与 rule action_label 冲突时，规则引擎覆盖建议动作。"""
+    from web.backend.services import tracking_llm_service as svc_mod
+
+    monkeypatch.setattr(
+        svc_mod,
+        "load_llm_config",
+        lambda: {
+            "provider": "deepseek",
+            "deepseek": {"api_key": "x", "base_url": "http://x", "model": "deepseek-chat"},
+        },
+    )
+    monkeypatch.setattr(
+        svc_mod,
+        "call_deepseek",
+        lambda **_kwargs: {
+            "decision": "add",
+            "confidence": 0.9,
+            "rationale": "模型误判为可加仓",
+            "suggested_action": "BUY",
+            "suggested_intent": {
+                "code": "000001",
+                "side": "BUY",
+                "qty_hint": 100,
+                "reason": "model_buy",
+            },
+        },
+    )
+    service = svc_mod.TrackingLLMService()
+
+    advice = service.propose_action(
+        _make_item("holding"),
+        [
+            {
+                "rule_id": "rule_break_bull_bear",
+                "priority": 20,
+                "action_label": "STOP_LOSS",
+                "message": "跌破多空线",
+            }
+        ],
+    )
+
+    assert advice["authority"] == "rule_engine"
+    assert advice["rule_action_label"] == "STOP_LOSS"
+    assert advice["suggested_action"] == "SELL"
+    assert advice["suggested_intent"]["side"] == "SELL"
+    assert advice["suggested_intent"]["reason"] == "rule_authority:STOP_LOSS"
+    assert advice["llm_mismatch"]["original_suggested_action"] == "BUY"
+    assert advice["llm_mismatch"]["expected_suggested_action"] == "SELL"

@@ -97,8 +97,8 @@
 ### 4.1 已有表（不动 schema，只补字段使用约定）
 
 - `manual_selections`：人工股票池。新增导入来源时复用 `source_payload_json` 携带 `import_type ∈ {txt, paste, strategy_pick}`。
-- `tracking_items`：单股跟踪主表。`status ∈ {WATCH, BUY_READY, HOLD, NEEDS_REVIEW, CLOSED}`。
-- `tracking_events`：跟踪事件流。新增 `event_type='rule_hit'` 与 `event_type='alert_sent'` 用于审计。
+- `tracking_items`：单股跟踪主表。当前代码使用 `status ∈ {watch_buy, holding, partial_sold, closed}`。
+- `tracking_events`：跟踪事件流。`intent_confirmed`、`intent_rejected`、`llm_mismatch` 等事件用于审计。
 
 ### 4.2 新增表（P3-P4）
 
@@ -121,29 +121,32 @@ CREATE TABLE IF NOT EXISTS tracking_rule_templates (
 CREATE TABLE IF NOT EXISTS tracking_alert_events (
     alert_id         INTEGER PRIMARY KEY AUTOINCREMENT,
     tracking_id      TEXT NOT NULL,
-    template_id      TEXT NOT NULL,
-    signal_date      TEXT NOT NULL,           -- 触发的交易日
-    action_label     TEXT NOT NULL,
-    dedup_key        TEXT NOT NULL,           -- tracking_id|template_id|signal_date|action_label
-    close_value      REAL,                    -- 触发时收盘价
-    payload_json     TEXT,                    -- 详细数据快照（指标值、阈值）
-    dingtalk_status  TEXT,                    -- pending|sent|failed|skipped
+    rule_id          TEXT NOT NULL,
+    code             TEXT NOT NULL,
+    eval_date        TEXT NOT NULL,           -- 触发的交易日
+    priority         INTEGER NOT NULL,
+    category         TEXT,
+    action_label     TEXT,
+    name             TEXT,
+    message          TEXT,
+    evidence_json    TEXT,                    -- 详细数据快照（指标值、阈值）
+    dedup_key        TEXT NOT NULL UNIQUE,    -- tracking_id|rule_id|eval_date
     dingtalk_slot    TEXT,                    -- pre_open|midday|post_close
-    dingtalk_sent_at TEXT,
-    ui_status        TEXT NOT NULL DEFAULT 'unread',  -- unread|read|acknowledged|ignored
+    ui_status        TEXT DEFAULT 'pending',  -- pending|dispatched|aggregated|acknowledged|ignored
     created_at       TEXT NOT NULL,
-    updated_at       TEXT NOT NULL
+    dispatched_at    TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_dedup ON tracking_alert_events(dedup_key);
-CREATE INDEX IF NOT EXISTS idx_alert_tracking ON tracking_alert_events(tracking_id);
-CREATE INDEX IF NOT EXISTS idx_alert_ui_status ON tracking_alert_events(ui_status);
+CREATE INDEX IF NOT EXISTS idx_alert_events_tracking_id ON tracking_alert_events(tracking_id);
+CREATE INDEX IF NOT EXISTS idx_alert_events_eval_date ON tracking_alert_events(eval_date);
+CREATE INDEX IF NOT EXISTS idx_alert_events_priority ON tracking_alert_events(priority);
+CREATE INDEX IF NOT EXISTS idx_alert_events_dingtalk_slot ON tracking_alert_events(dingtalk_slot);
 ```
 
 **去重 key 设计原因**：同一股票同一天同一规则只发一次；不同规则各发一次（保持可审计颗粒度）。
 
 ### 4.3 不新建 `order_intent_queue`
 
-复用 `tracking_items.latest_intent_json` + `next_action` 字段；只在 `tracking_events` 写 `event_type='intent_confirmed'` / `'intent_ignored'` 用于回溯。
+复用 `tracking_items.latest_intent_json` + `next_action` 字段；只在 `tracking_events` 写 `event_type='intent_confirmed'` / `'intent_rejected'` 用于回溯。
 
 ---
 
@@ -199,7 +202,7 @@ CREATE INDEX IF NOT EXISTS idx_alert_ui_status ON tracking_alert_events(ui_statu
 
 | 槽位 | 触发时间 | 内容范围 |
 | --- | --- | --- |
-| `pre_open` | 09:00 | 昨日收盘评估生成的新提醒 + 未处理的 unread |
+| `pre_open` | 09:00 | 昨日收盘评估生成的新提醒 + 未处理的 pending/dispatched |
 | `midday` | 11:30 | 上午盘中如有手动评估产生的提醒（用户主动按钮才产生，自动评估不在盘中跑） |
 | `post_close` | 15:30 | 当日收盘后规则评估产生的全部新提醒 |
 
@@ -331,7 +334,7 @@ tracking_events。
 | 用户批量导入坏代码 | 低 | 6 位代码正则 + 与 `stock_names.json` 交叉校验 |
 | 评估期间 CSV 仍在更新 | 中 | 复用 `update_status` gate：partial 状态拒绝评估 |
 | LLM 输出与规则冲突 | 中 | 规则引擎为权威，LLM 仅作解释；冲突落事件审计 |
-| 长期未处理 alert 堆积 | 低 | 提醒中心默认筛选 7 日内 unread；提供"全部忽略 X 日前"按钮 |
+| 长期未处理 alert 堆积 | 低 | 提醒中心默认筛选 7 日内 pending/dispatched；提供"全部忽略 X 日前"按钮 |
 
 ---
 

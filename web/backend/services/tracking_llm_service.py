@@ -50,6 +50,103 @@ def _extract_min_priority(alerts: list[dict]) -> tuple[Optional[int], Optional[d
     return min_priority, triggering_alert
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _rule_authority_from_alert(item: dict, alert: Optional[dict]) -> Optional[dict[str, Any]]:
+    """把规则告警转换成 advice 可执行边界，避免 provider 覆盖规则权威。"""
+    if not alert:
+        return None
+
+    action_label = str(alert.get("action_label") or "").strip().upper()
+    try:
+        priority = int(alert.get("priority", 100))
+    except (TypeError, ValueError):
+        priority = 100
+
+    current_qty = max(0, _safe_int(item.get("current_qty") or item.get("quantity"), 0))
+    half_qty = max(0, current_qty // 2)
+    if action_label == "STOP_LOSS":
+        decision, suggested_action, intent_side, qty_hint = "cut", "SELL", "SELL", current_qty
+    elif action_label == "SELL_PARTIAL":
+        decision, suggested_action, intent_side, qty_hint = "reduce", "REDUCE", "SELL", half_qty
+    elif action_label == "WAIT_BUY":
+        decision, suggested_action, intent_side, qty_hint = "watch", "WAIT", "BUY", 0
+    elif action_label == "BUY_READY":
+        decision, suggested_action, intent_side, qty_hint = "add", "BUY", "BUY", 0
+    elif action_label == "HOLD":
+        decision, suggested_action, intent_side, qty_hint = "hold", "HOLD", "HOLD", current_qty
+    elif action_label == "TREND_BREAK" and priority < _PRIORITY_MUST_SEND_BELOW:
+        decision, suggested_action, intent_side, qty_hint = "cut", "SELL", "SELL", current_qty
+    elif action_label == "TREND_BREAK":
+        decision, suggested_action, intent_side, qty_hint = "reduce", "REDUCE", "SELL", half_qty
+    elif priority < _PRIORITY_MUST_SEND_BELOW:
+        decision, suggested_action, intent_side, qty_hint = "cut", "SELL", "SELL", current_qty
+    elif priority < _PRIORITY_AGGREGATE_AT_OR_ABOVE:
+        decision, suggested_action, intent_side, qty_hint = "reduce", "REDUCE", "SELL", half_qty
+    else:
+        decision, suggested_action, intent_side, qty_hint = "hold", "HOLD", "HOLD", current_qty
+
+    return {
+        "action_label": action_label or None,
+        "priority": priority,
+        "decision": decision,
+        "suggested_action": suggested_action,
+        "intent_side": intent_side,
+        "qty_hint": qty_hint,
+    }
+
+
+def _apply_rule_authority(
+    result: dict[str, Any],
+    item: dict,
+    triggering_alert: Optional[dict],
+) -> dict[str, Any]:
+    """规则告警与 provider advice 冲突时，以规则为准并保留审计证据。"""
+    authority = _rule_authority_from_alert(item, triggering_alert)
+    if not authority:
+        result["authority"] = "advice"
+        return result
+
+    result["authority"] = "rule_engine"
+    result["rule_action_label"] = authority["action_label"]
+    result["alerts_summary"]["triggering_action_label"] = authority["action_label"]
+
+    original_action = str(result.get("suggested_action") or "").upper()
+    intent = dict(result.get("suggested_intent") or {})
+    original_side = str(intent.get("side") or "").upper()
+    expected_action = str(authority["suggested_action"])
+    expected_side = str(authority["intent_side"])
+    if original_action == expected_action and original_side == expected_side:
+        return result
+
+    result["llm_mismatch"] = {
+        "rule_action_label": authority["action_label"],
+        "rule_priority": authority["priority"],
+        "expected_suggested_action": expected_action,
+        "expected_intent_side": expected_side,
+        "original_suggested_action": original_action,
+        "original_intent_side": original_side,
+    }
+    result["decision"] = authority["decision"]
+    result["suggested_action"] = expected_action
+    intent["code"] = str(intent.get("code") or item.get("code") or "")
+    intent["side"] = expected_side
+    if _safe_int(intent.get("qty_hint"), 0) <= 0 and _safe_int(authority.get("qty_hint"), 0) > 0:
+        intent["qty_hint"] = int(authority["qty_hint"])
+    intent["reason"] = f"rule_authority:{authority['action_label'] or 'priority'}"
+    result["suggested_intent"] = intent
+    result["rationale"] = (
+        f"规则引擎 {authority['action_label'] or authority['priority']} 为权威，已覆盖模型建议。"
+        + str(result.get("rationale") or "")
+    )
+    return result
+
+
 def _propose_mock(item: dict, alerts: list[dict]) -> dict[str, Any]:
     """确定性桩：在没有真实 LLM 或 LLM 失败时使用。"""
     status = (item.get("status") or "").lower()
@@ -244,6 +341,7 @@ def _build_user_prompt(
         {
             "rule_id": a.get("rule_id"),
             "priority": a.get("priority"),
+            "action_label": a.get("action_label"),
             "message": a.get("message"),
             "ts": a.get("ts") or a.get("created_at"),
         }
@@ -306,6 +404,7 @@ def _normalize_deepseek_payload(raw: dict, item: dict, alerts: list[dict]) -> di
             ),
         },
     }
+    _apply_rule_authority(result, item, triggering_alert)
     # 可选 analysis 段：zettaranc_style 用，dict 才透传，避免任意类型污染响应
     analysis_raw = raw.get("analysis")
     if isinstance(analysis_raw, dict) and analysis_raw:
@@ -394,6 +493,7 @@ class TrackingLLMService:
                     "[tracking_llm] DeepSeek 调用失败，回退 mock: %s", exc
                 )
                 fallback = _propose_mock(item, alerts)
+                _apply_rule_authority(fallback, item, _extract_min_priority(alerts)[1])
                 fallback["provider"] = "mock"
                 fallback["provider_fallback"] = True
                 fallback["provider_error"] = str(exc)
@@ -404,6 +504,7 @@ class TrackingLLMService:
 
         # 默认 mock 分支
         out = _propose_mock(item, alerts)
+        _apply_rule_authority(out, item, _extract_min_priority(alerts)[1])
         out["provider"] = "mock"
         out["provider_fallback"] = False
         out["profile"] = resolved_profile

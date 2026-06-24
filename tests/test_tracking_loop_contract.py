@@ -74,13 +74,15 @@ def test_tracking_loop_evaluate_alert_advice_confirm_and_ignore(monkeypatch) -> 
     )
 
     summary = evaluator.evaluate_active_items(eval_date="2026-07-19")
-    alert = alerts.list_alerts(tracking_id=item["tracking_id"])[0]
+    created_alerts = alerts.list_alerts(tracking_id=item["tracking_id"])
+    assert summary["alerts_created"] >= 1
+    assert created_alerts
+    alert = created_alerts[0]
     advice = llm.propose_action(item, [alert], profile="zettaranc_style")
     confirmed = tracking.confirm_intent(item["tracking_id"], advice["suggested_intent"])
     ignored = alerts.update_alert_status(alert["alert_id"], "ignored")
     events = tracking.list_events(item["tracking_id"])
 
-    assert summary["alerts_created"] >= 1
     assert advice["profile"] == "zettaranc_style"
     assert advice["zettaranc_data_source"] == "local_csv"
     assert confirmed["latest_intent"] == advice["suggested_intent"]

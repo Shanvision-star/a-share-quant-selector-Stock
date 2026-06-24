@@ -46,7 +46,9 @@ def build_service(
         },
         runs_loader=lambda: {"items": runs or []},
         tracking_items_loader=lambda status, limit=1000: tracking_items.get(status, []),
-        alerts_loader=lambda ui_status, limit=1000: alerts,
+        alerts_loader=lambda ui_status, limit=1000: [
+            alert for alert in alerts if alert.get("ui_status") == ui_status
+        ][:limit],
         config_loader=lambda: config,
     )
 
@@ -101,6 +103,8 @@ def test_system_status_tracking_reports_alert_status_breakdown():
         alerts=[
             {"alert_id": 1, "ui_status": "pending", "priority": 10},
             {"alert_id": 2, "ui_status": "pending", "priority": 20},
+            {"alert_id": 3, "ui_status": "acknowledged", "priority": 30},
+            {"alert_id": 4, "ui_status": "ignored", "priority": 40},
         ],
     )
 
@@ -109,6 +113,10 @@ def test_system_status_tracking_reports_alert_status_breakdown():
     details = payload["tracking"]["details"]
     assert details["pending_alert_count"] == 2
     assert details["alert_status_counts"]["pending"] == 2
+    assert details["alert_status_counts"]["acknowledged"] == 1
+    assert details["alert_status_counts"]["ignored"] == 1
+    assert details["alert_status_counts"]["dispatched"] == 0
+    assert details["alert_status_counts"]["aggregated"] == 0
 
 
 def test_system_status_reports_missing_when_data_ready_but_strategy_cache_missing():

@@ -18,6 +18,7 @@ def build_service(
     tracking_items=None,
     alerts=None,
     config=None,
+    latest_loop_run=None,
 ):
     tracking_items = tracking_items or {}
     alerts = alerts or []
@@ -49,6 +50,7 @@ def build_service(
         alerts_loader=lambda ui_status, limit=1000: [
             alert for alert in alerts if alert.get("ui_status") == ui_status
         ][:limit],
+        tracking_loop_run_loader=lambda loop_type="post_close": latest_loop_run,
         config_loader=lambda: config,
     )
 
@@ -117,6 +119,63 @@ def test_system_status_tracking_reports_alert_status_breakdown():
     assert details["alert_status_counts"]["ignored"] == 1
     assert details["alert_status_counts"]["dispatched"] == 0
     assert details["alert_status_counts"]["aggregated"] == 0
+
+
+def test_system_status_tracking_includes_latest_post_close_loop_run():
+    service = build_service(
+        latest_loop_run={
+            "run_id": "tlr_done",
+            "loop_type": "post_close",
+            "eval_date": "2026-06-25",
+            "slot": "post_close",
+            "status": "done",
+            "trigger": "api",
+            "sync_first": True,
+            "per_slot_limit": 8,
+            "started_at": "2026-06-25T15:31:00",
+            "completed_at": "2026-06-25T15:31:02",
+            "sync": {"updated": ["000001"]},
+            "evaluation": {"alerts_created": 1},
+            "dispatch": {"dispatched": 1},
+            "error": None,
+        }
+    )
+
+    payload = service.build_status()
+
+    details = payload["tracking"]["details"]
+    assert details["latest_loop_status"] == "done"
+    assert details["latest_loop_message"] == "最近收盘循环完成。"
+    assert details["latest_loop_run"]["run_id"] == "tlr_done"
+    assert details["latest_loop_run"]["dispatch"]["dispatched"] == 1
+
+
+def test_system_status_tracking_loop_partial_does_not_block_overall_ready():
+    service = build_service(
+        latest_loop_run={
+            "run_id": "tlr_partial",
+            "loop_type": "post_close",
+            "eval_date": "2026-06-25",
+            "slot": "post_close",
+            "status": "partial",
+            "trigger": "api",
+            "sync_first": True,
+            "per_slot_limit": 8,
+            "started_at": "2026-06-25T15:31:00",
+            "completed_at": "2026-06-25T15:31:02",
+            "sync": {"errors": [{"code": "000001", "error": "fetch failed"}]},
+            "evaluation": {"errors": []},
+            "dispatch": {"dispatched": 0},
+            "error": {"sync_errors": 1, "evaluation_errors": 0},
+        }
+    )
+
+    payload = service.build_status()
+
+    assert payload["overall_status"] == "ready"
+    assert payload["tracking"]["status"] == "ready"
+    assert payload["tracking"]["details"]["latest_loop_status"] == "partial"
+    assert "部分完成" in payload["tracking"]["details"]["latest_loop_message"]
 
 
 def test_system_status_reports_missing_when_data_ready_but_strategy_cache_missing():
@@ -366,6 +425,102 @@ def test_default_alerts_loader_is_read_only(monkeypatch):
     assert payload["overall_status"] == "ready"
     assert payload["tracking"]["status"] == "ready"
     assert payload["tracking"]["details"]["pending_alert_count"] >= 0
+
+
+def test_default_tracking_loop_loader_is_read_only(monkeypatch, tmp_path):
+    db_path = tmp_path / "web_strategy_cache.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE tracking_loop_runs (
+            run_id TEXT PRIMARY KEY,
+            loop_type TEXT NOT NULL,
+            eval_date TEXT,
+            slot TEXT NOT NULL,
+            status TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            sync_first INTEGER NOT NULL,
+            per_slot_limit INTEGER NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            sync_json TEXT,
+            evaluation_json TEXT,
+            dispatch_json TEXT,
+            error_json TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO tracking_loop_runs (
+            run_id, loop_type, eval_date, slot, status, trigger,
+            sync_first, per_slot_limit, started_at, completed_at,
+            sync_json, evaluation_json, dispatch_json, error_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "tlr_latest",
+            "post_close",
+            "2026-06-25",
+            "post_close",
+            "done",
+            "api",
+            1,
+            8,
+            "2026-06-25T15:31:00",
+            "2026-06-25T15:31:02",
+            json.dumps({"updated": ["000001"]}, ensure_ascii=False),
+            json.dumps({"alerts_created": 1}, ensure_ascii=False),
+            json.dumps({"dispatched": 1}, ensure_ascii=False),
+            None,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    class ForbiddenLoopService:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("system status must not construct TrackingLoopRunnerService")
+
+    fake_loop_module = types.SimpleNamespace(
+        TrackingLoopRunnerService=ForbiddenLoopService,
+        tracking_loop_runner_service=types.SimpleNamespace(
+            latest_run=lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("system status must not call tracking_loop_runner_service.latest_run")
+            )
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "web.backend.services.tracking_loop_runner_service", fake_loop_module)
+    monkeypatch.setattr(svc_mod, "WEB_STRATEGY_CACHE_DB_FILE", db_path)
+
+    service = SystemStatusService(
+        now_provider=lambda: NOW,
+        data_status_loader=lambda: {
+            "total_stocks": 5100,
+            "latest_date": "2026-06-19",
+            "stale_count": 0,
+            "checked_count": 40,
+            "is_fresh": True,
+        },
+        strategy_cache_loader=lambda: {
+            "status": "ready",
+            "requested_date": "2026-06-19",
+            "trade_date": "2026-06-19",
+            "is_latest": True,
+            "total": 120,
+            "unique_total": 98,
+        },
+        tracking_counts_loader=lambda status: 0,
+        alerts_loader=lambda ui_status, limit=1000: [],
+        config_loader=lambda: {},
+    )
+
+    payload = service.build_status()
+
+    details = payload["tracking"]["details"]
+    assert details["latest_loop_status"] == "done"
+    assert details["latest_loop_run"]["run_id"] == "tlr_latest"
+    assert details["latest_loop_run"]["sync"]["updated"] == ["000001"]
 
 
 def test_default_db_reads_do_not_use_project_sqlite_helpers(monkeypatch, tmp_path):

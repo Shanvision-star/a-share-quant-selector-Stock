@@ -203,6 +203,15 @@ def _read_only_db_rows(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str,
     return [dict(row) for row in rows]
 
 
+def _safe_json_loads(value: Any) -> Any:
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _latest_strategy_run(requested_date: str) -> dict | None:
     items = _read_only_db_rows(
         """
@@ -369,6 +378,39 @@ def _default_alert_status_counts_loader() -> dict[str, int]:
     return counts
 
 
+def _default_tracking_loop_run_loader(loop_type: str = "post_close") -> dict | None:
+    rows = _read_only_db_rows(
+        """
+        SELECT *
+        FROM tracking_loop_runs
+        WHERE loop_type = ?
+        ORDER BY started_at DESC, rowid DESC
+        LIMIT 1
+        """,
+        (loop_type,),
+    )
+    if not rows:
+        return None
+
+    row = rows[0]
+    return {
+        "run_id": row.get("run_id"),
+        "loop_type": row.get("loop_type"),
+        "eval_date": row.get("eval_date"),
+        "slot": row.get("slot"),
+        "status": row.get("status"),
+        "trigger": row.get("trigger"),
+        "sync_first": bool(row.get("sync_first")),
+        "per_slot_limit": int(row.get("per_slot_limit") or 0),
+        "started_at": row.get("started_at"),
+        "completed_at": row.get("completed_at"),
+        "sync": _safe_json_loads(row.get("sync_json")),
+        "evaluation": _safe_json_loads(row.get("evaluation_json")),
+        "dispatch": _safe_json_loads(row.get("dispatch_json")),
+        "error": _safe_json_loads(row.get("error_json")),
+    }
+
+
 @dataclass(frozen=True)
 class StatusBlock:
     status: str
@@ -401,6 +443,7 @@ class SystemStatusService:
         tracking_counts_loader: Callable[[str], int] | None = None,
         alerts_loader: Callable[[str, int], list[dict]] = _default_alerts_loader,
         alert_status_counts_loader: Callable[[], dict[str, int]] | None = None,
+        tracking_loop_run_loader: Callable[[str], dict | None] = _default_tracking_loop_run_loader,
         config_loader: Callable[[], dict] = _default_config_loader,
     ) -> None:
         self.now_provider = now_provider
@@ -427,6 +470,7 @@ class SystemStatusService:
                 else None
             )
         )
+        self.tracking_loop_run_loader = tracking_loop_run_loader
         self.config_loader = config_loader
 
     def build_status(self) -> dict[str, Any]:
@@ -635,6 +679,8 @@ class SystemStatusService:
                 status: len(self.alerts_loader(status, 1000))
                 for status in TRACKING_ALERT_UI_STATUSES
             }
+        latest_loop_run = self.tracking_loop_run_loader("post_close")
+        latest_loop_status, latest_loop_message = self._tracking_loop_message(latest_loop_run)
         return StatusBlock(
             status="ready",
             message=f"Tracking 活跃记录 {total_active} 条，待处理告警 {len(pending_alerts)} 条。",
@@ -645,8 +691,25 @@ class SystemStatusService:
                 "status_counts": counts,
                 "pending_alert_count": len(pending_alerts),
                 "alert_status_counts": alert_status_counts,
+                "latest_loop_run": latest_loop_run,
+                "latest_loop_status": latest_loop_status,
+                "latest_loop_message": latest_loop_message,
             },
         )
+
+    def _tracking_loop_message(self, latest_run: dict | None) -> tuple[str, str]:
+        if not latest_run:
+            return "missing", "尚未执行过收盘循环。"
+        status = str(latest_run.get("status") or "missing")
+        if status == "done":
+            return status, "最近收盘循环完成。"
+        if status == "partial":
+            return status, "最近收盘循环部分完成，请查看 sync/evaluation error 摘要。"
+        if status == "error":
+            return status, "最近收盘循环失败，请查看 error.stage/message。"
+        if status == "running":
+            return status, "收盘循环正在运行。"
+        return status, f"最近收盘循环状态: {status}"
 
     def _integrations_block(self, checked_at: str) -> StatusBlock:
         raw = self.config_loader() or {}

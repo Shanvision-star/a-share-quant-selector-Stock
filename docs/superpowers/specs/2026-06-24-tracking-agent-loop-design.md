@@ -3,6 +3,10 @@
 > Status: approved scope for specification. This document locks the next product slice to
 > the Tracking Agent Loop MVP and keeps broader broker / QMT / research-platform work out
 > of this implementation cycle.
+>
+> Closeout status (2026-06-25): the Tracking Agent Loop MVP has been merged into the
+> current top-level `web` mainline. This document is now the historical product baseline
+> and boundary record, not a pending implementation checklist.
 
 ## 1. Goal
 
@@ -50,7 +54,8 @@ and execution are separate units with explicit contracts.
 
 ## 4. Current Code Reality
 
-The repository already has useful building blocks:
+The repository already has useful building blocks and, as of the 2026-06-25 closeout,
+the MVP loop is implemented on `web`:
 
 - `web/backend/backtest_engine/`: `DataPortal`, `SignalSource`, execution simulators,
   portfolio ledger, analyzer, and `OrderIntent`.
@@ -65,8 +70,18 @@ The repository already has useful building blocks:
   deterministic fallback.
 - `tests/test_tracking*.py` and `tests/test_backtest*.py`: existing regression anchors.
 
-The actual gap is product orchestration and UI/API completion, not lack of individual
-building blocks.
+Implemented closeout facts:
+
+- Manual selection intake and batch tracking intake are present.
+- Rule evaluation persists deduplicated `tracking_alert_events`.
+- Alert status actions cover acknowledge, ignore, and dispatch.
+- LLM advice returns structured `suggested_intent`; `OrderIntent` remains manual-confirm
+  or manual-reject only.
+- System status includes tracking counts.
+
+The original gap was product orchestration and UI/API completion, not lack of individual
+building blocks. That gap is closed for the MVP; follow-up work should be scoped as a new
+post-close task.
 
 ## 5. MVP Scope
 
@@ -372,7 +387,20 @@ These are future specs, not part of this MVP:
 If any of these becomes necessary, update the authority document and create a separate
 spec before implementation.
 
-## 14. Self-Review
+## 14. Post-close Follow-up Boundaries
+
+These are allowed follow-up task names, not completed facts:
+
+- Manual Pool -> Tracking Intake Bridge: improve operator feedback around selected rows,
+  duplicate intake, failed rows, and date selection. Do not rebuild the existing
+  `/api/manual-selections/*` or `/api/tracking/batch-from-selection` contracts.
+- Post-close Loop Runner: design an explicit after-close evaluation / dispatch runner.
+  Keep mock provider tests as the default and record real provider smoke separately.
+
+Not verified in this documentation-only closeout: backend pytest, frontend build, nested
+frontend repository status, real provider smoke, and DingTalk real dispatch.
+
+## 15. Self-Review
 
 - Placeholder scan: no `TBD` or unassigned implementation requirement remains.
 - Internal consistency: MVP stays rule-authoritative, advice-explanatory, and manual-confirmed.
@@ -380,4 +408,5 @@ spec before implementation.
   integration in three phases.
 - Ambiguity check: automatic trading, QMT, imported frameworks, Zettaranc authority override,
   and real provider smoke are explicitly out of scope.
-- Execution plan sync: `docs/superpowers/plans/2026-06-24-tracking-agent-loop-mvp.md` implements this spec through four task slices.
+- Execution plan sync: `docs/superpowers/plans/2026-06-24-tracking-agent-loop-mvp.md`
+  is now a historical implementation plan for the merged MVP.

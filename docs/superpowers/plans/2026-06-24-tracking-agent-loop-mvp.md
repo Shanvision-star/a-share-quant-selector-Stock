@@ -1,6 +1,12 @@
 # Tracking Agent Loop MVP Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Closeout status (2026-06-25):** this is a historical implementation plan for the
+> Tracking Agent Loop MVP that has been merged into the current top-level `web` mainline.
+> The unchecked boxes below are preserved as execution trace format, not as pending work.
+> Do not rerun these tasks or recreate listed files unless a new task explicitly reopens
+> that scope.
 
 **Goal:** Turn the approved Tracking Agent Loop MVP spec into a usable, auditable loop from selected stocks to alerts, Zettaranc-aware advice, and manually confirmed `OrderIntent` actions.
 
@@ -50,14 +56,19 @@ Controller review loop after each task:
 - `web/backend/services/tracking_llm_service.py` already supports `default` and `zettaranc_style` profiles.
 - `web/frontend/src/views/TrackingView.vue` already exposes tracking operations, alerts, advice, and intent buttons.
 
-**Actual MVP gaps:**
+**Historical MVP gaps closed by this plan:**
 
-- Alerts cannot yet be acknowledged or ignored through stable backend APIs.
-- Frontend API types do not expose advice/profile/data-source fields strongly enough.
-- `TrackingView.vue` confirms `state.advice?.intent`, but backend advice returns `suggested_intent`.
-- Zettaranc profile and data-source state are hidden inside raw JSON instead of visible operator state.
-- The loop lacks a focused end-to-end API regression proving evaluate -> alert -> advice -> intent -> confirm/reject.
-- System status should expose richer alert status counts without creating service side effects.
+The original gaps below were the 2026-06-24 execution target and are now MVP closeout facts
+on `web`:
+
+- Alerts can be acknowledged or ignored through stable backend APIs.
+- Frontend API types expose advice/profile/data-source fields.
+- `TrackingView.vue` consumes backend `suggested_intent`.
+- Zettaranc profile and data-source state are visible operator state.
+- The loop has focused backend regression coverage for evaluate -> alert -> advice -> intent -> confirm/reject.
+- System status exposes tracking alert counts without service side effects.
+
+Do not treat this section as a fresh gap list.
 
 ---
 
@@ -105,7 +116,8 @@ Run:
 python -m pytest tests/test_tracking_alert_service.py::test_update_alert_status_acknowledges_existing_alert tests/test_tracking_alert_service.py::test_update_alert_status_rejects_invalid_status -q
 ```
 
-Expected: fail because `TrackingAlertService.update_alert_status` does not exist.
+Historical TDD expectation: this failed before the implementation because
+`TrackingAlertService.update_alert_status` did not exist.
 
 - [ ] **Step 3: Implement alert status update**
 
@@ -210,7 +222,8 @@ Run:
 python -m pytest tests/test_tracking_alert_router.py::test_ack_alert_endpoint_marks_alert_acknowledged tests/test_tracking_alert_router.py::test_ignore_alert_endpoint_marks_alert_ignored tests/test_tracking_alert_router.py::test_ack_alert_endpoint_returns_404_for_unknown -q
 ```
 
-Expected: fail with 404 because endpoints are not registered.
+Historical TDD expectation: this returned 404 before the implementation because the
+endpoints were absent from the router.
 
 - [ ] **Step 7: Implement router endpoints**
 
@@ -434,7 +447,8 @@ Run in `web/frontend`:
 npm run test -- src/api/__tests__/trackingApi.spec.ts
 ```
 
-Expected: fail because `acknowledgeTrackingAlert` and `ignoreTrackingAlert` are not exported.
+Historical TDD expectation: this failed before the implementation because
+`acknowledgeTrackingAlert` and `ignoreTrackingAlert` were not exported.
 
 - [ ] **Step 3: Implement frontend API functions and stronger types**
 
@@ -678,7 +692,8 @@ Run:
 python -m pytest tests/test_system_status_service.py::test_system_status_tracking_reports_alert_status_breakdown -q
 ```
 
-Expected: fail because `alert_status_counts` is not present.
+Historical TDD expectation: this failed before the implementation because
+`alert_status_counts` was not present.
 
 - [ ] **Step 3: Implement read-only alert status breakdown**
 
@@ -883,9 +898,26 @@ Expected:
 - Frontend build passes or only reports non-failing Vite chunk-size warnings.
 - Diff check reports no whitespace errors.
 
+## Documentation Closeout Verification Matrix (2026-06-25)
+
+| Item | Current fact | This documentation task verification |
+| --- | --- | --- |
+| Manual selection paths | Use `/api/manual-selections/*`, not `/api/manual-selection/*` | Static `rg` check |
+| Alert persistence name | Use `tracking_alert_events`, not `tracking_alerts` as a table name | Static `rg` check |
+| Alert operator actions | ack / ignore / dispatch are MVP facts | Static doc/code path check |
+| OrderIntent boundary | Manual confirm / reject only; no automatic broker order | Static doc check |
+| Real provider smoke | Separate from default tests | Static doc check |
+| Frontend nested repo | Not expanded in this top-level worktree for this task | Not verified |
+
+Follow-up task boundaries:
+
+- Manual Pool -> Tracking Intake Bridge: operator feedback and intake ergonomics only.
+- Post-close Loop Runner: explicit after-close evaluation / dispatch design only.
+
 ## Plan Self-Review
 
 - Spec coverage: Tasks cover alert actions, Zettaranc advice visibility, intent confirmation, frontend operator loop, system status, and end-to-end regression.
 - Placeholder scan: no unassigned placeholders remain.
 - Type consistency: backend uses `suggested_intent`; frontend consumes `suggested_intent`; alert status values are `pending`, `dispatched`, `aggregated`, `acknowledged`, and `ignored`.
 - Scope guard: automatic trading, QMT, broker adapters, full mark-to-market, and imported quant frameworks stay outside this plan.
+- Closeout sync: this plan is historical and should not cause future agents to rebuild merged MVP features.

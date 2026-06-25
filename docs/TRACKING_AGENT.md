@@ -74,6 +74,8 @@ Tracking-Agent 把"选股池命中 → 持续观察 → 规则告警 → LLM 建
 - Runner 写入 `tracking_loop_runs`，终态为 `done|partial|error`；同进程已有运行时返回 `busy`。
 - 缺省 notifier 仍为空实现；真实钉钉 smoke 必须单独执行，不属于默认自动化回归。
 - `tracking_loop.router` 是 `/api/tracking/loops*` 固定前缀路由，必须在 generic `tracking.router` 前注册，避免被 `/api/tracking/{tracking_id}` 通配吞掉。
+- `/api/system/status` 的 `tracking.details.latest_loop_run` 只读展示最近一次 `tracking_loop_runs`，不会触发 runner。
+- `latest_loop_status=partial|error` 只提示 Tracking 运维风险，不改变 data/strategy 的 `overall_status`。
 
 ---
 

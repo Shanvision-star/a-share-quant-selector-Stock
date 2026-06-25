@@ -8,13 +8,14 @@ import {
   batchCreateTrackingFromSelection,
   type TrackingBatchFromSelectionResult,
 } from '@/api'
+import type { ManualSelectionItem } from '@/stores/manualSelection'
 
 const router = useRouter()
 const store = useManualSelectionStore()
 
 const selectedDate = ref('')
 const filterText = ref('')
-const selectedRows = ref<any[]>([])
+const selectedRows = ref<ManualSelectionItem[]>([])
 const intakeLoading = ref(false)
 const intakeResult = ref<TrackingBatchFromSelectionResult | null>(null)
 
@@ -79,7 +80,7 @@ async function clearDateFilter() {
   await store.fetchByRange(dateRange.value[0], dateRange.value[1])
 }
 
-async function removeItem(item: any) {
+async function removeItem(item: ManualSelectionItem) {
   try {
     await ElMessageBox.confirm(`确认从池子移出 ${item.code} ${item.name || ''}？`, '移出确认', {
       type: 'warning',
@@ -113,7 +114,7 @@ function sendToBacktest() {
   })
 }
 
-function sendSingleToBacktest(item: any) {
+function sendSingleToBacktest(item: ManualSelectionItem) {
   const tradeDate = item.selection_date || selectedDate.value || dateRange.value[1]
   if (!tradeDate || !item.code) {
     ElMessage.warning('缺少选股日期或股票代码')
@@ -130,7 +131,7 @@ function sendSingleToBacktest(item: any) {
   })
 }
 
-function handleSelectionChange(rows: any[]) {
+function handleSelectionChange(rows: ManualSelectionItem[]) {
   selectedRows.value = rows
 }
 
@@ -138,11 +139,11 @@ function rowSelectable() {
   return !isRangeMode.value
 }
 
-function uniqueCodes(items: any[]): string[] {
+function uniqueCodes(items: ManualSelectionItem[]): string[] {
   return Array.from(new Set(items.map(item => String(item.code || '').trim()).filter(Boolean)))
 }
 
-async function joinTrackingFromItems(items: any[], emptyMessage: string) {
+async function joinTrackingFromItems(items: ManualSelectionItem[], emptyMessage: string) {
   if (!selectedDate.value) {
     ElMessage.warning('区间模式不能加入跟踪，请先选择单日')
     return
@@ -154,6 +155,7 @@ async function joinTrackingFromItems(items: any[], emptyMessage: string) {
   }
 
   intakeLoading.value = true
+  intakeResult.value = null
   try {
     const response = await batchCreateTrackingFromSelection({
       selection_date: selectedDate.value,
@@ -163,6 +165,7 @@ async function joinTrackingFromItems(items: any[], emptyMessage: string) {
     ElMessage.success(`已加入跟踪 ${intakeResult.value.created} 只，跳过 ${intakeResult.value.skipped} 只`)
   } catch (error) {
     console.error(error)
+    intakeResult.value = null
     ElMessage.error('加入跟踪失败')
   } finally {
     intakeLoading.value = false
@@ -308,35 +311,37 @@ onMounted(async () => {
           </div>
           <el-button size="small" type="primary" plain @click="gotoTracking">查看跟踪</el-button>
         </div>
-        <el-table
-          :data="filteredItems"
-          size="small"
-          border
-          height="100%"
-          empty-text="还没有人工选股，请到策略结果页或个股详情页勾选加入"
-          @selection-change="handleSelectionChange"
-        >
-          <el-table-column type="selection" width="42" :selectable="rowSelectable" />
-          <el-table-column prop="selection_date" label="选股日期" width="110" />
-          <el-table-column prop="code" label="代码" width="90">
-            <template #default="{ row }">
-              <el-link type="primary" @click="gotoDetail(row.code)">{{ row.code }}</el-link>
-            </template>
-          </el-table-column>
-          <el-table-column prop="name" label="名称" min-width="100" />
-          <el-table-column prop="strategy_name" label="来源策略" min-width="120" />
-          <el-table-column prop="source_signal_date" label="信号日" width="110" />
-          <el-table-column prop="source_trade_date" label="原策略交易日" width="120" />
-          <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
-          <el-table-column prop="updated_at" label="更新时间" width="160" />
-          <el-table-column label="操作" width="190" align="center">
-            <template #default="{ row }">
-              <el-button size="small" @click="gotoDetail(row.code)">详情</el-button>
-              <el-button size="small" type="primary" link @click="sendSingleToBacktest(row)">单只回测</el-button>
-              <el-button size="small" type="danger" link @click="removeItem(row)">移出</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+        <div class="table-shell">
+          <el-table
+            :data="filteredItems"
+            size="small"
+            border
+            height="100%"
+            empty-text="还没有人工选股，请到策略结果页或个股详情页勾选加入"
+            @selection-change="handleSelectionChange"
+          >
+            <el-table-column type="selection" width="42" :selectable="rowSelectable" />
+            <el-table-column prop="selection_date" label="选股日期" width="110" />
+            <el-table-column prop="code" label="代码" width="90">
+              <template #default="{ row }">
+                <el-link type="primary" @click="gotoDetail(row.code)">{{ row.code }}</el-link>
+              </template>
+            </el-table-column>
+            <el-table-column prop="name" label="名称" min-width="100" />
+            <el-table-column prop="strategy_name" label="来源策略" min-width="120" />
+            <el-table-column prop="source_signal_date" label="信号日" width="110" />
+            <el-table-column prop="source_trade_date" label="原策略交易日" width="120" />
+            <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
+            <el-table-column prop="updated_at" label="更新时间" width="160" />
+            <el-table-column label="操作" width="190" align="center">
+              <template #default="{ row }">
+                <el-button size="small" @click="gotoDetail(row.code)">详情</el-button>
+                <el-button size="small" type="primary" link @click="sendSingleToBacktest(row)">单只回测</el-button>
+                <el-button size="small" type="danger" link @click="removeItem(row)">移出</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
       </main>
     </div>
   </div>
@@ -359,6 +364,7 @@ onMounted(async () => {
 .result-panel { padding: 12px; }
 .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .hint { font-size: 12px; color: #909399; }
+.table-shell { flex: 1; min-height: 0; }
 .intake-alert { margin-bottom: 8px; }
 .intake-result { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; padding: 8px 10px; border: 1px solid #dcdfe6; border-radius: 6px; background: #f9fafc; font-size: 12px; color: #606266; }
 .intake-result-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

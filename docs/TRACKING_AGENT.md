@@ -27,6 +27,7 @@ Tracking-Agent 把"选股池命中 → 持续观察 → 规则告警 → LLM 建
 | `tracking_items` | `tracking_id`、`code`、`name`、`strategy_name`、`source`、`signal_date`、`status`、`last_eval_date`、`params`、`next_action`、`current_qty`、`latest_intent` | 单股跟踪主表；`status ∈ {watch_buy, holding, closed, ...}`，`next_action ∈ {HOLD, BUY, SELL, REDUCE, ...}`。 |
 | `tracking_alert_events` | `alert_id`、`tracking_id`、`rule_id`、`eval_date`、`priority`、`message`、`ui_status` | 评估生成的告警事件；优先级数字越小越紧急。 |
 | `tracking_rule_templates` | `template_id`、`name`、`rule_id`、`params`、`enabled`、`note` | 前端可视化编辑的规则参数模板，覆盖引擎默认值。 |
+| `tracking_loop_runs` | `run_id`、`loop_type`、`eval_date`、`slot`、`status`、`trigger`、`sync_first`、`per_slot_limit`、`started_at`、`completed_at`、`sync_json`、`evaluation_json`、`dispatch_json`、`error_json` | Post-close Loop Runner 运行记录；`status ∈ {running, done, partial, error}`，同进程已有运行时 API 直接返回 `busy` 且不写入新行。 |
 | `OrderIntent`（嵌入 `latest_intent` / 事件 payload） | `intent_id`、`code`、`side`、`qty_hint` / `quantity`、`target_price`、`execution_mode`、`status`、`reason` | 当前只作为人工动作候选；`status ∈ {generated, confirmed, rejected}`，不代表券商订单。 |
 | `tracking_events` | `event_id`、`tracking_id`、`event_type`、`payload`、`created_at` | 所有评估、LLM 建议、确认/否决动作都写事件，可审计回放。 |
 
@@ -53,6 +54,8 @@ Tracking-Agent 把"选股池命中 → 持续观察 → 规则告警 → LLM 建
 | POST | `/api/tracking/alerts/{alert_id}/ack` | `tracking_alert.py` | `tracking_alert_service.update_alert_status` | 标记告警已确认 |
 | POST | `/api/tracking/alerts/{alert_id}/ignore` | `tracking_alert.py` | `tracking_alert_service.update_alert_status` | 标记告警已忽略 |
 | POST | `/api/tracking/alerts/dispatch` | `tracking_alert.py` | `tracking_alert_service.dispatch_pending_alerts` | 按 slot 分发/聚合告警（去重 + 限额；缺省 notifier 为空实现） |
+| POST | `/api/tracking/loops/post-close/run` | `tracking_loop.py` | `tracking_loop_runner_service.run_post_close` | 收盘后编排 sync-close、evaluate-rules 和 alerts dispatch |
+| GET  | `/api/tracking/loops/runs/latest` | `tracking_loop.py` | `tracking_loop_runner_service.latest_run` | 读取最近一次 Tracking Loop 运行摘要 |
 | POST | `/api/tracking/evaluate-rules` | `tracking_evaluation.py` | `tracking_evaluation_service.evaluate_active_items` | 触发活跃跟踪项的规则评估，返回 evaluated/alerts_created/alerts_skipped_dup |
 | POST | `/api/tracking/{tracking_id}/llm-advice` | `tracking_llm.py` | `tracking_llm_service.propose_action` | 生成确定性 LLM 建议（decision/suggested_action/suggested_intent） |
 | POST | `/api/tracking/{tracking_id}/confirm-intent` | `tracking_intent.py` | `tracking_service.confirm_intent` | 确认 OrderIntent，写 `intent_confirmed` 事件；显式传入 intent 时更新 `latest_intent` |
@@ -63,6 +66,14 @@ Tracking-Agent 把"选股池命中 → 持续观察 → 规则告警 → LLM 建
 | GET  | `/api/tracking/rule-templates/{template_id}` | `tracking_rule_template.py` | `tracking_rule_template_service.get` | 单模板详情 |
 | PUT  | `/api/tracking/rule-templates/{template_id}` | `tracking_rule_template.py` | `tracking_rule_template_service.update` | 修改模板 |
 | DELETE | `/api/tracking/rule-templates/{template_id}` | `tracking_rule_template.py` | `tracking_rule_template_service.delete` | 删除模板 |
+
+### Post-close Loop Runner
+
+- `POST /api/tracking/loops/post-close/run` 编排 sync-close、evaluate-rules 和 alerts dispatch。
+- 默认 `sync_first=true`、`slot=post_close`、`per_slot_limit=8`。
+- Runner 写入 `tracking_loop_runs`，终态为 `done|partial|error`；同进程已有运行时返回 `busy`。
+- 缺省 notifier 仍为空实现；真实钉钉 smoke 必须单独执行，不属于默认自动化回归。
+- `tracking_loop.router` 是 `/api/tracking/loops*` 固定前缀路由，必须在 generic `tracking.router` 前注册，避免被 `/api/tracking/{tracking_id}` 通配吞掉。
 
 ---
 
@@ -153,10 +164,11 @@ suggested_intent ──► JSON 面板 ──► 确认 OrderIntent ──►  l
 
 FastAPI 按 `include_router` 顺序匹配路径。`tracking.router` 中存在 `/tracking/{tracking_id}` 通配，若放在 `tracking_alert.router`、`tracking_evaluation.router` 等前，会把 `/api/tracking/alerts`、`/api/tracking/evaluate-rules` 等固定段当作 `tracking_id` 吃掉，返回 404 `跟踪记录不存在: alerts`。
 
-**正确顺序**（commit `1ab0e69`，`web/backend/main.py` L154-160）：
+**正确顺序**（`web/backend/main.py` 路由注册段）：
 
 ```
 manual_selection.router
+tracking_loop.router             # /api/tracking/loops*
 tracking_alert.router            # /api/tracking/alerts*
 tracking_rule_template.router    # /api/tracking/rule-templates*
 tracking_evaluation.router       # /api/tracking/evaluate-rules
@@ -165,7 +177,7 @@ tracking_intent.router           # /api/tracking/{id}/confirm-intent | reject-in
 tracking.router                  # 通配兜底
 ```
 
-新增 `/api/tracking/<固定段>` 子路由时**必须**插在 `tracking.router` 之前，否则会被通配吞掉。
+新增 `/api/tracking/<固定段>` 子路由时**必须**插在 `tracking.router` 之前，否则会被通配吞掉。`tracking_loop.router` 同样受此约束，不能放到 generic `tracking.router` 后面。
 
 ---
 
@@ -183,12 +195,17 @@ tracking.router                  # 通配兜底
 - E2E 烟囱测试已走通：批量评估 → 展开行 → LLM 建议 → 否决（带原因）→ 单条评估 → 确认 OrderIntent（`intent_id=oi_059ea60b9776`）。
 - 后端单测：`pytest -W error::pytest.PytestUnhandledThreadExceptionWarning`（165 用例通过）。
 - 路由契约回归建议：在新增任何 `/api/tracking/*` 路由后，至少 curl 一次 `GET /api/tracking/alerts` 确认未被通配吞掉。
-- 本次文档 closeout 仅做静态验证：stale term `rg` 与 `git diff --check`；未重新运行后端 pytest、前端构建或真实 provider smoke。
+- Post-close Loop Runner focused regression：
+  - `python -m pytest tests/test_tracking_loop_runner_service.py tests/test_tracking_loop_router.py tests/test_tracking_route_order.py -q`
+  - `python -m pytest tests/test_tracking_loop_contract.py tests/test_tracking_alert_service.py tests/test_tracking_alert_router.py tests/test_tracking_evaluation_service.py -q`
+  - `python -c "from web.backend.main import app; print('import-ok')"`
+  - `git diff --check HEAD~3..HEAD`
+- 真实 LLM、真实钉钉、券商/QMT smoke 不进入默认回归命令，必须单独开任务、单独记录 provider / 通道 / 成本或外部副作用证据。
 
 ---
 
 ## 11. Post-closeout 边界
 
 - **Manual Pool → Tracking Intake Bridge**：后续若要增强人工池到跟踪池的运营体验，应只围绕 `/api/manual-selections/*` 与 `/api/tracking/batch-from-selection` 的错误反馈、重复项展示和日期选择展开。
-- **Post-close Loop Runner**：后续若要加入收盘后自动评估/推送，应作为独立调度任务设计；默认测试仍使用 mock provider，真实 provider smoke 单独记录。
+- **Post-close Loop Runner**：P0 后端入口已落地为 `POST /api/tracking/loops/post-close/run`，当前只做手动/API 触发的收盘后编排与运行记录。后续若要接入 cron、前端按钮或真实钉钉通道，应另开规格；默认测试仍使用 mock provider，真实 provider smoke 单独记录。
 - **券商/QMT/自动下单**：不属于当前 Tracking Agent Loop MVP。`OrderIntent` 只允许人工确认或否决，不自动提交订单。

@@ -2,14 +2,21 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, Download, DataAnalysis } from '@element-plus/icons-vue'
+import { Refresh, Download, DataAnalysis, Plus } from '@element-plus/icons-vue'
 import { useManualSelectionStore } from '@/stores/manualSelection'
+import {
+  batchCreateTrackingFromSelection,
+  type TrackingBatchFromSelectionResult,
+} from '@/api'
 
 const router = useRouter()
 const store = useManualSelectionStore()
 
 const selectedDate = ref('')
 const filterText = ref('')
+const selectedRows = ref<any[]>([])
+const intakeLoading = ref(false)
+const intakeResult = ref<TrackingBatchFromSelectionResult | null>(null)
 
 function shiftDays(days: number): Date {
   const date = new Date()
@@ -35,22 +42,40 @@ const filteredItems = computed(() => {
   )
 })
 
+const isRangeMode = computed(() => !selectedDate.value)
+const selectedVisibleItems = computed(() => {
+  const visibleCodes = new Set(filteredItems.value.map(item => item.code))
+  return selectedRows.value.filter(item => visibleCodes.has(item.code))
+})
+
+const selectedIntakeDisabled = computed(() =>
+  isRangeMode.value || intakeLoading.value || !selectedVisibleItems.value.length
+)
+const currentListIntakeDisabled = computed(() =>
+  isRangeMode.value || intakeLoading.value || !filteredItems.value.length
+)
+
 async function refresh() {
   if (selectedDate.value) {
     await store.fetchByDate(selectedDate.value)
   } else {
     await store.fetchByRange(dateRange.value[0], dateRange.value[1])
   }
+  selectedRows.value = []
   await store.fetchDates(120)
 }
 
 async function selectDate(date: string) {
   selectedDate.value = date
+  selectedRows.value = []
+  intakeResult.value = null
   await store.fetchByDate(date)
 }
 
 async function clearDateFilter() {
   selectedDate.value = ''
+  selectedRows.value = []
+  intakeResult.value = null
   await store.fetchByRange(dateRange.value[0], dateRange.value[1])
 }
 
@@ -105,6 +130,57 @@ function sendSingleToBacktest(item: any) {
   })
 }
 
+function handleSelectionChange(rows: any[]) {
+  selectedRows.value = rows
+}
+
+function rowSelectable() {
+  return !isRangeMode.value
+}
+
+function uniqueCodes(items: any[]): string[] {
+  return Array.from(new Set(items.map(item => String(item.code || '').trim()).filter(Boolean)))
+}
+
+async function joinTrackingFromItems(items: any[], emptyMessage: string) {
+  if (!selectedDate.value) {
+    ElMessage.warning('区间模式不能加入跟踪，请先选择单日')
+    return
+  }
+  const codes = uniqueCodes(items)
+  if (!codes.length) {
+    ElMessage.warning(emptyMessage)
+    return
+  }
+
+  intakeLoading.value = true
+  try {
+    const response = await batchCreateTrackingFromSelection({
+      selection_date: selectedDate.value,
+      codes,
+    })
+    intakeResult.value = response.data.data
+    ElMessage.success(`已加入跟踪 ${intakeResult.value.created} 只，跳过 ${intakeResult.value.skipped} 只`)
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('加入跟踪失败')
+  } finally {
+    intakeLoading.value = false
+  }
+}
+
+function joinSelectedToTracking() {
+  void joinTrackingFromItems(selectedVisibleItems.value, '请先勾选要加入跟踪的股票')
+}
+
+function joinCurrentListToTracking() {
+  void joinTrackingFromItems(filteredItems.value, '当前列表为空')
+}
+
+function gotoTracking() {
+  router.push('/tracking')
+}
+
 function exportCsv() {
   if (!filteredItems.value.length) {
     ElMessage.warning('当前列表为空')
@@ -157,6 +233,27 @@ onMounted(async () => {
         />
         <el-button :icon="Refresh" size="small" @click="refresh">刷新</el-button>
         <el-button :icon="Download" size="small" @click="exportCsv">导出 CSV</el-button>
+        <el-button
+          type="success"
+          :icon="Plus"
+          size="small"
+          :loading="intakeLoading"
+          :disabled="selectedIntakeDisabled"
+          @click="joinSelectedToTracking"
+        >
+          选中加入跟踪
+        </el-button>
+        <el-button
+          type="success"
+          plain
+          :icon="Plus"
+          size="small"
+          :loading="intakeLoading"
+          :disabled="currentListIntakeDisabled"
+          @click="joinCurrentListToTracking"
+        >
+          当前列表加入跟踪
+        </el-button>
         <el-button type="primary" :icon="DataAnalysis" size="small" @click="sendToBacktest">批量回测当前列表</el-button>
       </div>
     </div>
@@ -186,9 +283,40 @@ onMounted(async () => {
       <main class="result-panel" v-loading="store.loading">
         <div class="result-header">
           <strong>{{ selectedDate || `${dateRange[0]} ~ ${dateRange[1]}` }}</strong>
-          <span class="hint">共 {{ filteredItems.length }} 只</span>
+          <span class="hint">共 {{ filteredItems.length }} 只，已选 {{ selectedVisibleItems.length }} 只</span>
         </div>
-        <el-table :data="filteredItems" size="small" border height="100%" empty-text="还没有人工选股，请到策略结果页或个股详情页勾选加入">
+        <el-alert
+          v-if="isRangeMode"
+          class="intake-alert"
+          title="区间模式只用于筛选和回测。加入跟踪前请先在左侧选择单日，避免把多日信号混入同一次跟踪入口。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <div v-if="intakeResult" class="intake-result">
+          <div class="intake-result-main">
+            <strong>跟踪加入结果</strong>
+            <span>新增 {{ intakeResult.created }} 只</span>
+            <span>跳过 {{ intakeResult.skipped }} 只</span>
+            <span>失败 {{ intakeResult.failed.length }} 只</span>
+          </div>
+          <div v-if="intakeResult.skipped_codes.length" class="intake-codes">
+            跳过代码：{{ intakeResult.skipped_codes.join('、') }}
+          </div>
+          <div v-if="intakeResult.failed.length" class="intake-codes is-error">
+            失败代码：{{ intakeResult.failed.join('、') }}
+          </div>
+          <el-button size="small" type="primary" plain @click="gotoTracking">查看跟踪</el-button>
+        </div>
+        <el-table
+          :data="filteredItems"
+          size="small"
+          border
+          height="100%"
+          empty-text="还没有人工选股，请到策略结果页或个股详情页勾选加入"
+          @selection-change="handleSelectionChange"
+        >
+          <el-table-column type="selection" width="42" :selectable="rowSelectable" />
           <el-table-column prop="selection_date" label="选股日期" width="110" />
           <el-table-column prop="code" label="代码" width="90">
             <template #default="{ row }">
@@ -231,4 +359,9 @@ onMounted(async () => {
 .result-panel { padding: 12px; }
 .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .hint { font-size: 12px; color: #909399; }
+.intake-alert { margin-bottom: 8px; }
+.intake-result { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; padding: 8px 10px; border: 1px solid #dcdfe6; border-radius: 6px; background: #f9fafc; font-size: 12px; color: #606266; }
+.intake-result-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.intake-codes { color: #909399; }
+.intake-codes.is-error { color: #f56c6c; }
 </style>

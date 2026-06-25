@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import api, {
   acknowledgeTrackingAlert,
+  batchCreateTrackingFromSelection,
   createTrackingItem,
   evaluateTrackingItem,
   getTrackingLLMAdvice,
@@ -62,5 +63,22 @@ describe('tracking API', () => {
       '/tracking/trk_test/llm-advice',
       { profile: 'zettaranc_style' },
     )
+  })
+
+  it('batch creates tracking items from a manual selection date', async () => {
+    const postSpy = vi.spyOn(api, 'post').mockResolvedValue({
+      data: {
+        success: true,
+        data: { created: 1, skipped: 0, skipped_codes: [], failed: [] },
+      },
+    } as any)
+    const intakePayload = {
+      selection_date: '2026-05-06',
+      codes: ['000559', '600000'],
+    }
+
+    await batchCreateTrackingFromSelection(intakePayload)
+
+    expect(postSpy).toHaveBeenCalledWith('/tracking/batch-from-selection', intakePayload)
   })
 })

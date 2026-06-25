@@ -631,6 +631,26 @@ export interface TrackingEvent {
 export const createTrackingItem = (payload: TrackingCreatePayload) =>
   api.post('/tracking', payload)
 
+export interface TrackingBatchFromSelectionPayload {
+  selection_date: string
+  codes?: string[]
+}
+
+export interface TrackingBatchFromSelectionResult {
+  created: number
+  skipped: number
+  skipped_codes: string[]
+  failed: string[]
+  evaluation?: Record<string, any>
+  evaluation_error?: string
+}
+
+export const batchCreateTrackingFromSelection = (payload: TrackingBatchFromSelectionPayload) =>
+  api.post<{ success: boolean; data: TrackingBatchFromSelectionResult }>(
+    '/tracking/batch-from-selection',
+    payload,
+  )
+
 export const listTrackingItems = (params?: { status?: string; code?: string; limit?: number }) =>
   api.get('/tracking', { params })
 

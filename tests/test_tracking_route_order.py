@@ -42,6 +42,7 @@ _FIXED_GET_PATHS = [
 
 # POST 类固定子路径同样需要避让 catch-all；用空 body 触发 422/400 也比 404 健康。
 _FIXED_POST_PATHS = [
+    "/api/tracking/loops/post-close/run",
     "/api/tracking/batch-create",
     "/api/tracking/batch-delete",
     "/api/tracking/batch-from-selection",

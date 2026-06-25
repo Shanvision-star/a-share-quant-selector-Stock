@@ -21,6 +21,30 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+class _TrackingLoopRunnerStub:
+    def run_post_close(self, **kwargs):
+        return {
+            "run_id": "route_order_stub",
+            "loop_type": "post_close",
+            "status": "done",
+            **kwargs,
+        }
+
+    def latest_run(self, loop_type="post_close"):
+        return {"run_id": "route_order_stub", "loop_type": loop_type, "status": "done"}
+
+
+@pytest.fixture(autouse=True)
+def stub_tracking_loop_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    from web.backend.routers import tracking_loop as router_module
+
+    monkeypatch.setattr(
+        router_module,
+        "tracking_loop_runner_service",
+        _TrackingLoopRunnerStub(),
+    )
+
+
 @pytest.fixture(scope="module")
 def client() -> TestClient:
     # 延迟导入：保证测试运行时 main.py 内的副作用（路由注册）按真实顺序执行

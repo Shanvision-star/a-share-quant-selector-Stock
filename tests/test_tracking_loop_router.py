@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -25,16 +26,16 @@ class _RunnerStub:
         return {"run_id": "tlr_latest", "loop_type": loop_type, "status": "done"}
 
 
-def _client(runner: _RunnerStub) -> TestClient:
+def _client(runner: _RunnerStub, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     app = FastAPI()
-    router_module.tracking_loop_runner_service = runner
+    monkeypatch.setattr(router_module, "tracking_loop_runner_service", runner)
     app.include_router(router_module.router)
     return TestClient(app)
 
 
-def test_post_close_run_endpoint_calls_runner_with_payload():
+def test_post_close_run_endpoint_calls_runner_with_payload(monkeypatch: pytest.MonkeyPatch):
     runner = _RunnerStub()
-    client = _client(runner)
+    client = _client(runner, monkeypatch)
 
     resp = client.post(
         "/api/tracking/loops/post-close/run",
@@ -62,9 +63,9 @@ def test_post_close_run_endpoint_calls_runner_with_payload():
     ]
 
 
-def test_latest_run_endpoint_returns_runner_payload():
+def test_latest_run_endpoint_returns_runner_payload(monkeypatch: pytest.MonkeyPatch):
     runner = _RunnerStub()
-    client = _client(runner)
+    client = _client(runner, monkeypatch)
 
     resp = client.get("/api/tracking/loops/runs/latest")
 

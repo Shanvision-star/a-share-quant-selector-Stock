@@ -6,7 +6,7 @@
 - 同一入口可由前端"收盘同步"按钮手动触发，也可未来接入 APScheduler 定时任务。
 
 依赖：
-- utils.akshare_fetcher.AkshareDataFetcher.fetch_stock_update （增量拉行情）
+- utils.akshare_fetcher.AKShareFetcher.fetch_stock_update （增量拉行情）
 - utils.csv_manager.CSVManager.update_stock （写入 CSV）
 - tracking_service.evaluate_items （推进状态机：watch_buy → holding 等）
 """
@@ -14,14 +14,28 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
 ACTIVE_STATUS = ("watch_buy", "holding", "partial_sold")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DATA_DIR = PROJECT_ROOT / "data"
 
 
-def _fetch_and_update_single(code: str, days: int = 30) -> str:
+def _resolve_data_dir(data_dir=None) -> Path:
+    """解析行情 CSV 目录，默认固定到项目 data，避免受启动 cwd 影响。"""
+    return Path(data_dir) if data_dir is not None else DATA_DIR
+
+
+def _fetch_and_update_single(
+    code: str,
+    days: int = 30,
+    data_dir=None,
+    fetcher_factory: Optional[Callable[[str], Any]] = None,
+    csv_manager_factory: Optional[Callable[[str], Any]] = None,
+) -> str:
     """增量更新单只股票近期行情 CSV。
 
     返回值：
@@ -32,14 +46,17 @@ def _fetch_and_update_single(code: str, days: int = 30) -> str:
     延迟导入避免全局 akshare 登录开销；仅在实际调用时初始化。
     """
     try:
-        # 延迟导入，避免在测试/导入时触发 baostock 登录等副作用
-        from utils.akshare_fetcher import AkshareDataFetcher  # type: ignore
-        from utils.csv_manager import CSVManager  # type: ignore
+        data_path = _resolve_data_dir(data_dir)
+        # 延迟导入，避免在测试/导入时触发 baostock 登录等副作用。
+        if fetcher_factory is None:
+            from utils.akshare_fetcher import AKShareFetcher as fetcher_factory  # type: ignore
+        if csv_manager_factory is None:
+            from utils.csv_manager import CSVManager as csv_manager_factory  # type: ignore
 
-        df = AkshareDataFetcher().fetch_stock_update(code, days=days)
+        df = fetcher_factory(str(data_path)).fetch_stock_update(code, days=days)
         if df is None or df.empty:
             return "skip"
-        CSVManager().update_stock(code, df)
+        csv_manager_factory(str(data_path)).update_stock(code, df)
         return "ok"
     except Exception as exc:
         return str(exc)

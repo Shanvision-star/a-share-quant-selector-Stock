@@ -123,3 +123,21 @@ def test_evaluate_returns_zero_when_frame_empty(service) -> None:
     summary = svc.evaluate_active_items(eval_date="2026-07-19")
     assert summary["evaluated"] == 1
     assert summary["alerts_created"] == 0
+
+
+def test_default_frame_loader_reads_from_configured_data_dir(tmp_path) -> None:
+    from web.backend.services.tracking_evaluation_service import _default_frame_loader
+
+    stock_dir = tmp_path / "00"
+    stock_dir.mkdir()
+    (stock_dir / "000001.csv").write_text(
+        "date,open,high,low,close,volume\n"
+        "2026-06-25,10.0,10.8,9.8,10.5,1000000\n"
+        "2026-06-24,9.5,10.2,9.4,10.0,900000\n",
+        encoding="utf-8",
+    )
+
+    frame = _default_frame_loader("000001", data_dir=tmp_path)
+
+    assert list(frame["date"]) == ["2026-06-24", "2026-06-25"]
+    assert list(frame["close"]) == [10.0, 10.5]

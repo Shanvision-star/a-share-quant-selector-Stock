@@ -16,14 +16,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 import pandas as pd
 
 ACTIVE_TRACKING_STATUS = ("watch_buy", "holding", "partial_sold")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DATA_DIR = PROJECT_ROOT / "data"
 
 
-def _default_frame_loader(code: str) -> pd.DataFrame:
+def _resolve_data_dir(data_dir=None) -> Path:
+    """解析行情 CSV 目录，默认固定到项目 data，避免被启动 cwd 带偏。"""
+    return Path(data_dir) if data_dir is not None else DATA_DIR
+
+
+def _default_frame_loader(code: str, data_dir=None) -> pd.DataFrame:
     """生产环境的默认 frame 加载器：读取 CSV 并升序排序。
 
     延迟导入 utils.csv_manager 避免测试环境强依赖。
@@ -31,7 +39,7 @@ def _default_frame_loader(code: str) -> pd.DataFrame:
     try:
         from utils.csv_manager import CSVManager  # type: ignore
 
-        df = CSVManager().read_stock(code, parse_dates=False)
+        df = CSVManager(str(_resolve_data_dir(data_dir))).read_stock(code, parse_dates=False)
         if df is None or df.empty or "date" not in df.columns:
             return pd.DataFrame()
         return df.sort_values("date").reset_index(drop=True)

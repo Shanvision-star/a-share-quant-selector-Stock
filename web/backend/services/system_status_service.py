@@ -26,7 +26,7 @@ WEB_STRATEGY_RESULTS_FILE = PROJECT_ROOT / "data" / "web_strategy_results.json"
 WEB_STRATEGY_CACHE_DB_FILE = PROJECT_ROOT / "data" / "web_strategy_cache.db"
 WEB_STRATEGY_SCHEMA_VERSION = 1
 UPDATE_RUN_TYPES = {"update_and_rebuild", "update_only", "init_only"}
-EXPECTED_STRATEGY_GROUPS = ("b1", "b2", "bowl", "brick")
+EXPECTED_STRATEGY_GROUPS = ("b1", "b2", "bowl", "brick", "zettaranc")
 ACTIVE_TRACKING_STATUSES = ("watch_buy", "holding", "partial_sold")
 TRACKING_ALERT_UI_STATUSES = (
     "pending",

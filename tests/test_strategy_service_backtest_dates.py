@@ -78,6 +78,16 @@ def test_web_strategy_scan_uses_analyze_stock_even_when_select_stocks_is_empty()
     assert hits['b2']['stock_result']['signals'][0]['category'] == 'b2_breakout'
 
 
+def test_web_strategy_service_resolves_zettaranc_filter():
+    class FakeRegistry:
+        strategies = {"ZettarancComboStrategy": object()}
+
+    assert strategy_service._normalize_strategy_filter("zettaranc") == "zettaranc"
+    resolved = strategy_service._resolve_web_strategies(FakeRegistry())
+
+    assert resolved["zettaranc"]["strategy_name"] == "ZettarancComboStrategy"
+
+
 def test_strategy_history_range_filters_by_signal_date(monkeypatch):
     conn = _memory_strategy_db()
     monkeypatch.setattr(repo, 'get_connection', lambda: conn)

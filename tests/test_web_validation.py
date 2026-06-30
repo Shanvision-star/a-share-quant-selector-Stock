@@ -40,6 +40,30 @@ def test_strategy_history_rejects_unbounded_page_size():
     assert response.status_code == 422
 
 
+def test_strategy_results_accepts_zettaranc_filter(monkeypatch):
+    from web.backend.services import strategy_service
+
+    monkeypatch.setattr(strategy_service, "run_strategy", lambda strategy, date=None: {"strategy_filter": strategy})
+    client = TestClient(_build_test_app())
+
+    response = client.get("/api/strategy/results", params={"strategy": "zettaranc"})
+
+    assert response.status_code == 200
+    assert response.json()["data"]["strategy_filter"] == "zettaranc"
+
+
+def test_backtest_request_accepts_zettaranc_strategy():
+    from web.backend.routers.backtest import BacktestRequest
+
+    payload = BacktestRequest(
+        start_date="2026-01-01",
+        end_date="2026-01-31",
+        strategy="zettaranc",
+    )
+
+    assert payload.strategy == "zettaranc"
+
+
 def test_stock_list_rejects_unbounded_page_size():
     client = TestClient(_build_test_app())
 

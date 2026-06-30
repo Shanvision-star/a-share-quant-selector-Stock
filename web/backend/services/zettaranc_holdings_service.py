@@ -33,6 +33,7 @@ from utils.csv_manager import CSVManager  # noqa: E402
 
 
 DEFAULT_HOLDINGS_PATH = ROOT / "data" / "zettaranc_holdings.json"
+HARD_PUSH_RULES = {"stop_loss", "position_overflow"}
 
 
 @dataclass
@@ -220,6 +221,42 @@ class ZettarancHoldingsService:
         severity_rank = {"critical": 0, "warn": 1, "info": 2}
         alerts.sort(key=lambda a: (severity_rank.get(a.severity, 9), a.code))
         return [asdict(a) for a in alerts]
+
+    def push_alerts(self, alerts: list[dict], notifier=None) -> dict:
+        """推送硬纪律告警，默认不触发任何真实外部 HTTP。
+
+        ``notifier`` 只要求提供 ``send_markdown(title, content)`` 方法；测试注入
+        RecordingNotifier，真实调用方可传 ``utils.dingtalk_notifier.DingTalkNotifier``。
+        这里只发送止损和仓位超限，止盈/时间止损仍留在前端提醒，避免钉钉噪声过高。
+        """
+        if notifier is None:
+            return {"sent": 0, "skipped": len(alerts), "failed": 0}
+
+        hard_alerts = [a for a in alerts if a.get("rule") in HARD_PUSH_RULES]
+        skipped = len(alerts) - len(hard_alerts)
+        if not hard_alerts:
+            return {"sent": 0, "skipped": skipped, "failed": 0}
+
+        lines = [
+            "## Zettaranc 持仓纪律告警",
+            "",
+            "| 代码 | 规则 | 级别 | 说明 |",
+            "|---|---|---|---|",
+        ]
+        for alert in hard_alerts:
+            code = str(alert.get("code", ""))
+            name = str(alert.get("name", ""))
+            rule = str(alert.get("rule", ""))
+            severity = str(alert.get("severity", ""))
+            message = str(alert.get("message", ""))
+            lines.append(f"| {code} {name} | {rule} | {severity} | {message} |")
+
+        ok = bool(notifier.send_markdown("Zettaranc 持仓纪律告警", "\n".join(lines)))
+        return {
+            "sent": len(hard_alerts) if ok else 0,
+            "skipped": skipped,
+            "failed": 0 if ok else len(hard_alerts),
+        }
 
 
 # 模块级单例（路由层共享一份）

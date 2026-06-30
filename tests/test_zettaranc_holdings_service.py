@@ -110,3 +110,43 @@ def test_alerts_sorted_critical_first(svc: ZettarancHoldingsService) -> None:
                             entry_price=10.0, qty=1000, stop_loss=9.5))  # stop_loss critical
     alerts = svc.check_stop_alerts(today="2026-05-05")
     assert alerts[0]["severity"] == "critical"
+
+
+class RecordingMarkdownNotifier:
+    """记录 Markdown 推送调用，不触发真实钉钉 HTTP。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def send_markdown(self, title: str, content: str) -> bool:
+        self.calls.append((title, content))
+        return True
+
+
+def test_push_alerts_noops_without_notifier(svc: ZettarancHoldingsService) -> None:
+    alerts = [
+        {"code": "000001", "name": "平安", "rule": "stop_loss", "severity": "critical", "message": "跌破止损", "extra": {}},
+    ]
+
+    summary = svc.push_alerts(alerts)
+
+    assert summary == {"sent": 0, "skipped": 1, "failed": 0}
+
+
+def test_push_alerts_sends_only_hard_alert_rules(svc: ZettarancHoldingsService) -> None:
+    notifier = RecordingMarkdownNotifier()
+    alerts = [
+        {"code": "000001", "name": "平安", "rule": "stop_loss", "severity": "critical", "message": "跌破止损", "extra": {}},
+        {"code": "600000", "name": "浦发", "rule": "position_overflow", "severity": "warn", "message": "仓位超限", "extra": {}},
+        {"code": "000003", "name": "测试", "rule": "take_profit", "severity": "warn", "message": "止盈提示", "extra": {}},
+    ]
+
+    summary = svc.push_alerts(alerts, notifier=notifier)
+
+    assert summary == {"sent": 2, "skipped": 1, "failed": 0}
+    assert len(notifier.calls) == 1
+    title, content = notifier.calls[0]
+    assert title == "Zettaranc 持仓纪律告警"
+    assert "000001 平安" in content
+    assert "600000 浦发" in content
+    assert "000003" not in content

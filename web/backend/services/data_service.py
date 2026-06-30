@@ -694,7 +694,7 @@ async def _run_data_update_unlocked(
         rebuild_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
         # 解析待重建策略集
-        valid_filters = ['b1', 'b2', 'bowl', 'brick']
+        valid_filters = ['b1', 'b2', 'bowl', 'brick', 'zettaranc']
         if not strategies or set(strategies) >= set(valid_filters):
             target_filters = ['all']
         else:

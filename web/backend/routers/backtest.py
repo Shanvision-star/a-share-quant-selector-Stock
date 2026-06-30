@@ -27,7 +27,7 @@ class BacktestRequest(BaseModel):
     simulation_end_date: Optional[str] = Field(default=None, pattern=DATE_PATTERN)
     timeframe: Literal['daily', 'minute'] = 'daily'
     source: Literal['manual', 'strategy', 'codes'] = 'strategy'
-    strategy: Literal['all', 'b1', 'b2', 'bowl', 'brick'] = 'all'
+    strategy: Literal['all', 'b1', 'b2', 'bowl', 'brick', 'zettaranc'] = 'all'
     selected_codes: list[str] = Field(default_factory=list)
     selected_candidates: list[BacktestCandidate] = Field(default_factory=list)
     input_codes: list[str] = Field(default_factory=list)

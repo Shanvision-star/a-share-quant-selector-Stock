@@ -84,6 +84,7 @@ _STRATEGY_NAME_MAP = {
     'b2': ('B2Strategy',),
     'bowl': ('BowlReboundStrategy',),
     'brick': ('BrickPatternStrategy',),
+    'zettaranc': ('ZettarancComboStrategy',),
 }
 
 _B1_PARAM_META = {
@@ -123,6 +124,13 @@ _PARAM_META = {
     'BrickPatternStrategy': {
         'rebound_strength_ratio': {'label': '回升力度比例', 'min': 0.5, 'max': 1.5, 'step': 0.05, 'desc': '当日砖型图回升幅度 / 前一段回落幅度'},
         'upper_shadow_max': {'label': '上影线占比上限', 'min': 0.05, 'max': 0.6, 'step': 0.05, 'desc': '上影线 / 当日振幅，默认不超过25%'},
+    },
+    'ZettarancComboStrategy': {
+        'J_BUY': {'label': 'J值入场阈值', 'min': -20, 'max': 20, 'step': 1, 'desc': 'KDJ 的 J 值低位回升阈值'},
+        'VOL_RATIO_MIN': {'label': '量比下限', 'min': 1.0, 'max': 5.0, 'step': 0.1, 'desc': '成交量 / 5 日均量的攻击日下限'},
+        'CAP': {'label': '市值门槛(亿)', 'min': 10, 'max': 1000, 'step': 10, 'desc': '总市值门槛', 'scale': 1e8},
+        'duokong_pct': {'label': '多空线偏离%', 'min': 0.1, 'max': 10, 'step': 0.1, 'desc': '距离多空线百分比'},
+        'short_pct': {'label': '短期趋势偏离%', 'min': 0.1, 'max': 10, 'step': 0.1, 'desc': '距离短期趋势线百分比'},
     },
 }
 
@@ -178,7 +186,7 @@ def _get_case_examples_for_strategy(strategy_name: str) -> list:
 
 def _normalize_strategy_filter(strategy_filter: str = None) -> str:
     normalized = (strategy_filter or 'all').lower()
-    if normalized not in {'all', 'b1', 'b2', 'bowl', 'brick'}:
+    if normalized not in {'all', 'b1', 'b2', 'bowl', 'brick', 'zettaranc'}:
         raise ValueError(f'不支持的策略筛选条件: {strategy_filter}')
     return normalized
 

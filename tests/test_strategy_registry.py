@@ -23,3 +23,14 @@ def test_reload_params_reuses_same_instance_for_aliases(tmp_path):
 
     assert DummyStrategy.created == 1
     assert registry.get_strategy("AliasA") is registry.get_strategy("AliasB")
+
+
+def test_auto_register_includes_zettaranc_combo_strategy():
+    registry = StrategyRegistry("config/strategy_params.yaml")
+
+    registry.auto_register_from_directory("strategy")
+
+    strategy = registry.get_strategy("ZettarancComboStrategy")
+    assert strategy.__class__.__name__ == "ZettarancComboStrategy"
+    assert strategy.params["J_BUY"] == 0
+    assert strategy.params["VOL_RATIO_MIN"] == 1.3

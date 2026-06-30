@@ -7,16 +7,17 @@ from sse_starlette.sse import EventSourceResponse
 router = APIRouter(prefix="/api", tags=["策略选股"])
 
 _STOCK_CODE_RE = r"^\d{6}$"
+_STRATEGY_FILTER_RE = "^(all|b1|b2|bowl|brick|zettaranc)$"
 
 
 @router.get("/strategy/results")
 async def get_strategy_results(
-    strategy: str = Query("all", pattern="^(all|b1|b2|bowl|brick)$"),
+    strategy: str = Query("all", pattern=_STRATEGY_FILTER_RE),
     date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     """
     获取策略选股结果
-    - strategy: all / b1 / b2 / bowl
+    - strategy: all / b1 / b2 / bowl / brick / zettaranc
     - date: 指定日期（可选，默认最新交易日）
     """
     from web.backend.services.strategy_service import run_strategy
@@ -26,7 +27,7 @@ async def get_strategy_results(
 
 @router.get("/strategy/results/history")
 async def get_strategy_results_history(
-    strategy: str = Query("all", pattern="^(all|b1|b2|bowl|brick)$"),
+    strategy: str = Query("all", pattern=_STRATEGY_FILTER_RE),
     start_date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     end_date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     code: str | None = Query(None, pattern=_STOCK_CODE_RE),
@@ -64,7 +65,7 @@ async def get_strategy_results_history(
 @router.get("/strategy/results/dates")
 async def get_available_dates(
     limit: int = Query(30, ge=1, le=100),
-    strategy: str = Query("all", pattern="^(all|b1|b2|bowl|brick)$"),
+    strategy: str = Query("all", pattern=_STRATEGY_FILTER_RE),
 ):
     """获取有结果的日期列表（按信号日期优先）"""
     from web.backend.services import strategy_result_repository as repo
@@ -74,7 +75,7 @@ async def get_available_dates(
 
 @router.get("/strategy/cache/status")
 async def get_strategy_cache_status(
-    strategy: str = Query("all", pattern="^(all|b1|b2|bowl|brick)$"),
+    strategy: str = Query("all", pattern=_STRATEGY_FILTER_RE),
     date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     """获取策略缓存状态"""
@@ -86,7 +87,7 @@ async def get_strategy_cache_status(
 
 @router.post("/strategy/cache/rebuild")
 async def rebuild_strategy_cache(
-    strategy: str = Query("all", pattern="^(all|b1|b2|bowl|brick)$"),
+    strategy: str = Query("all", pattern=_STRATEGY_FILTER_RE),
     date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     """手动重建策略缓存（SSE 流式返回进度）"""
@@ -103,7 +104,7 @@ async def rebuild_strategy_cache(
 async def get_strategy_runs(
     run_type: str = Query(None),
     status: str = Query(None),
-    strategy: str = Query("all", pattern="^(all|b1|b2|bowl|brick)$"),
+    strategy: str = Query("all", pattern=_STRATEGY_FILTER_RE),
     date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),

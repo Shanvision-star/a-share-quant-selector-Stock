@@ -115,12 +115,12 @@ P0(#1 手续费) → 重跑回测确认数值 → P1(#2 X2出场) → P1(#3 参�
 ### 6.2 各项执行要点
 
 **T1 — 回测脚本专项回归测试（最高优先，零业务风险）**
-- 现状缺口：`scripts/run_zettaranc_backtest.py` 的手续费百分点口径（P0 修复点）与 X2「连续 2 日破 BBI」出场（P1#2）目前**没有任何单测覆盖**，只靠手工实跑确认。一旦后续改动很容易悄悄回退。
-- 方案：新增 `tests/test_zettaranc_backtest_script.py`，用构造的小型 DataFrame 直接驱动 `simulate_trade`：
-  - 用例 A：纯涨/纯跌序列断言 `pnl_pct == raw_pct - 2*fee_pct`（锁死手续费口径，防 100 倍回归）。
+- 状态：本轮已收口，归类为验证缺口而非生产代码缺口。
+- 已执行：新增 `tests/test_zettaranc_backtest_script.py`，用构造的小型 DataFrame 直接驱动 `simulate_trade`：
+  - 用例 A：断言 `pnl_pct == raw_pct - 2*fee_pct`，锁死手续费百分点口径，防 100 倍回归。
   - 用例 B：构造收盘连续 2 日 < BBI 的序列，断言 `exit_reason=="break_bbi"` 且按收盘价离场；构造仅 1 日破位则不触发。
-  - 用例 C：止损/止盈/时间止损优先级各一条，断言出场优先级顺序。
-- 验证：`pytest tests/test_zettaranc_backtest_script.py -q` → 全量回归 237+→ 应升至 240+ 全绿。
+  - 用例 C：断言止损优先于止盈和 BBI 破位；时间止损作为未触发其他出场时的兜底。
+- 验证：`python -m pytest tests/test_zettaranc_backtest_script.py -q` → `4 passed`。
 
 **T2 — DEFAULT_PARAMS 与 yaml 口径收口（消除双源默认）**
 - 状态：本轮已收口。
@@ -128,26 +128,48 @@ P0(#1 手续费) → 重跑回测确认数值 → P1(#2 X2出场) → P1(#3 参�
 - 验证：新增默认值断言，要求策略类与 API 回测入参默认值均与 yaml 选型一致。
 
 **T3 — 持仓纪律钉钉推送钩子（P2#5）**
-- 现状：`zettaranc_holdings_service.py` docstring 第 3 点标注「钉钉推送钩子（可选；测试中不会真正调用）」，尚未接入真实 `DingTalkNotifier`。
-- 方案：在纪律巡检产出 `HoldingAlert` 后，新增可选 `push_alerts(alerts, notifier=None)`：复用既有钉钉通知模块，仅推送 X1 止损/越上限等硬告警；`notifier=None` 时 no-op，保证现有 7 项测试零回归。配置开关放 yaml（如 `zettaranc.push_enabled`）。
-- 验证：新增 1~2 条注入 mock notifier 的断言用例。
+- 状态：本轮已收口为可注入 hook，默认不触发真实外部 HTTP。
+- 已执行：`ZettarancHoldingsService.push_alerts(alerts, notifier=None)` 已落地；真实调用方可传入兼容 `send_markdown(title, content)` 的 `DingTalkNotifier`，测试中使用 RecordingNotifier。当前仅推送 `stop_loss` 与 `position_overflow` 两类硬纪律告警，止盈/时间止损留在前端提醒，避免钉钉噪声过高。
+- 验证：`python -m pytest tests/test_zettaranc_holdings_service.py::test_push_alerts_noops_without_notifier tests/test_zettaranc_holdings_service.py::test_push_alerts_sends_only_hard_alert_rules -q` → `2 passed`。
+- 未做：真实钉钉 webhook smoke、自动调度、路由自动外发；这些有外部副作用，应单独开任务并记录通道证据。
 
 **T4 — 接入在线 StrategyRegistry/QuantSystem（P2#6，范围最大）**
-- 现状核查：`strategy/zettaranc_combo.py` 是 `BaseStrategy` 子类且位于 `strategy/` 目录，`auto_register_from_directory()` 会自动注册，故「注册」本身已具备。真正缺口在于：在线 `QuantSystem` 执行链路、CLI 命令、导出、钉钉、web 结果页是否把它纳入候选并保持**结果形状一致**。
-- 方案：
-  1. 确认 registry 实际已注册（写一条 import 冒烟/单测断言 `ZettarancCombo` 在注册表内）。
-  2. 核对 `quant_system.py` 选股结果字段与 web `web_strategy_results.json` 形状，使 zettaranc 输出对齐既有 strategy result schema（`strategy_name`、入选股列表、信号字段）。
-  3. 保证 CLI（`main.py run`）可选中该策略且不破坏其他策略输出。
-- 风险控制：此项最容易触及既有在线链路，建议**单独一轮 + 单独验收**，先只读核查再改；保持对 b1/b2/bowl/brick 零影响。
+- 状态：本轮已完成最小产品链路接入。
+- 已执行：
+  1. `StrategyRegistry.auto_register_from_directory("strategy")` 已验证可发现 `ZettarancComboStrategy`，并加载 yaml 默认参数。
+  2. Web 策略服务 `_STRATEGY_NAME_MAP`、策略筛选白名单、缓存状态、更新重建、TXT 导出和回测请求均已允许 `zettaranc`。
+  3. 前端策略结果页、更新页、回测页、TXT 文件库和策略结果分组已增加 `Zettaranc` 入口。
+  4. CLI 窄量 smoke 直接调用 `QuantSystem.select_stocks(max_stocks=1, return_data=True, max_workers=1)`，确认结果键包含 `ZettarancComboStrategy`。
+- 验证：`test_strategy_registry.py::test_auto_register_includes_zettaranc_combo_strategy`、`test_strategy_service_backtest_dates.py::test_web_strategy_service_resolves_zettaranc_filter`、`test_web_validation.py::test_strategy_results_accepts_zettaranc_filter`、`test_web_validation.py::test_backtest_request_accepts_zettaranc_strategy`、前端 `strategyResults.spec.ts` 均通过。
+- 未做：真实浏览器手动 smoke、真实钉钉外发、全量 Web cache rebuild；这些属于外部副作用或重型运行，单独记录。
 
 **T5 — 样本外/滚动窗口稳健性验证（P3）**
 - 动机：当前选型基于单一区间 2024-01-01~2026-05-28 的 300 只池，存在过拟合到该窗口的风险。
-- 方案：用现有回测脚本做时间切分——以 2024 全年为「样本内」选参，2025+ 为「样本外」复跑，比对胜率/盈亏比是否在样本外仍达标（胜率≥45%、盈亏比≥1.5）。结论追加到本文件。
-- 不新增引擎：复用 `run_zettaranc_backtest.py` 的 `--start/--end`，仅脚本编排。
+- 状态：本轮完成低成本样本验证，尚不足以给出稳健性定论。
+- 已执行：
+  - 样本内：`python scripts/run_zettaranc_backtest.py --start 2024-01-01 --end 2024-12-31 --limit 50` → 6 笔、胜率 33.33%、盈亏比 9.51、最大回撤 4.16%。
+  - 样本外：`python scripts/run_zettaranc_backtest.py --start 2025-01-01 --end 2026-05-28 --limit 50` → 0 笔。
+- 结论：limit 50 样本外没有交易，不足以证明或否定策略稳健性；不能据此修改 yaml。后续应提升到 `--limit 300` 后再判断，最后才考虑 `--limit 0` 全量。
 
 **T6 — 扩大股票池 + 参数敏感性复核（P3）**
 - 动机：sweep 与回测都限于 `--limit 300`，全量池下样本量与稳定性需复核。
-- 方案：以 `--pool local_all --limit 0` 跑全量，复核 J_BUY=0/VOL=1.3 在更大样本下指标是否稳定；如偏移，回到 sweep 网格微调并更新 yaml + 第 5 节表格。
+- 状态：本轮完成 limit 50 参数敏感性快照；全量复核未执行。
+- 已执行：`python scripts/zettaranc_param_sweep.py --limit 50 --start 2024-01-01 --end 2026-05-28`。
+- 快照结果：
+
+| J_BUY | VOL_RATIO | 信号 | 交易 | 胜率% | 盈亏比 | 最大回撤% | 平均持仓 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| -5.0 | 1.3 | 2 | 2 | 50.00 | 35.99 | 0.41 | 12.50 |
+| -5.0 | 1.5 | 0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 |
+| -5.0 | 2.0 | 0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 |
+| 0.0 | 1.3 | 6 | 6 | 33.33 | 9.51 | 4.16 | 9.17 |
+| 0.0 | 1.5 | 1 | 1 | 0.00 | 0.00 | 1.06 | 7.00 |
+| 0.0 | 2.0 | 0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 |
+| 5.0 | 1.3 | 7 | 7 | 28.57 | 9.58 | 5.61 | 7.86 |
+| 5.0 | 1.5 | 2 | 2 | 0.00 | 0.00 | 2.56 | 3.50 |
+| 5.0 | 2.0 | 0 | 0 | 0.00 | 0.00 | 0.00 | 0.00 |
+
+- 结论：`VOL_RATIO_MIN=2.0` 在小样本仍过严；`J_BUY=0 / VOL_RATIO_MIN=1.3` 有可用样本但胜率未达 45%，暂不更新 yaml。下一步应跑 `--limit 300` 的 T5/T6 后再评估是否微调。
 
 ### 6.3 验收基线（与第 3 节叠加）
 - 每项 Python 改动：focused `pytest tests/test_zettaranc_*.py -q` + `python -c "import ..."` 冒烟。

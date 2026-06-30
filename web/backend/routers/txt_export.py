@@ -53,9 +53,11 @@ STRATEGY_LABEL = {
     "b2": "B2突破",
     "bowl": "碗底反弹",
     "brick": "砖型图",
+    "zettaranc": "Zettaranc",
 }
 
-CLASSIFIED_STRATEGIES = ("b1", "b2", "bowl", "brick")
+CLASSIFIED_STRATEGIES = ("b1", "b2", "bowl", "brick", "zettaranc")
+_STRATEGY_FILTER_RE = "^(all|b1|b2|bowl|brick|zettaranc)$"
 
 
 @router.get("/txt/files")
@@ -207,7 +209,7 @@ async def get_txt_summary(
 
 @router.post("/txt/generate")
 async def generate_txt_file(
-    strategy: str = Query("all", pattern="^(all|b1|b2|bowl|brick)$"),
+    strategy: str = Query("all", pattern=_STRATEGY_FILTER_RE),
     date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     """从策略结果数据库生成通达信 TXT 文件"""

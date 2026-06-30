@@ -379,7 +379,7 @@ def test_read_only_strategy_cache_marks_same_date_missing_groups_partial(monkeyp
     payload = service.build_status()
 
     assert payload["strategy_cache"]["status"] == "partial"
-    assert payload["strategy_cache"]["details"]["missing_groups"] == ["bowl", "brick"]
+    assert payload["strategy_cache"]["details"]["missing_groups"] == ["bowl", "brick", "zettaranc"]
     assert payload["overall_status"] == "partial"
 
 

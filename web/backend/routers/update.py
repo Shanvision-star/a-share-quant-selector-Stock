@@ -16,14 +16,14 @@ async def trigger_update(
     pipeline: bool = Query(False),
     allow_intraday_fast: bool = Query(False),
     init_if_empty: bool = Query(True),
-    strategies: str = Query(None, description="按策略筛选；逗号分隔，如 b1,b2,bowl,brick；为空或 all 表示全部"),
+    strategies: str = Query(None, description="按策略筛选；逗号分隔，如 b1,b2,bowl,brick,zettaranc；为空或 all 表示全部"),
 ):
     """触发数据更新（SSE 流式返回进度）
     auto_rebuild=True 时，更新完成后自动执行全策略缓存重建。
     pipeline=True 时，更新阶段即内联执行策略扫描并实时推送命中结果。
     allow_intraday_fast=True 时，允许盘中手动使用当天快照；15:00 后会自动使用快路径。
     init_if_empty=True 时，首次无数据会先自动执行全量初始化再继续日更。
-    strategies 为逗号分隔的策略集合（b1/b2/bowl/brick），为空或包含 all 时按全部执行。
+    strategies 为逗号分隔的策略集合（b1/b2/bowl/brick/zettaranc），为空或包含 all 时按全部执行。
     """
     from web.backend.services.data_service import run_data_update
 

@@ -67,9 +67,10 @@ describe('strategyResults utils', () => {
       { code: '000001', name: 'A', strategy_filter: 'b2', strategy_name: 'B2Strategy' },
       { code: '000002', name: 'B', strategy_filter: 'bowl', strategy_name: 'BowlReboundStrategy' },
       { code: '000003', name: 'C', strategy_filter: 'brick', strategy_name: 'BrickPatternStrategy', category: 'brick_trend_reversal' },
+      { code: '000004', name: 'D', strategy_filter: 'zettaranc', strategy_name: 'ZettarancComboStrategy', category: 'near_duokong' },
     ])
 
-    expect(groups.map(group => group.key)).toEqual(['b1', 'b2', 'bowl', 'brick'])
+    expect(groups.map(group => group.key)).toEqual(['b1', 'b2', 'bowl', 'brick', 'zettaranc'])
     expect(groups[0].signalCount).toBe(2)
     expect(groups[0].uniqueCount).toBe(1)
     expect(groups[0].overlapCount).toBe(1)
@@ -77,5 +78,7 @@ describe('strategyResults utils', () => {
     expect(groups[2].label).toBe('碗底反弹')
     expect(groups[3].label).toBe('砖型图')
     expect(groups[3].items.map(item => item.code)).toEqual(['000003'])
+    expect(groups[4].label).toBe('Zettaranc')
+    expect(groups[4].items.map(item => item.code)).toEqual(['000004'])
   })
 })

@@ -23,12 +23,13 @@ const boards = ref<BoardStatus[]>([])
 const loading = ref(true)
 const selectedDate = ref<string>('')
 const allowIntradayFast = ref(false)
-const selectedStrategies = ref<string[]>(['b1', 'b2', 'bowl', 'brick'])
+const selectedStrategies = ref<string[]>(['b1', 'b2', 'bowl', 'brick', 'zettaranc'])
 const strategyOptions = [
   { value: 'b1', label: 'B1（涨幅）' },
   { value: 'b2', label: 'B2（B1+1日内回踩）' },
   { value: 'bowl', label: '碗形' },
   { value: 'brick', label: '砖型图' },
+  { value: 'zettaranc', label: 'Zettaranc' },
 ]
 const effectiveRunDateLabel = computed(() => selectedDate.value || '后端默认交易日')
 const jobResult = ref<any>(null)

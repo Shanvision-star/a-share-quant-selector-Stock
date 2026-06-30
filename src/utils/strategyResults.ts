@@ -24,7 +24,7 @@ export interface FetchAllStrategyOptions {
   maxPages?: number
 }
 
-export type StrategyGroupKey = 'b1' | 'b2' | 'bowl' | 'brick'
+export type StrategyGroupKey = 'b1' | 'b2' | 'bowl' | 'brick' | 'zettaranc'
 
 export interface StrategyGroup<T = StrategyResultListItem> {
   key: StrategyGroupKey
@@ -40,6 +40,7 @@ export const STRATEGY_GROUP_META: Array<{ key: StrategyGroupKey; label: string }
   { key: 'b2', label: 'B2突破' },
   { key: 'bowl', label: '碗底反弹' },
   { key: 'brick', label: '砖型图' },
+  { key: 'zettaranc', label: 'Zettaranc' },
 ]
 
 export async function fetchAllStrategyResultItems<T = StrategyResultListItem>(
@@ -84,12 +85,21 @@ export function buildUniqueStrategyList<T extends StrategyResultListItem>(items:
 
 export function getStrategyGroupKey(item: StrategyResultListItem): StrategyGroupKey {
   const strategyFilter = String(item.strategy_filter || '').toLowerCase()
-  if (strategyFilter === 'b1' || strategyFilter === 'b2' || strategyFilter === 'bowl' || strategyFilter === 'brick') {
+  if (
+    strategyFilter === 'b1'
+    || strategyFilter === 'b2'
+    || strategyFilter === 'bowl'
+    || strategyFilter === 'brick'
+    || strategyFilter === 'zettaranc'
+  ) {
     return strategyFilter
   }
 
   const name = String(item.strategy_name || '').toLowerCase()
   const category = String(item.category || '').toLowerCase()
+  if (strategyFilter.includes('zettaranc') || name.includes('zettaranc')) {
+    return 'zettaranc'
+  }
   if (
     strategyFilter.includes('brick')
     || name.includes('brick')

@@ -11,7 +11,7 @@ import {
   getTxtDownloadUrl,
 } from '@/api'
 
-type TxtStrategy = 'all' | 'b1' | 'b2' | 'bowl' | 'brick'
+type TxtStrategy = 'all' | 'b1' | 'b2' | 'bowl' | 'brick' | 'zettaranc'
 
 const props = defineProps<{
   strategy?: string
@@ -19,7 +19,13 @@ const props = defineProps<{
 }>()
 
 function normalizeStrategy(value?: string): TxtStrategy {
-  return value === 'b1' || value === 'b2' || value === 'bowl' || value === 'brick' ? value : 'all'
+  return value === 'b1'
+    || value === 'b2'
+    || value === 'bowl'
+    || value === 'brick'
+    || value === 'zettaranc'
+    ? value
+    : 'all'
 }
 
 const txtFiles = ref<any[]>([])
@@ -45,6 +51,7 @@ const STRATEGY_LABEL_MAP: Record<string, string> = {
   b2: 'B2突破',
   bowl: '碗底反弹',
   brick: '砖型图',
+  zettaranc: 'Zettaranc',
   unified: '统一策略',
   combined: '统一策略',
   mixed: '统一策略',
@@ -68,7 +75,7 @@ const groupedTxtFiles = computed(() => {
     groups[key].files.push(item)
   }
   // 按预设顺序排列：B1 → B2 → 碗底 → 砖型 → 统一 → 未分类 → 其他
-  const order = ['b1', 'b2', 'bowl', 'brick', 'unified', 'unknown']
+  const order = ['b1', 'b2', 'bowl', 'brick', 'zettaranc', 'unified', 'unknown']
   return Object.values(groups).sort((a, b) => {
     const ia = order.indexOf(a.key)
     const ib = order.indexOf(b.key)
@@ -243,6 +250,7 @@ function onTxtDateChange() {
           <el-option value="b2" label="B2突破" />
           <el-option value="bowl" label="碗底反弹" />
           <el-option value="brick" label="砖型图" />
+          <el-option value="zettaranc" label="Zettaranc" />
         </el-select>
         <el-select
           v-model="txtFilterDate"

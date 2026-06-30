@@ -101,6 +101,7 @@ const tabs = [
   { key: 'b2', label: 'B2突破' },
   { key: 'bowl', label: '碗底反弹' },
   { key: 'brick', label: '砖型图' },
+  { key: 'zettaranc', label: 'Zettaranc' },
 ]
 const KLINE_PREFETCH_LIMIT = 500
 const KLINE_PREFETCH_DAY_LIMIT = 240

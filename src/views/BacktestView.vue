@@ -874,6 +874,7 @@ onBeforeUnmount(() => {
               <el-option label="B2突破" value="b2" />
               <el-option label="碗底反弹" value="bowl" />
               <el-option label="砖型图" value="brick" />
+              <el-option label="Zettaranc" value="zettaranc" />
             </el-select>
           </el-form-item>
 

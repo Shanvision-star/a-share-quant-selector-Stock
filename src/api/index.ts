@@ -389,7 +389,7 @@ export interface BacktestRequestPayload {
   end_date: string
   simulation_end_date?: string
   source: 'manual' | 'strategy' | 'codes'
-  strategy: 'all' | 'b1' | 'b2' | 'bowl' | 'brick'
+  strategy: 'all' | 'b1' | 'b2' | 'bowl' | 'brick' | 'zettaranc'
   selected_codes?: string[]
   selected_candidates?: Array<{
     code: string

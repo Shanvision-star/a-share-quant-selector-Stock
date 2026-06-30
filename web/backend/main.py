@@ -75,6 +75,7 @@ from web.backend.routers import (
     tracking_llm,
     tracking_llm_diagnose,
     tracking_intent,
+    zettaranc,
 )
 
 
@@ -172,6 +173,7 @@ app.include_router(tracking_llm.router)
 app.include_router(tracking_llm_diagnose.router)
 app.include_router(tracking_intent.router)
 app.include_router(tracking.router)
+app.include_router(zettaranc.router)
 
 
 @app.get("/api/health")

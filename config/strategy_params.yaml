@@ -103,3 +103,20 @@ BowlReboundStrategy:
 BrickPatternStrategy:
   rebound_strength_ratio: 0.8
   upper_shadow_max: 0.25
+# Zettaranc 组合策略：在线扫描由 StrategyRegistry 按类名注入下列参数，
+# 离线回测脚本 run_zettaranc_backtest.py 同样以本节为默认值，CLI/接口可覆盖。
+# 之所以集中在此：避免阈值散落在多处导致在线/回测口径漂移（参见优化计划 P1#3）。
+ZettarancComboStrategy:
+  J_BUY: 0               # E3 J 值入场阈值；参数扫描(P1#4)显示 J=0 较 -5 信号更多(20 vs 12)且盈亏比更优(4.46)
+  VOL_RATIO_MIN: 1.3     # E4 量比下限；扫描显示 2.0 过严(0 笔)、1.3 样本充足(20 笔/胜率65%)，故放宽到 1.3
+  CAP: 4000000000        # E7 总市值门槛（40 亿）
+  M1: 14
+  M2: 28
+  M3: 57
+  M4: 114
+  duokong_pct: 3
+  short_pct: 2
+  # 以下三项仅离线回测使用（在线扫描不消费，BaseStrategy 会忽略未知键）
+  take_profit_pct: 15.0  # 止盈百分比
+  hold_days_limit: 20    # 时间止损天数
+  fee_pct: 0.05          # 单边手续费百分比（万分之5）

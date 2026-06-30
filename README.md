@@ -67,6 +67,7 @@
 - Tracking Agent Loop MVP 已合入当前 `web` 主线：跟踪记录、规则评估、`tracking_alert_events` 告警、LLM 建议、OrderIntent 人工确认/否决形成完整闭环。
 - 接口清单、路由顺序契约（`/api/tracking/*` 子路由必须先于通配 `tracking.router`）、LLM mock 决策表与 OrderIntent 流转图：见 [`docs/TRACKING_AGENT.md`](docs/TRACKING_AGENT.md)。
 - 历史 P0/P1 设计与实施计划只作为基线/审计资料保留，后续不要按旧待办重复实现已合入能力；manual selection API 使用 `/api/manual-selections/*` 复数路径。
+- 2026-06-30 已补跑 Tracking focused backend、backtest compatibility、backend import、nested frontend API 和 frontend build 验证；真实 LLM、钉钉、券商/QMT 和自动调度仍需独立 smoke。
 - 前端入口：`web/frontend/src/views/TrackingView.vue`。
 
 ### 推送与通知

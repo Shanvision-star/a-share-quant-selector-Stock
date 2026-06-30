@@ -397,8 +397,13 @@ These are allowed follow-up task names, not completed facts:
 - Post-close Loop Runner: design an explicit after-close evaluation / dispatch runner.
   Keep mock provider tests as the default and record real provider smoke separately.
 
-Not verified in this documentation-only closeout: backend pytest, frontend build, nested
-frontend repository status, real provider smoke, and DingTalk real dispatch.
+2026-06-30 completion verification refreshed the default, no-external-side-effect checks:
+Tracking focused backend regression 84 passed, backtest compatibility regression 60 passed,
+backend import smoke returned `import-ok`, nested frontend tracking API tests passed 5/5, and
+nested frontend build passed with only non-failing Vite chunk-size warnings.
+
+Still not verified in the default closeout: real provider smoke, DingTalk real dispatch,
+broker/QMT, cron/Windows Task Scheduler activation, and live minute-level trading.
 
 ## 15. Self-Review
 

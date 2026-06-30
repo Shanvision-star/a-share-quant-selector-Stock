@@ -898,7 +898,7 @@ Expected:
 - Frontend build passes or only reports non-failing Vite chunk-size warnings.
 - Diff check reports no whitespace errors.
 
-## Documentation Closeout Verification Matrix (2026-06-25)
+## Documentation Closeout Verification Matrix (2026-06-25 / 2026-06-30)
 
 | Item | Current fact | This documentation task verification |
 | --- | --- | --- |
@@ -907,7 +907,9 @@ Expected:
 | Alert operator actions | ack / ignore / dispatch are MVP facts | Static doc/code path check |
 | OrderIntent boundary | Manual confirm / reject only; no automatic broker order | Static doc check |
 | Real provider smoke | Separate from default tests | Static doc check |
-| Frontend nested repo | Not expanded in this top-level worktree for this task | Not verified |
+| Backend loop regression | Evaluate -> alert -> advice -> intent -> confirm / reject is covered | 2026-06-30 Tracking focused backend regression: 84 passed |
+| Backtest compatibility | Tracking loop does not replace backtest engine contracts | 2026-06-30 backtest regression: 60 passed |
+| Frontend nested repo | Tracking API and production build are usable from the nested repo | 2026-06-30 tracking API test: 5 passed; `npm run build` passed with Vite chunk-size warnings |
 
 Follow-up task boundaries:
 

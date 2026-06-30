@@ -340,18 +340,19 @@ tracking_events。
 
 ---
 
-## 13. Closeout 验证矩阵（2026-06-25 文档同步）
+## 13. Closeout 验证矩阵（2026-06-25 文档同步 / 2026-06-30 补验证）
 
 | 项目 | 当前状态 | 本次验证方式 |
 | --- | --- | --- |
 | manual selection API 路径 | 使用 `/api/manual-selections/*` 复数路径 | `rg` 静态检查 |
 | 告警表/服务命名 | 使用 `tracking_alert_events` | `rg` 静态检查 |
 | ack/ignore/dispatch | MVP 已落地，作为告警状态动作而非交易动作 | 文档与代码路径静态核对 |
-| `suggested_intent` | 进入人工确认/否决，不自动下单 | 文档同步；未跑端到端代码测试 |
-| system status tracking 计数 | MVP 已落地 | 文档同步；未跑后端 pytest |
+| `suggested_intent` | 进入人工确认/否决，不自动下单 | 2026-06-30 跑 `tests/test_tracking_loop_contract.py`，随 Tracking 回归 84 passed |
+| system status tracking 计数 | MVP 已落地 | 2026-06-30 跑 `tests/test_system_status_service.py`，随 Tracking 回归 84 passed |
+| frontend nested repo | Tracking API 与 build 可用 | 2026-06-30 在 nested frontend 跑 tracking API 5 passed；`npm run build` 通过，仅 Vite chunk-size warning |
 | 真实 provider smoke | 不进入默认测试 | 明确边界；本次未执行 |
 
-未验证项：本次是文档 closeout，不运行后端 pytest、前端 build、真实 provider smoke、钉钉真实推送或 nested frontend repo 检查。
+仍未验证项：真实 provider smoke、钉钉真实推送、券商/QMT、cron/Windows Task Scheduler 启用、实时分钟级循环。它们都需要单独任务和外部副作用记录。
 
 ---
 

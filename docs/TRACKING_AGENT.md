@@ -196,6 +196,12 @@ tracking.router                  # 通配兜底
 
 - E2E 烟囱测试已走通：批量评估 → 展开行 → LLM 建议 → 否决（带原因）→ 单条评估 → 确认 OrderIntent（`intent_id=oi_059ea60b9776`）。
 - 后端单测：`pytest -W error::pytest.PytestUnhandledThreadExceptionWarning`（165 用例通过）。
+- 2026-06-30 Completion Loop fresh verification：
+  - Tracking focused backend regression：84 passed。
+  - Backtest compatibility regression：60 passed。
+  - Backend import smoke：`import-ok`。
+  - Nested frontend tracking API：5 passed。
+  - Nested frontend build：通过，仅 Vite chunk-size warning。
 - 路由契约回归建议：在新增任何 `/api/tracking/*` 路由后，至少 curl 一次 `GET /api/tracking/alerts` 确认未被通配吞掉。
 - Post-close Loop Runner focused regression：
   - `python -m pytest tests/test_tracking_loop_runner_service.py tests/test_tracking_loop_router.py tests/test_tracking_route_order.py -q`

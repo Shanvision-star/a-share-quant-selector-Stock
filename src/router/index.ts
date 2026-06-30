@@ -55,6 +55,12 @@ const routes = [
     name: 'StrategyDocs',
     component: () => import('@/views/StrategyDocsView.vue'),
   },
+  {
+    // Zettaranc 综合看板：回测结果 / 持仓纪律 / 攻击日候选
+    path: '/zettaranc',
+    name: 'Zettaranc',
+    component: () => import('@/views/ZettarancView.vue'),
+  },
 ]
 
 const router = createRouter({

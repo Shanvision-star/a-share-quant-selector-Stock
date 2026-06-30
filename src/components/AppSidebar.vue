@@ -62,6 +62,11 @@ function navigate(path: string) {
         <el-icon><Document /></el-icon>
         <template #title>战法文档</template>
       </el-menu-item>
+      <!-- Zettaranc 综合看板 -->
+      <el-menu-item index="/zettaranc">
+        <el-icon><DataAnalysis /></el-icon>
+        <template #title>Zettaranc 看板</template>
+      </el-menu-item>
     </el-menu>
     <div class="sidebar-toggle" @click="isCollapsed = !isCollapsed">
       <span>{{ isCollapsed ? '>>' : '<<' }}</span>

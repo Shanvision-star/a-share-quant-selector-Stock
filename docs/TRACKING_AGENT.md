@@ -206,6 +206,9 @@ tracking.router                  # 通配兜底
   - Backend import smoke：`import-ok`。
   - Nested frontend tracking API：5 passed。
   - Nested frontend build：通过，仅 Vite chunk-size warning。
+- 2026-07-04 Codex CLI 真实 LLM smoke：见 `docs/Tracking/2026-07-04-codex-cli-real-llm-smoke.md`。
+  - API path smoke：`provider=codex_cli`、`provider_fallback=False`、`decision=hold`、`suggested_action=HOLD`、latency `31.59s`。
+  - Direct CLI usage capture：`input_tokens=19954`、`cached_input_tokens=2432`、`output_tokens=161`、`reasoning_output_tokens=83`；CLI 未返回价格，未计算成本。
 - 路由契约回归建议：在新增任何 `/api/tracking/*` 路由后，至少 curl 一次 `GET /api/tracking/alerts` 确认未被通配吞掉。
 - Post-close Loop Runner focused regression：
   - `python -m pytest tests/test_tracking_loop_runner_service.py tests/test_tracking_loop_router.py tests/test_tracking_route_order.py -q`

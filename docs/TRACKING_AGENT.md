@@ -211,7 +211,7 @@ tracking.router                  # 通配兜底
   - Direct CLI usage capture：`input_tokens=19954`、`cached_input_tokens=2432`、`output_tokens=161`、`reasoning_output_tokens=83`；CLI 未返回价格，未计算成本。
 - 2026-07-04 全量 Web strategy cache rebuild 隔离 smoke：见 `docs/Tracking/2026-07-04-web-cache-rebuild-smoke.md`。
   - 当前 `web` 代码 + 真实 `data/` 跑完 5157 只，耗时 `688.52s`，`available_groups=b1,b2,bowl,brick,zettaranc`。
-  - 正式 cache 未覆盖，因为主工作区 `config/strategy_params.yaml` 仍有用户脏改，需先确认参数归属。
+  - 用户确认后已纳入 Bowl 参数变更并执行正式 cache rebuild：`run_id=20260704_220557_b93708ad`、耗时 `664.87s`、`total=176`、`unique_total=169`、`available_groups=b1,b2,bowl,brick,zettaranc`。
 - 2026-07-04 真实钉钉通道 smoke：见 `docs/Tracking/2026-07-04-dingtalk-real-smoke.md`。
   - `DingTalkNotifier.send_markdown()` 返回 `True`；未分发真实 tracking alert，未修改告警状态。
 - 路由契约回归建议：在新增任何 `/api/tracking/*` 路由后，至少 curl 一次 `GET /api/tracking/alerts` 确认未被通配吞掉。

@@ -2,7 +2,7 @@
 
 ## 目的
 
-补齐 `/zettaranc` 页面真实浏览器 smoke，并记录攻击日候选 tab 暴露出的性能问题。此记录只覆盖本地 smoke 和后端性能边界，不代表真实钉钉外发、全量 cache rebuild 或策略参数稳健性验证已经完成。
+补齐 `/zettaranc` 页面真实浏览器 smoke，并记录攻击日候选 tab 暴露出的性能问题。此记录只覆盖本地 smoke 和后端性能边界，不代表真实 tracking alert 分发闭环或策略参数稳健性验证已经完成。
 
 ## 浏览器 smoke 结果
 
@@ -35,7 +35,16 @@
 
 ## 未验证
 
-- 尚未在重启后的 patched backend 上重新跑完整浏览器 smoke。
-- 尚未执行真实钉钉外发 smoke。
-- 尚未执行全量 Web cache rebuild。
+- 尚未执行真实 tracking alert 分发闭环。
 - 尚未执行 `limit=300` / `limit=0` 的 Zettaranc walk-forward 或参数敏感性复核。
+
+## Patched browser smoke 补充
+
+正式 cache rebuild 后，使用 patched backend `http://127.0.0.1:8012` 与前端 `http://127.0.0.1:5176` 重新执行浏览器 smoke：
+
+- `/zettaranc` 回测结果 tab：`/api/zettaranc/backtest/latest` 返回 200，页面展示信号数 20、成交笔数 20、胜率 65.00；console error 为 0。
+- 持仓纪律 tab：`/api/zettaranc/holdings` 与 `/api/zettaranc/holdings/alerts` 返回 200，页面展示 0 持仓、0 告警；console error 为 0。
+- 攻击日候选 tab：`/api/zettaranc/attack-scan?limit=50` 返回 200，页面展示“无候选”；直接 API smoke 约 `1.98s`。
+- `/status` 页面：`/api/system/status` 返回 200，策略缓存显示可用，`available_groups=b1,b2,bowl,brick,zettaranc`。
+
+仍未执行 `limit=300` / `limit=0` 的 Zettaranc walk-forward 或参数敏感性复核。

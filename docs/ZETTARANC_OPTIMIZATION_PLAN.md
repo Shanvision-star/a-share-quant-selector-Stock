@@ -141,7 +141,8 @@ P0(#1 手续费) → 重跑回测确认数值 → P1(#2 X2出场) → P1(#3 参�
   3. 前端策略结果页、更新页、回测页、TXT 文件库和策略结果分组已增加 `Zettaranc` 入口。
   4. CLI 窄量 smoke 直接调用 `QuantSystem.select_stocks(max_stocks=1, return_data=True, max_workers=1)`，确认结果键包含 `ZettarancComboStrategy`。
 - 验证：`test_strategy_registry.py::test_auto_register_includes_zettaranc_combo_strategy`、`test_strategy_service_backtest_dates.py::test_web_strategy_service_resolves_zettaranc_filter`、`test_web_validation.py::test_strategy_results_accepts_zettaranc_filter`、`test_web_validation.py::test_backtest_request_accepts_zettaranc_strategy`、前端 `strategyResults.spec.ts` 均通过。
-- 未做：真实浏览器手动 smoke、真实钉钉外发、全量 Web cache rebuild；这些属于外部副作用或重型运行，单独记录。
+- 2026-07-04 补充：已执行 `/zettaranc` 真实浏览器 smoke 的回测结果 tab 与持仓纪律 tab；攻击日候选 tab 暴露 `attack-scan?limit=50` 长 pending，已将扫描器改为只读取最近 320 根 K 线并完成后端回归。详见 `docs/Tracking/2026-07-04-zettaranc-browser-smoke-and-attack-scan-fix.md`。
+- 未做：重启 patched backend 后的完整浏览器复测、真实钉钉外发、全量 Web cache rebuild；这些属于外部副作用或重型运行，单独记录。
 
 **T5 — 样本外/滚动窗口稳健性验证（P3）**
 - 动机：当前选型基于单一区间 2024-01-01~2026-05-28 的 300 只池，存在过拟合到该窗口的风险。

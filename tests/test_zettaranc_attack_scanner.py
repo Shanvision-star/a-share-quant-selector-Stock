@@ -79,6 +79,34 @@ def test_scan_with_explicit_pool(tmp_path: Path) -> None:
     assert isinstance(result, list)
 
 
+def test_scan_reads_recent_window_for_latest_attack_check(tmp_path: Path) -> None:
+    class RecordingCsv:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def read_stock(self, code, **kwargs):
+            self.calls.append({"code": code, **kwargs})
+            return _attack_df()
+
+    class PassiveStrategy:
+        def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+            return df
+
+        def select_stocks(self, df: pd.DataFrame, stock_name: str = "") -> list[dict]:
+            return []
+
+    csv = RecordingCsv()
+    scanner = ZettarancAttackScanner(
+        csv_manager=csv,
+        strategy=PassiveStrategy(),
+        data_dir=tmp_path,
+    )
+
+    scanner.scan_today(pool=["000001"], limit=1)
+
+    assert csv.calls == [{"code": "000001", "nrows": 320}]
+
+
 def test_scan_name_map_fallback_to_code(tmp_path: Path) -> None:
     _build_csv(tmp_path, "000001", _attack_df())
     # 无 stock_names.json，name 应当 fallback 到 code

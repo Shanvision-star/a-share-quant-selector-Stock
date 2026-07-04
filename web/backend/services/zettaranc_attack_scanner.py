@@ -10,8 +10,8 @@ Zettaranc 攻击日扫描服务
   * 离线回测：枚举历史 K 线，逐笔模拟成交 → 评估策略可行性。
   * 攻击扫描：只看「最新一根」 → 当天能不能进场。
 
-性能：单次扫描 ~5000 只 CSV，预期 30~60 秒；提供 ``limit`` 参数便于前端先小池子
-试一下。
+性能：攻击扫描只判断最新一根 K 线，默认只读取近期窗口；提供 ``limit`` 参数便于前端
+先小池子试一下。
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ if str(ROOT) not in sys.path:
 
 from strategy.zettaranc_combo import MIN_HISTORY, ZettarancComboStrategy  # noqa: E402
 from utils.csv_manager import CSVManager  # noqa: E402
+
+ATTACK_SCAN_RECENT_ROWS = max(MIN_HISTORY, 320)
 
 
 def list_local_codes(data_dir: Path) -> list[str]:
@@ -106,7 +108,9 @@ class ZettarancAttackScanner:
         name_map = self._load_name_map()
         candidates: list[AttackCandidate] = []
         for code in codes:
-            df = self._csv.read_stock(code)
+            # 攻击扫描只看最新一根，读取 320 根即可覆盖 MA114/KDJ/BBI 安全余量，
+            # 避免前端默认 limit=50 时对每只股票重复计算多年历史。
+            df = self._csv.read_stock(code, nrows=ATTACK_SCAN_RECENT_ROWS)
             if df.empty or len(df) < MIN_HISTORY or "date" not in df.columns:
                 continue
             try:

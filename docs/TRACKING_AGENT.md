@@ -209,6 +209,9 @@ tracking.router                  # 通配兜底
 - 2026-07-04 Codex CLI 真实 LLM smoke：见 `docs/Tracking/2026-07-04-codex-cli-real-llm-smoke.md`。
   - API path smoke：`provider=codex_cli`、`provider_fallback=False`、`decision=hold`、`suggested_action=HOLD`、latency `31.59s`。
   - Direct CLI usage capture：`input_tokens=19954`、`cached_input_tokens=2432`、`output_tokens=161`、`reasoning_output_tokens=83`；CLI 未返回价格，未计算成本。
+- 2026-07-04 全量 Web strategy cache rebuild 隔离 smoke：见 `docs/Tracking/2026-07-04-web-cache-rebuild-smoke.md`。
+  - 当前 `web` 代码 + 真实 `data/` 跑完 5157 只，耗时 `688.52s`，`available_groups=b1,b2,bowl,brick,zettaranc`。
+  - 正式 cache 未覆盖，因为主工作区 `config/strategy_params.yaml` 仍有用户脏改，需先确认参数归属。
 - 路由契约回归建议：在新增任何 `/api/tracking/*` 路由后，至少 curl 一次 `GET /api/tracking/alerts` 确认未被通配吞掉。
 - Post-close Loop Runner focused regression：
   - `python -m pytest tests/test_tracking_loop_runner_service.py tests/test_tracking_loop_router.py tests/test_tracking_route_order.py -q`

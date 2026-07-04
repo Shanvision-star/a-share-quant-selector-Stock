@@ -4,6 +4,7 @@
 # provider:
 #   mock     —— 上线初期使用，本地确定性建议，无任何外部依赖
 #   deepseek —— DeepSeek 官方接口（OpenAI 兼容），生产环境推荐
+#   codex_cli —— 本机/服务器 Codex CLI，用于受控真实 LLM smoke，不进默认回归
 
 provider: mock
 
@@ -14,3 +15,9 @@ deepseek:
   temperature: 0.2
   timeout_seconds: 20
   max_output_tokens: 600
+
+codex_cli:
+  command: "codex"          # 服务器或本机 PATH 中的 codex；也可填已加引号的绝对路径
+  model: "gpt-5.4-mini"     # ChatGPT 登录态建议显式填写；留空会使用 CLI 默认模型，可能与账号不兼容
+  cwd: ""                   # 可选；留空时使用后端当前工作目录。状态页不会暴露该路径
+  timeout_seconds: 60

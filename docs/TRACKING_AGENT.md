@@ -116,9 +116,13 @@ Tracking-Agent 把"选股池命中 → 持续观察 → 规则告警 → LLM 建
 
 ---
 
-## 6. LLM mock 决策表
+## 6. LLM provider 与 mock 决策表
 
 [`tracking_llm_service.py`](../web/backend/services/tracking_llm_service.py) 用确定性桩对齐未来真实 LLM 输出结构：
+
+- `provider=mock`：默认回归路径，完全确定性，不调用外部服务。
+- `provider=deepseek`：调用 DeepSeek OpenAI-compatible 接口，失败回退 mock。
+- `provider=codex_cli`：调用本机/服务器 `codex exec`，用于受控真实 LLM smoke；执行参数固定为只读 sandbox，失败回退 mock。该 provider 依赖 CLI 登录态或服务器环境，不进入默认 pytest/CI；ChatGPT 登录态建议显式配置 `codex_cli.model`，避免 CLI 默认模型与账号权限不兼容。
 
 | 输入条件 | decision | confidence | suggested_action | suggested_intent.side | qty_hint |
 |---|---|---|---|---|---|

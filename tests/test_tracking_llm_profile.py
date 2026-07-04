@@ -102,6 +102,82 @@ def test_deepseek_failure_returns_mock_with_fallback(monkeypatch) -> None:
     assert advice["provider_error"]
 
 
+def test_codex_cli_returns_normalized_advice(monkeypatch) -> None:
+    """provider=codex_cli 时应复用 Tracking 标准 schema 与 profile 标记。"""
+    from web.backend.services import tracking_llm_service as svc_mod
+
+    monkeypatch.setattr(
+        svc_mod,
+        "load_llm_config",
+        lambda: {
+            "provider": "codex_cli",
+            "codex_cli": {
+                "command": "codex",
+                "model": "gpt-test",
+                "cwd": ".",
+                "timeout_seconds": 9,
+            },
+        },
+    )
+    seen: dict[str, str] = {}
+
+    def fake_codex_cli(**kwargs):
+        seen.update({key: str(value) for key, value in kwargs.items()})
+        return {
+            "decision": "watch",
+            "confidence": 0.61,
+            "rationale": "等待买点确认。",
+            "suggested_action": "WAIT",
+            "suggested_intent": {
+                "code": "000001",
+                "side": "BUY",
+                "qty_hint": 0,
+                "reason": "cli_advice",
+            },
+        }
+
+    monkeypatch.setattr(svc_mod, "call_codex_cli", fake_codex_cli)
+    service = svc_mod.TrackingLLMService()
+
+    advice = service.propose_action(dict(_BASE_ITEM), [], profile="default")
+
+    _assert_schema(advice)
+    assert advice["provider"] == "codex_cli"
+    assert advice["provider_fallback"] is False
+    assert advice["profile"] == "default"
+    assert advice["decision"] == "watch"
+    assert seen["command"] == "codex"
+    assert seen["model"] == "gpt-test"
+    assert "严格 JSON" in seen["prompt"]
+
+
+def test_codex_cli_failure_returns_mock_with_fallback(monkeypatch) -> None:
+    """Codex CLI 不可用时不阻断建议链路，应回退 mock。"""
+    from web.backend.services import tracking_llm_service as svc_mod
+
+    monkeypatch.setattr(
+        svc_mod,
+        "load_llm_config",
+        lambda: {"provider": "codex_cli", "codex_cli": {"command": "missing-codex"}},
+    )
+
+    def _boom(**_kwargs):
+        raise svc_mod.CodexCLIError("Codex CLI 不可用")
+
+    monkeypatch.setattr(svc_mod, "call_codex_cli", _boom)
+    service = svc_mod.TrackingLLMService()
+
+    advice = service.propose_action(
+        dict(_BASE_ITEM), _HIGH_PRIORITY_ALERT, profile="zettaranc_style"
+    )
+
+    _assert_schema(advice)
+    assert advice["provider"] == "mock"
+    assert advice["provider_fallback"] is True
+    assert advice["profile"] == "zettaranc_style"
+    assert "Codex CLI" in advice["provider_error"]
+
+
 # ---- C 档：zettaranc 真实上下文注入测试 ----
 
 

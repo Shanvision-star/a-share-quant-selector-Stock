@@ -717,11 +717,21 @@ class SystemStatusService:
         llm_config = raw.get("llm") or {}
         dingtalk = app_config.get("dingtalk", {}) if isinstance(app_config, dict) else {}
         qmt = app_config.get("qmt", {}) if isinstance(app_config, dict) else {}
+        llm_provider = str(llm_config.get("provider") or "").strip().lower()
         deepseek = llm_config.get("deepseek", {}) if isinstance(llm_config, dict) else {}
+        codex_cli = llm_config.get("codex_cli", {}) if isinstance(llm_config, dict) else {}
 
         # 集成区只暴露布尔状态，避免 webhook、api_key、账户号和本机路径进入前端 payload。
         dingtalk_configured = _safe_bool(dingtalk.get("webhook_url"))
-        llm_configured = _safe_bool(deepseek.get("api_key"))
+        deepseek_configured = _safe_bool(deepseek.get("api_key"))
+        # codex_cli 可依赖服务器/本机已登录态；状态页只承认 provider/command 存在，不执行 CLI。
+        codex_cli_configured = llm_provider == "codex_cli" or _safe_bool(codex_cli.get("command"))
+        llm_configured = deepseek_configured or codex_cli_configured
+        provider_label = ""
+        if llm_configured and llm_provider in {"deepseek", "codex_cli"}:
+            provider_label = llm_provider
+        elif deepseek_configured:
+            provider_label = "deepseek"
         qmt_enabled = bool(qmt.get("enabled", False))
         any_configured = dingtalk_configured or llm_configured or qmt_enabled
         return StatusBlock(
@@ -735,8 +745,9 @@ class SystemStatusService:
                     "signed": _safe_bool(dingtalk.get("secret")),
                 },
                 "llm": {
-                    "deepseek_configured": llm_configured,
-                    "provider": "deepseek" if llm_configured else "",
+                    "deepseek_configured": deepseek_configured,
+                    "codex_cli_configured": codex_cli_configured,
+                    "provider": provider_label,
                 },
                 "qmt": {
                     "enabled": qmt_enabled,

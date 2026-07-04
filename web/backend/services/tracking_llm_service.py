@@ -1,8 +1,8 @@
-"""P6 LLM 建议服务：支持 mock / DeepSeek 双 provider。
+"""P6 LLM 建议服务：支持 mock / DeepSeek / Codex CLI provider。
 
 设计要点（参考 docs/PROJECT_EXECUTION_LOGIC_AND_WEB_NOTES.md 与 B2_STRATEGY.md）：
 - 上层接口 `propose_action` 输出结构稳定不变，供路由与编排层依赖；
-- provider 由 config/llm.yaml 控制：mock（确定性桩）/ deepseek（线上）；
+- provider 由 config/llm.yaml 控制：mock（确定性桩）/ deepseek（线上）/ codex_cli（本地 smoke）；
 - DeepSeek 调用任何异常都会回退到 mock，并在返回结果中添加 `provider` 与
   `provider_fallback` 字段，便于前端/日志区分；
 - suggested_intent 预留给 P7 的 OrderIntent 流程，此处不直接落库。
@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from .llm_providers import call_deepseek, load_llm_config
+from .llm_providers import CodexCLIError, call_codex_cli, call_deepseek, load_llm_config
 from .llm_providers.deepseek_provider import DeepSeekError
 from . import zettaranc_adapter
 
@@ -361,6 +361,22 @@ def _build_user_prompt(
     return "\n\n".join(parts)
 
 
+def _build_codex_cli_prompt(system_prompt: str, user_prompt: str) -> str:
+    """Codex CLI 没有 chat role 参数，这里把 system/user 边界显式写入单段 prompt。"""
+    return "\n\n".join(
+        [
+            "# 系统角色与规则",
+            system_prompt,
+            "# 输入数据",
+            user_prompt,
+            "# 输出要求",
+            "只输出严格 JSON 对象，不要 markdown，不要解释，不要代码块。"
+            "必须包含 analysis={technical:[], discipline:[], risk:[], next_step:[]}；"
+            "没有额外分析时四个数组返回空数组。",
+        ]
+    )
+
+
 def _normalize_deepseek_payload(raw: dict, item: dict, alerts: list[dict]) -> dict[str, Any]:
     """把 DeepSeek 返回的 JSON 规整成标准建议结构；非法字段抛 ValueError。"""
     decision = str(raw.get("decision", "")).lower()
@@ -460,13 +476,52 @@ class TrackingLLMService:
                 logger.warning("[tracking_llm] zettaranc 上下文准备失败: %s", exc)
                 zettaranc_context = {"source": "none", "text": "", "error": str(exc)}
 
+        # zettaranc_style 走运行时拼装的 system prompt（SKILL.md + schema 约束）
+        if resolved_profile == "zettaranc_style":
+            system_prompt = _build_zettaranc_system_prompt()
+        else:
+            system_prompt = _PROFILE_PROMPTS[resolved_profile]
+
+        if provider == "codex_cli":
+            cli_cfg = cfg.get("codex_cli") or {}
+            try:
+                raw = call_codex_cli(
+                    command=str(cli_cfg.get("command") or "codex"),
+                    model=str(cli_cfg.get("model") or "").strip() or None,
+                    prompt=_build_codex_cli_prompt(
+                        system_prompt,
+                        _build_user_prompt(item, alerts, zettaranc_context),
+                    ),
+                    cwd=str(cli_cfg.get("cwd") or "").strip() or None,
+                    timeout_seconds=float(
+                        cli_cfg.get("timeout_seconds")
+                        or cli_cfg.get("timeout_sec")
+                        or 60
+                    ),
+                )
+                normalized = _normalize_deepseek_payload(raw, item, alerts)
+                normalized["provider"] = "codex_cli"
+                normalized["provider_fallback"] = False
+                normalized["profile"] = resolved_profile
+                if zettaranc_context is not None:
+                    normalized["zettaranc_data_source"] = zettaranc_context.get("source")
+                return normalized
+            except (CodexCLIError, ValueError) as exc:
+                logger.warning(
+                    "[tracking_llm] Codex CLI 调用失败，回退 mock: %s", exc
+                )
+                fallback = _propose_mock(item, alerts)
+                _apply_rule_authority(fallback, item, _extract_min_priority(alerts)[1])
+                fallback["provider"] = "mock"
+                fallback["provider_fallback"] = True
+                fallback["provider_error"] = str(exc)
+                fallback["profile"] = resolved_profile
+                if zettaranc_context is not None:
+                    fallback["zettaranc_data_source"] = zettaranc_context.get("source")
+                return fallback
+
         if provider == "deepseek":
             ds_cfg = cfg.get("deepseek") or {}
-            # zettaranc_style 走运行时拼装的 system prompt（SKILL.md + schema 约束）
-            if resolved_profile == "zettaranc_style":
-                system_prompt = _build_zettaranc_system_prompt()
-            else:
-                system_prompt = _PROFILE_PROMPTS[resolved_profile]
             # zettaranc_style 需要更长输出空间承载三段推导 + analysis 段，单独上调上限
             base_max_out = int(ds_cfg.get("max_output_tokens", 600))
             max_out = max(base_max_out, 1600) if resolved_profile == "zettaranc_style" else base_max_out

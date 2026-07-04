@@ -95,6 +95,29 @@ def test_system_status_ready_when_data_and_strategy_cache_ready():
     assert "access_token" not in serialized
 
 
+def test_system_status_reports_codex_cli_without_local_paths():
+    service = build_service(
+        config={
+            "llm": {
+                "provider": "codex_cli",
+                "codex_cli": {
+                    "command": "C:/Users/Rome/AppData/Local/OpenAI/Codex/bin/codex.exe",
+                    "cwd": "D:/stock/private-workspace",
+                },
+            }
+        }
+    )
+
+    payload = service.build_status()
+
+    llm = payload["integrations"]["details"]["llm"]
+    assert llm["provider"] == "codex_cli"
+    assert llm["codex_cli_configured"] is True
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "private-workspace" not in serialized
+    assert "codex.exe" not in serialized
+
+
 def test_system_status_tracking_reports_alert_status_breakdown():
     service = build_service(
         tracking_items={

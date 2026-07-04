@@ -212,6 +212,8 @@ tracking.router                  # 通配兜底
 - 2026-07-04 全量 Web strategy cache rebuild 隔离 smoke：见 `docs/Tracking/2026-07-04-web-cache-rebuild-smoke.md`。
   - 当前 `web` 代码 + 真实 `data/` 跑完 5157 只，耗时 `688.52s`，`available_groups=b1,b2,bowl,brick,zettaranc`。
   - 正式 cache 未覆盖，因为主工作区 `config/strategy_params.yaml` 仍有用户脏改，需先确认参数归属。
+- 2026-07-04 真实钉钉通道 smoke：见 `docs/Tracking/2026-07-04-dingtalk-real-smoke.md`。
+  - `DingTalkNotifier.send_markdown()` 返回 `True`；未分发真实 tracking alert，未修改告警状态。
 - 路由契约回归建议：在新增任何 `/api/tracking/*` 路由后，至少 curl 一次 `GET /api/tracking/alerts` 确认未被通配吞掉。
 - Post-close Loop Runner focused regression：
   - `python -m pytest tests/test_tracking_loop_runner_service.py tests/test_tracking_loop_router.py tests/test_tracking_route_order.py -q`

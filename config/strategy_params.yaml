@@ -90,9 +90,9 @@ B2Strategy:
   vol_mean_days: 10
   vol_multiplier: 1.5
 BowlReboundStrategy:
-  CAP: 4000000000
+  CAP: 120
   J_VAL: 20
-  M: 30
+  M: 40
   M1: 14
   M2: 28
   M3: 57

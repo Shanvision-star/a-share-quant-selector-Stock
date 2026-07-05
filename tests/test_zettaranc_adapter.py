@@ -72,6 +72,35 @@ def test_load_skill_md_strips_frontmatter_and_setup(monkeypatch):
     assert "心智模型" in text
 
 
+def test_load_skill_md_strips_v33_inline_setup(monkeypatch):
+    """v3.3.x 的首次配置段不再有二级标题，也不能进入诊断 system prompt。"""
+    from web.backend.services import zettaranc_adapter as za
+
+    fake_md = (
+        "---\n"
+        "name: zettaranc\n"
+        "---\n"
+        "# zettaranc\n"
+        "## 能力边界与 API 依赖声明\n"
+        "这里允许保留能力边界。\n"
+        "**此 Skill 首次激活时，先检查数据源配置。**\n"
+        "在第一条用户消息后，执行配置检测。\n"
+        "> 对了，还有个事儿——你还没选模式。\n"
+        "TUSHARE_TOKEN=你的 token\n"
+        "## 角色扮演规则（最重要）\n"
+        "直接以 Z 哥身份回应。\n"
+        "## 核心心智模型总览\n"
+        "止损优先。\n"
+    )
+    monkeypatch.setattr(za, "_SKILL_MD_PATH", _fake_path(fake_md))
+    za.reset_cache_for_tests()
+    text = za.load_skill_md_role()
+    assert "还没选模式" not in text
+    assert "TUSHARE_TOKEN=你的 token" not in text
+    assert "角色扮演规则" in text
+    assert "核心心智模型" in text
+
+
 def test_load_skill_md_missing_returns_fallback(monkeypatch, tmp_path):
     from web.backend.services import zettaranc_adapter as za
 

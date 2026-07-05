@@ -36,7 +36,15 @@ def test_list_returns_only_existing_whitelist(client: TestClient) -> None:
     slugs = {item["slug"] for item in items}
 
     # 至少这几篇是仓库自带、肯定存在
-    expected_subset = {"b1-case", "b2-strategy", "project-exec"}
+    expected_subset = {
+        "b1-case",
+        "b2-strategy",
+        "project-exec",
+        "zr-changelog",
+        "zr-user-guide",
+        "zr-workflow",
+        "zr-life-decision",
+    }
     assert expected_subset.issubset(slugs), f"白名单核心文档缺失：{expected_subset - slugs}"
 
     # 所有返回项的 slug 必须在常量白名单内
@@ -56,6 +64,16 @@ def test_get_doc_returns_markdown(client: TestClient) -> None:
     assert data["slug"] == "project-exec"
     assert isinstance(data["content"], str) and data["content"].strip()
     assert data["title"]
+
+
+def test_get_zettaranc_changelog_uses_latest_docs_path(client: TestClient) -> None:
+    """上游 v3.x 把 CHANGELOG 移到 docs/ 下，旧路径失效时前端仍要看得到。"""
+    response = client.get("/api/strategy-docs/zr-changelog")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["slug"] == "zr-changelog"
+    assert data["source"] == "zettaranc"
+    assert "v3.3.2" in data["content"]
 
 
 def test_get_doc_rejects_unknown_slug(client: TestClient) -> None:

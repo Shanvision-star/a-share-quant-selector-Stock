@@ -2,8 +2,8 @@
 
 两个文档根：
 - ``_DOCS_ROOT = docs/``：本仓库原生战法/系统说明（source="local"）
-- ``_ZETTARANC_ROOT = third_party/zettaranc/``：vendor 进来的 zettaranc-skill v2.4.0
-  全部知识库（SKILL.md + knowledge/*.md），通过 source="zettaranc" 区分。
+- ``_ZETTARANC_ROOT = third_party/zettaranc/``：vendor 进来的 zettaranc-skill v3.3.2
+  知识库和用户文档（SKILL.md + docs/*.md + knowledge/*.md），通过 source="zettaranc" 区分。
 
 安全约束：
 - slug 必须命中白名单且匹配 ^[a-z0-9][a-z0-9-]{0,63}$
@@ -60,7 +60,16 @@ _DOC_REGISTRY: tuple[DocEntry, ...] = (
     # -------- zettaranc-skill 知识库 --------
     DocEntry("zr-skill", "zettaranc 角色协议 SKILL.md", "zettaranc · 核心", "SKILL.md", source="zettaranc"),
     DocEntry("zr-readme", "zettaranc README", "zettaranc · 核心", "README.md", source="zettaranc"),
-    DocEntry("zr-changelog", "zettaranc CHANGELOG", "zettaranc · 核心", "CHANGELOG.md", source="zettaranc"),
+    DocEntry("zr-user-guide", "zettaranc 使用手册 USER_GUIDE", "zettaranc · 核心", "docs/USER_GUIDE.md", source="zettaranc"),
+    DocEntry("zr-changelog", "zettaranc CHANGELOG", "zettaranc · 核心", "docs/CHANGELOG.md", source="zettaranc"),
+    DocEntry("zr-changelog-v3", "zettaranc v3.0 变更说明", "zettaranc · 核心", "docs/CHANGELOG-v3.0.md", source="zettaranc"),
+    DocEntry("zr-config-guide", "zettaranc 配置指南 CONFIG_GUIDE", "zettaranc · 核心", "docs/CONFIG_GUIDE.md", source="zettaranc"),
+    DocEntry("zr-todo", "zettaranc TODO 路线图", "zettaranc · 核心", "docs/TODO.md", source="zettaranc"),
+    DocEntry("zr-workflow", "回答工作流 workflow", "zettaranc · 工作流", "knowledge/workflow.md", source="zettaranc"),
+    DocEntry("zr-harness", "Harness 约束与纠错", "zettaranc · 工作流", "knowledge/harness.md", source="zettaranc"),
+    DocEntry("zr-improvement", "自我改进系统 improvement-system", "zettaranc · 工作流", "knowledge/improvement-system.md", source="zettaranc"),
+    DocEntry("zr-improvement-summary", "自我改进系统总结", "zettaranc · 工作流", "docs/IMPROVEMENT_SYSTEM_SUMMARY.md", source="zettaranc"),
+    DocEntry("zr-intent-router", "意图路由设计 intent-router", "zettaranc · 工作流", "docs/intent-router-design.md", source="zettaranc"),
     DocEntry("zr-trading-core", "交易内核 trading-core", "zettaranc · 心法", "knowledge/trading-core.md", source="zettaranc"),
     DocEntry("zr-three-best", "三好原则 three-best-principles", "zettaranc · 心法", "knowledge/three-best-principles.md", source="zettaranc"),
     DocEntry("zr-trading-psy", "交易心理 trading-psychology", "zettaranc · 心法", "knowledge/trading-psychology.md", source="zettaranc"),
@@ -68,6 +77,7 @@ _DOC_REGISTRY: tuple[DocEntry, ...] = (
     DocEntry("zr-exit-strategies", "退出战术 exit-strategies", "zettaranc · 心法", "knowledge/exit-strategies.md", source="zettaranc"),
     DocEntry("zr-position-mgmt", "仓位管理 position-management", "zettaranc · 心法", "knowledge/position-management.md", source="zettaranc"),
     DocEntry("zr-portfolio-mgmt", "组合管理 portfolio-management", "zettaranc · 心法", "knowledge/portfolio-management.md", source="zettaranc"),
+    DocEntry("zr-heuristics", "决策启发式 heuristics", "zettaranc · 心法", "knowledge/heuristics.md", source="zettaranc"),
     DocEntry("zr-indicators", "技术指标手册 indicators", "zettaranc · 技术", "knowledge/indicators.md", source="zettaranc"),
     DocEntry("zr-key-candles", "关键 K 线 key-candles", "zettaranc · 技术", "knowledge/key-candles.md", source="zettaranc"),
     DocEntry("zr-trend-lines", "趋势线/知行线 trend-lines", "zettaranc · 技术", "knowledge/trend-lines.md", source="zettaranc"),
@@ -76,6 +86,12 @@ _DOC_REGISTRY: tuple[DocEntry, ...] = (
     DocEntry("zr-six-tracks", "六轨 six-tracks-2026", "zettaranc · 技术", "knowledge/six-tracks-2026.md", source="zettaranc"),
     DocEntry("zr-advanced", "进阶形态 advanced-patterns", "zettaranc · 技术", "knowledge/advanced-patterns.md", source="zettaranc"),
     DocEntry("zr-iron-butterfly", "铁蝴蝶 iron-butterfly", "zettaranc · 技术", "knowledge/iron-butterfly.md", source="zettaranc"),
+    DocEntry("zr-life-decision", "人生决策 life-decision", "zettaranc · 决策", "knowledge/life-decision.md", source="zettaranc"),
+    DocEntry("zr-life-research", "人生决策研究 life-decision-research", "zettaranc · 决策", "knowledge/life-decision-research.md", source="zettaranc"),
+    DocEntry("zr-career", "职业发展 career-development", "zettaranc · 决策", "knowledge/career-development.md", source="zettaranc"),
+    DocEntry("zr-business", "商业判断 business-judgment", "zettaranc · 决策", "knowledge/business-judgment.md", source="zettaranc"),
+    DocEntry("zr-business-research", "商业判断研究 business-judgment-research", "zettaranc · 决策", "knowledge/business-judgment-research.md", source="zettaranc"),
+    DocEntry("zr-framework", "框架提取 framework-extraction", "zettaranc · 决策", "knowledge/framework-extraction.md", source="zettaranc"),
     DocEntry("zr-glossary", "股市术语表 stock-glossary", "zettaranc · 参考", "knowledge/stock-glossary.md", source="zettaranc"),
     DocEntry("zr-data-dict", "数据字典 data_dictionary", "zettaranc · 参考", "knowledge/data_dictionary.md", source="zettaranc"),
     DocEntry("zr-signal-dict", "信号字典 signal_dictionary", "zettaranc · 参考", "knowledge/signal_dictionary.md", source="zettaranc"),

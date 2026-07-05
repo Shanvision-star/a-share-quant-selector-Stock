@@ -66,6 +66,15 @@ def _strip_skill_md(raw: str) -> str:
     )
     if setup:
         text = text[: setup.start()] + text[setup.end():]
+    # 3) v3.3.x 把首次配置说明改成无二级标题的粗体段。
+    #    这里继续剥离，避免跟踪诊断的 system prompt 引导用户配置上游 Token。
+    inline_setup = re.search(
+        r"\n\*\*此 Skill\s*首次激活时，先检查数据源配置。\*\*.*?(?=\n##\s*角色扮演规则)",
+        text,
+        flags=re.DOTALL,
+    )
+    if inline_setup:
+        text = text[: inline_setup.start()] + text[inline_setup.end():]
     return text.strip()
 
 

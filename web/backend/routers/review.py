@@ -240,7 +240,7 @@ def add_stock(
     payload: ReviewStockPayload,
     service: Annotated[ReviewService, Depends(get_review_service)],
 ):
-    """向既有复盘幂等地加入一只重点股票。"""
+    """向当天复盘幂等地加入一只重点股票；缺失时由服务层创建。"""
     try:
         result = service.add_stock(review_date, payload.code, payload.name)
         return {

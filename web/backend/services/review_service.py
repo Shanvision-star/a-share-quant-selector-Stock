@@ -98,8 +98,8 @@ class ReviewService:
         return self.repository.save(updated, expected_version=expected_version)
 
     def add_stock(self, review_date: str, code: str, name: str) -> dict:
-        """按股票代码幂等地追加 frontmatter 与重点股票标准章节。"""
-        current = self.get_review(review_date)
+        """原子确保当天复盘存在，再按股票代码幂等地追加重点股票。"""
+        current, _ = self.create_or_get(review_date)
         clean_code = str(code).strip()
         clean_name = str(name).strip()
         if any(stock.code == clean_code for stock in current.stocks):

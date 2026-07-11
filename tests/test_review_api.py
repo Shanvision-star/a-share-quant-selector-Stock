@@ -105,6 +105,20 @@ def test_add_stock_deduplicates_and_title_generation_stays_offline(client: TestC
     assert "沐曦股份" in title.json()["data"]["title"]
 
 
+def test_add_stock_creates_a_missing_review(client: TestClient) -> None:
+    """首个股票追加请求必须创建标准复盘，而不是要求客户端先发创建请求。"""
+    response = client.post(
+        "/api/reviews/2026-07-11/stocks",
+        json={"code": "688802", "name": "沐曦股份"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["already_exists"] is False
+    assert payload["title"] == "2026-07-11 交易复盘"
+    assert payload["stocks"] == [{"code": "688802", "name": "沐曦股份"}]
+
+
 def test_generate_title_sanitizes_provider_errors(client: TestClient, monkeypatch) -> None:
     """标题 provider 的内部错误只能留在服务端，响应必须使用固定脱敏信息。"""
     client.post("/api/reviews/2026-07-11")

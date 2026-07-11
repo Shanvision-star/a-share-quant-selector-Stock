@@ -41,6 +41,18 @@ def test_add_stock_appends_one_section_and_deduplicates(tmp_path) -> None:
     assert second["document"].stocks == first["document"].stocks
 
 
+def test_add_stock_creates_missing_review_with_standard_template(tmp_path) -> None:
+    """首次加入股票会原子创建当天复盘，并保留标准模板章节。"""
+    service = ReviewService(ReviewRepository(tmp_path))
+
+    result = service.add_stock("2026-07-11", "688802", "沐曦股份")
+
+    assert result["already_exists"] is False
+    assert [(stock.code, stock.name) for stock in result["document"].stocks] == [("688802", "沐曦股份")]
+    assert "## 市场环境" in result["document"].body
+    assert "### 688802 沐曦股份" in result["document"].body
+
+
 def test_list_reviews_searches_title_stock_tag_and_body(tmp_path) -> None:
     """关键词同时覆盖标题、股票、标签与正文。"""
     service = ReviewService(ReviewRepository(tmp_path))

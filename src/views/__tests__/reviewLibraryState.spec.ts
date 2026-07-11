@@ -27,7 +27,7 @@ const review: ReviewDocument = {
 describe('review library state', () => {
   it('rewrites only safe local review image paths', () => {
     expect(rewriteReviewImageUrls('![图](./2026-07-11.assets/a.png)', '2026-07-11'))
-      .toContain('/reviews/2026-07-11/attachments/a.png')
+      .toContain('/api/reviews/2026-07-11/attachments/a.png')
     expect(rewriteReviewImageUrls('![图](javascript:alert(1))', '2026-07-11'))
       .toContain('javascript:alert(1)')
     expect(rewriteReviewImageUrls('![图](./2026-07-10.assets/a.png)', '2026-07-11'))

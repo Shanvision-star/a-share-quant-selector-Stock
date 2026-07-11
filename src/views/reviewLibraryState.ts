@@ -39,7 +39,7 @@ export function rewriteReviewImageUrls(markdown: string, reviewDate: string): st
   const encodedDate = encodeURIComponent(reviewDate)
 
   return markdown.replace(imagePath, (_match, image, filename: string) => (
-    `${image}(/reviews/${encodedDate}/attachments/${encodeURIComponent(filename)})`
+    `${image}(/api/reviews/${encodedDate}/attachments/${encodeURIComponent(filename)})`
   ))
 }
 

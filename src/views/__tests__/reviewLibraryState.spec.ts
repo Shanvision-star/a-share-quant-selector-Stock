@@ -89,18 +89,18 @@ describe('review library state', () => {
     })
   })
 
-  it('builds trimmed status and date filter parameters', () => {
+  it('builds trimmed status and date filter parameters for the requested page', () => {
     expect(buildReviewListParams({
       query: '  浦发  ',
       status: 'follow_up',
       dateRange: ['2026-07-01', '2026-07-11'],
-    })).toEqual({
+    }, 100)).toEqual({
       query: '浦发',
       status: 'follow_up',
       date_from: '2026-07-01',
       date_to: '2026-07-11',
       limit: 100,
-      offset: 0,
+      offset: 100,
     })
     expect(buildReviewListParams({ query: ' ', status: '', dateRange: null })).toEqual({
       limit: 100,
@@ -108,13 +108,23 @@ describe('review library state', () => {
     })
   })
 
-  it('removes level-one headings from the body before saving', () => {
-    expect(stripLevelOneHeadings('# 独立标题\n正文\n## 二级标题\n# 另一个一级标题'))
-      .toBe('正文\n## 二级标题')
+  it('removes only a leading ATX level-one document title', () => {
+    expect(stripLevelOneHeadings('\uFEFF  \n\n# 独立标题\n正文\n# 正文一级标题'))
+      .toBe('正文\n# 正文一级标题')
   })
 
-  it('preserves heading-like code while removing setext level-one headings', () => {
-    expect(stripLevelOneHeadings('独立标题\n====\n```sh\n# 保留这行命令\n```\n正文'))
-      .toBe('```sh\n# 保留这行命令\n```\n正文')
+  it('removes only a leading Setext level-one document title', () => {
+    expect(stripLevelOneHeadings('\n独立标题\n====\n正文\n后续一级标题\n===='))
+      .toBe('正文\n后续一级标题\n====')
+  })
+
+  it('preserves later ATX and Setext level-one headings', () => {
+    expect(stripLevelOneHeadings('正文开场\n\n# 后续 ATX\n\n后续 Setext\n===='))
+      .toBe('正文开场\n\n# 后续 ATX\n\n后续 Setext\n====')
+  })
+
+  it('preserves level-one heading syntax inside fenced code', () => {
+    expect(stripLevelOneHeadings('```md\n# 代码标题\n代码 Setext\n====\n```\n正文'))
+      .toBe('```md\n# 代码标题\n代码 Setext\n====\n```\n正文')
   })
 })

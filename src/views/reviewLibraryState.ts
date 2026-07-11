@@ -103,8 +103,11 @@ export interface ReviewLibraryFilters {
   dateRange?: [string, string] | null
 }
 
-export function buildReviewListParams(filters: ReviewLibraryFilters): ReviewListParams {
-  const params: ReviewListParams = { limit: 100, offset: 0 }
+export function buildReviewListParams(
+  filters: ReviewLibraryFilters,
+  offset = 0,
+): ReviewListParams {
+  const params: ReviewListParams = { limit: 100, offset }
   const query = filters.query?.trim()
   if (query) params.query = query
   if (filters.status) params.status = filters.status
@@ -114,15 +117,13 @@ export function buildReviewListParams(filters: ReviewLibraryFilters): ReviewList
 }
 
 export function stripLevelOneHeadings(markdown: string): string {
-  const removedLines = new Set<number>()
-  for (const token of bodyMarkdownParser.parse(markdown, {})) {
-    if (token.type !== 'heading_open' || token.tag !== 'h1' || !token.map) continue
-    for (let line = token.map[0]; line < token.map[1]; line += 1) removedLines.add(line)
-  }
+  const source = markdown.replace(/^\uFEFF/, '')
+  const firstBlock = bodyMarkdownParser.parse(source, {}).find(token => token.map)
+  if (
+    firstBlock?.type !== 'heading_open'
+    || firstBlock.tag !== 'h1'
+    || !firstBlock.map
+  ) return source.trim()
 
-  return markdown
-    .split(/\r?\n/)
-    .filter((_line, index) => !removedLines.has(index))
-    .join('\n')
-    .trim()
+  return source.split(/\r?\n/).slice(firstBlock.map[1]).join('\n').trim()
 }

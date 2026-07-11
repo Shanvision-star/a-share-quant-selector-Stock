@@ -48,6 +48,7 @@ const filters = reactive<{
   dateRange: [string, string] | null
 }>({ query: '', status: '', dateRange: null })
 const items = ref<ReviewListItem[]>([])
+const total = ref(0)
 const current = ref<ReviewDocument | null>(null)
 const saved = ref<ReviewDocument | null>(null)
 const activeDate = ref(todayString())
@@ -70,6 +71,7 @@ let documentIdentitySequence = 0
 let pendingDocumentLoads = 0
 let titleRequestToken = 0
 let createRequestToken = 0
+let listRequestToken = 0
 const loadController = createReviewLoadController(async (reviewDate) => {
   const response = await getReview(reviewDate)
   return response.data.data
@@ -105,6 +107,10 @@ function statusTagType(status: ReviewStatus): 'info' | 'success' | 'warning' {
   return { draft: 'info', completed: 'success', follow_up: 'warning' }[status] as 'info' | 'success' | 'warning'
 }
 
+function formatUpdatedAt(value: string): string {
+  return value.replace('T', ' ').slice(0, 16)
+}
+
 function checkViewport() {
   isMobile.value = window.innerWidth < 900
   if (!isMobile.value) drawerOpen.value = false
@@ -128,20 +134,32 @@ async function confirmDiscard(): Promise<boolean> {
   }
 }
 
-async function fetchList(selectInitial = false) {
+async function fetchList(selectInitial = false, append = false) {
+  const requestToken = ++listRequestToken
+  const offset = append ? items.value.length : 0
   listLoading.value = true
   listError.value = ''
   try {
-    const response = await listReviews(buildReviewListParams(filters))
-    items.value = response.data.data.items
+    const response = await listReviews(buildReviewListParams(filters, offset))
+    if (requestToken !== listRequestToken) return
+    const page = response.data.data
+    items.value = append ? [...items.value, ...page.items] : page.items
+    total.value = page.total
     if (selectInitial && !route.query.date && items.value.length) {
       await openReview(items.value[0].review_date, false)
     }
   } catch (error) {
-    listError.value = errorMessage(error, '复盘列表加载失败')
+    if (requestToken === listRequestToken) {
+      listError.value = errorMessage(error, '复盘列表加载失败')
+    }
   } finally {
-    listLoading.value = false
+    if (requestToken === listRequestToken) listLoading.value = false
   }
+}
+
+function loadMore() {
+  if (listLoading.value || items.value.length >= total.value) return
+  void fetchList(false, true)
 }
 
 function setActiveDocument(document: ReviewDocument) {
@@ -376,7 +394,7 @@ onBeforeUnmount(() => {
       <header class="list-header">
         <div>
           <h1>复盘库</h1>
-          <span>{{ items.length }} 篇</span>
+          <span>{{ total }} 篇</span>
         </div>
         <el-button :icon="Refresh" circle size="small" title="刷新列表" :loading="listLoading" @click="fetchList()" />
       </header>
@@ -411,7 +429,10 @@ onBeforeUnmount(() => {
           v-for="item in items"
           :key="item.review_date"
           class="review-list-item"
-          :class="{ active: current?.review_date === item.review_date }"
+          :class="{
+            active: current?.review_date === item.review_date,
+            'has-thumbnail': Boolean(item.first_attachment_url),
+          }"
           type="button"
           @click="openReview(item.review_date)"
         >
@@ -419,9 +440,26 @@ onBeforeUnmount(() => {
             <strong>{{ item.title || '未命名复盘' }}</strong>
             <el-tag size="small" :type="statusTagType(item.status)">{{ statusLabel(item.status) }}</el-tag>
           </span>
-          <span class="item-meta">{{ item.review_date }} · {{ item.stocks.length }} 只股票</span>
+          <span class="item-meta">
+            {{ item.review_date }} · 更新 {{ formatUpdatedAt(item.updated_at) }} · {{ item.stocks.length }} 只股票
+          </span>
           <span class="item-summary">{{ item.body_summary || '暂无正文' }}</span>
+          <img
+            v-if="item.first_attachment_url"
+            class="item-thumbnail"
+            :src="item.first_attachment_url"
+            alt=""
+            loading="lazy"
+          >
         </button>
+        <div v-if="items.length < total" class="load-more-row">
+          <el-button
+            data-test="load-more"
+            text
+            :loading="listLoading"
+            @click="loadMore"
+          >加载更多（{{ items.length }}/{{ total }}）</el-button>
+        </div>
         <el-empty v-if="!listLoading && !items.length" description="没有符合条件的复盘" :image-size="72" />
       </div>
     </aside>
@@ -599,6 +637,7 @@ onBeforeUnmount(() => {
 }
 
 .review-list-item {
+  position: relative;
   width: 100%;
   display: grid;
   gap: 5px;
@@ -618,6 +657,13 @@ onBeforeUnmount(() => {
 
 .review-list-item.active {
   box-shadow: 3px 0 0 var(--text-accent) inset;
+}
+
+.load-more-row {
+  display: flex;
+  justify-content: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .item-topline {
@@ -643,6 +689,21 @@ onBeforeUnmount(() => {
 .item-summary {
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.review-list-item.has-thumbnail .item-meta,
+.review-list-item.has-thumbnail .item-summary {
+  padding-right: 50px;
+}
+
+.item-thumbnail {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  width: 42px;
+  height: 32px;
+  border-radius: 4px;
+  object-fit: cover;
 }
 
 .review-workspace {

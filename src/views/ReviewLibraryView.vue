@@ -25,8 +25,12 @@ import {
   mergeTitleSuggestion,
   reviewIsDirty,
   rewriteReviewImageUrls,
-  stripLevelOneHeadings,
 } from '@/views/reviewLibraryState'
+import {
+  applyReviewSaveResponse,
+  createReviewLoadController,
+  createReviewSaveOperation,
+} from '@/views/reviewLibraryLifecycle'
 
 const markdown = new MarkdownIt({ html: false, breaks: true, linkify: true })
 const route = useRoute()
@@ -47,13 +51,21 @@ const documentLoading = ref(false)
 const saving = ref(false)
 const generating = ref(false)
 const creating = ref(false)
+const uploadPending = ref(false)
 const listError = ref('')
 const documentError = ref('')
 const drawerOpen = ref(false)
 const isMobile = ref(false)
 const editorRef = ref<{ textarea?: HTMLTextAreaElement } | null>(null)
+const documentIdentity = ref('')
 const selection = reactive({ start: 0, end: 0 })
 let removeBeforeUnloadGuard: (() => void) | null = null
+let documentIdentitySequence = 0
+let pendingDocumentLoads = 0
+const loadController = createReviewLoadController(async (reviewDate) => {
+  const response = await getReview(reviewDate)
+  return response.data.data
+})
 
 const dirty = computed(() => reviewIsDirty(current.value, saved.value))
 const previewHtml = computed(() => {
@@ -91,6 +103,10 @@ function checkViewport() {
 }
 
 async function confirmDiscard(): Promise<boolean> {
+  if (uploadPending.value) {
+    ElMessage.warning('图片上传中，请等待上传完成后再切换复盘')
+    return false
+  }
   if (!dirty.value) return true
   try {
     await ElMessageBox.confirm('当前复盘尚未保存，确认放弃修改吗？', '未保存修改', {
@@ -120,30 +136,46 @@ async function fetchList(selectInitial = false) {
   }
 }
 
-async function loadDocument(reviewDate: string) {
+function setActiveDocument(document: ReviewDocument) {
+  current.value = createSavedReviewSnapshot(document)
+  saved.value = createSavedReviewSnapshot(document)
+  documentIdentity.value = `${document.review_date}:${++documentIdentitySequence}`
+}
+
+async function loadDocument(reviewDate: string): Promise<boolean> {
+  pendingDocumentLoads += 1
   documentLoading.value = true
   documentError.value = ''
   activeDate.value = reviewDate
   try {
-    const response = await getReview(reviewDate)
-    current.value = createSavedReviewSnapshot(response.data.data)
-    saved.value = createSavedReviewSnapshot(response.data.data)
+    const result = await loadController.load(reviewDate)
+    if (result.stale) return false
+    setActiveDocument(result.document)
     activeTab.value = 'edit'
-    selection.start = current.value.body.length
-    selection.end = current.value.body.length
+    selection.start = result.document.body.length
+    selection.end = result.document.body.length
+    return true
   } catch (error) {
     const status = (error as { response?: { status?: number } }).response?.status
     current.value = null
     saved.value = null
+    documentIdentity.value = `${reviewDate}:empty:${++documentIdentitySequence}`
     if (status !== 404) documentError.value = errorMessage(error, '复盘加载失败')
+    return true
   } finally {
-    documentLoading.value = false
+    pendingDocumentLoads -= 1
+    documentLoading.value = pendingDocumentLoads > 0
   }
 }
 
 async function openReview(reviewDate: string, askToDiscard = true) {
-  if (askToDiscard && reviewDate !== activeDate.value && !(await confirmDiscard())) return
-  await loadDocument(reviewDate)
+  if (
+    askToDiscard
+    && (uploadPending.value || reviewDate !== activeDate.value)
+    && !(await confirmDiscard())
+  ) return
+  const committed = await loadDocument(reviewDate)
+  if (!committed) return
   drawerOpen.value = false
   void router.replace({ name: 'ReviewLibrary', query: { ...route.query, date: reviewDate } })
 }
@@ -160,8 +192,7 @@ async function createActiveReview() {
   documentError.value = ''
   try {
     const response = await createReview(activeDate.value)
-    current.value = createSavedReviewSnapshot(response.data.data)
-    saved.value = createSavedReviewSnapshot(response.data.data)
+    setActiveDocument(response.data.data)
     await fetchList()
     ElMessage.success('复盘已创建')
   } catch (error) {
@@ -178,25 +209,30 @@ function updateTitle(value: string) {
 
 async function saveReview() {
   if (!current.value) return
+  const operation = createReviewSaveOperation(current.value, documentIdentity.value)
   saving.value = true
   documentError.value = ''
   try {
-    const body = stripLevelOneHeadings(current.value.body)
-    const response = await updateReview(current.value.review_date, {
-      title: current.value.title.trim(),
-      status: current.value.status,
-      title_source: current.value.title_source,
-      tags: current.value.tags,
-      stocks: current.value.stocks,
-      body,
-      version: current.value.version,
-    })
-    current.value = createSavedReviewSnapshot(response.data.data)
-    saved.value = createSavedReviewSnapshot(response.data.data)
-    await fetchList()
-    ElMessage.success('复盘已保存')
+    const response = await updateReview(operation.reviewDate, operation.payload)
+    const result = applyReviewSaveResponse(
+      current.value,
+      saved.value,
+      documentIdentity.value,
+      operation,
+      response.data.data,
+    )
+    if (!result.applied) return
+    current.value = result.current
+    saved.value = result.saved
+    void fetchList()
+    ElMessage.success(dirty.value ? '提交时内容已保存，后续修改仍未保存' : '复盘已保存')
   } catch (error) {
-    documentError.value = errorMessage(error, '保存失败，请检查版本或网络状态')
+    if (
+      current.value?.review_date === operation.reviewDate
+      && documentIdentity.value === operation.documentIdentity
+    ) {
+      documentError.value = errorMessage(error, '保存失败，请检查版本或网络状态')
+    }
   } finally {
     saving.value = false
   }
@@ -236,8 +272,15 @@ function syncSelection() {
   selection.end = textarea.selectionEnd
 }
 
-function insertMarkdown(markdownText: string) {
-  if (!current.value) return
+function insertMarkdown(
+  markdownText: string,
+  context: { reviewDate: string; documentIdentity: string },
+) {
+  if (
+    !current.value
+    || current.value.review_date !== context.reviewDate
+    || documentIdentity.value !== context.documentIdentity
+  ) return
   const insertion = insertMarkdownAtSelection(
     current.value.body,
     markdownText,
@@ -255,6 +298,10 @@ function insertMarkdown(markdownText: string) {
 }
 
 onBeforeRouteLeave(() => {
+  if (uploadPending.value) {
+    ElMessage.warning('图片上传中，请等待上传完成后再离开')
+    return false
+  }
   if (!dirty.value) return true
   return window.confirm('当前复盘尚未保存，确认离开吗？')
 })
@@ -262,7 +309,7 @@ onBeforeRouteLeave(() => {
 onMounted(async () => {
   checkViewport()
   window.addEventListener('resize', checkViewport)
-  removeBeforeUnloadGuard = bindBeforeUnloadGuard(() => dirty.value)
+  removeBeforeUnloadGuard = bindBeforeUnloadGuard(() => dirty.value || uploadPending.value)
   const routeDate = typeof route.query.date === 'string' ? route.query.date : ''
   if (routeDate) await loadDocument(routeDate)
   await fetchList(!routeDate)
@@ -348,6 +395,7 @@ onBeforeUnmount(() => {
             type="date"
             value-format="YYYY-MM-DD"
             :clearable="false"
+            :disabled="uploadPending"
             title="选择复盘日期"
             @update:model-value="handleDateChange"
           />
@@ -396,7 +444,12 @@ onBeforeUnmount(() => {
           <el-tabs v-model="activeTab" class="editor-tabs">
             <el-tab-pane label="编辑" name="edit">
               <div class="editor-toolbar">
-                <ReviewAttachmentUploader :review-date="current.review_date" :insert-markdown="insertMarkdown" />
+                <ReviewAttachmentUploader
+                  :review-date="current.review_date"
+                  :document-identity="documentIdentity"
+                  :insert-markdown="insertMarkdown"
+                  @pending-change="uploadPending = $event"
+                />
                 <span class="source-label">标题来源：{{ current.title_source }}</span>
               </div>
               <el-input

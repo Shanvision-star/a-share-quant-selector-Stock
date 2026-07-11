@@ -1,11 +1,18 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Picture, UploadFilled } from '@element-plus/icons-vue'
 import { uploadReviewAttachment } from '@/api/reviews'
 
 const props = defineProps<{
   reviewDate: string
-  insertMarkdown: (markdown: string) => void
+  documentIdentity: string
+  insertMarkdown: (
+    markdown: string,
+    context: { reviewDate: string; documentIdentity: string },
+  ) => void
+}>()
+const emit = defineEmits<{
+  'pending-change': [pending: boolean]
 }>()
 
 interface UploadFailure {
@@ -18,6 +25,7 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const pendingCount = ref(0)
 const failures = ref<UploadFailure[]>([])
 let failureId = 0
+let pendingBatches = 0
 
 const uploading = computed(() => pendingCount.value > 0)
 
@@ -32,22 +40,41 @@ function imageFiles(files: FileList | File[] | null | undefined): File[] {
 
 async function uploadFiles(files: FileList | File[] | null | undefined) {
   const images = imageFiles(files)
-  for (const file of images) {
-    pendingCount.value += 1
-    try {
-      const response = await uploadReviewAttachment(props.reviewDate, file)
-      const markdown = response.data.data.markdown
-      if (!markdown) throw new Error('服务端未返回图片 Markdown')
-      props.insertMarkdown(markdown)
-    } catch (error) {
-      failures.value.push({
-        id: ++failureId,
-        filename: file.name,
-        message: getErrorMessage(error),
-      })
-    } finally {
-      pendingCount.value -= 1
+  if (!images.length) return
+
+  const batchDate = props.reviewDate
+  const batchIdentity = props.documentIdentity
+  pendingBatches += 1
+  pendingCount.value += images.length
+  if (pendingBatches === 1) emit('pending-change', true)
+
+  try {
+    for (const file of images) {
+      try {
+        const response = await uploadReviewAttachment(batchDate, file)
+        const markdown = response.data.data.markdown
+        if (!markdown) throw new Error('服务端未返回图片 Markdown')
+        if (props.reviewDate === batchDate && props.documentIdentity === batchIdentity) {
+          props.insertMarkdown(markdown, {
+            reviewDate: batchDate,
+            documentIdentity: batchIdentity,
+          })
+        }
+      } catch (error) {
+        if (props.reviewDate === batchDate && props.documentIdentity === batchIdentity) {
+          failures.value.push({
+            id: ++failureId,
+            filename: file.name,
+            message: getErrorMessage(error),
+          })
+        }
+      } finally {
+        pendingCount.value -= 1
+      }
     }
+  } finally {
+    pendingBatches -= 1
+    if (pendingBatches === 0) emit('pending-change', false)
   }
 }
 
@@ -73,10 +100,7 @@ function handlePaste(event: ClipboardEvent) {
   void uploadFiles(files)
 }
 
-onMounted(() => window.addEventListener('paste', handlePaste))
-onBeforeUnmount(() => window.removeEventListener('paste', handlePaste))
-
-defineExpose({ uploadFiles })
+defineExpose({ uploadFiles, uploading })
 </script>
 
 <template>
@@ -89,6 +113,7 @@ defineExpose({ uploadFiles })
       @click="openPicker"
       @dragover.prevent
       @drop="handleDrop"
+      @paste="handlePaste"
     >
       <el-icon :class="{ spinning: uploading }"><UploadFilled /></el-icon>
       <span>{{ uploading ? `上传中 ${pendingCount}` : '添加截图' }}</span>

@@ -22,14 +22,20 @@ import {
   createSavedReviewSnapshot,
   insertMarkdownAtSelection,
   markReviewTitleManual,
-  mergeTitleSuggestion,
   reviewIsDirty,
   rewriteReviewImageUrls,
 } from '@/views/reviewLibraryState'
 import {
+  applyReviewCreateResponse,
   applyReviewSaveResponse,
+  applyReviewTitleResponse,
+  createReviewCreateOperation,
   createReviewLoadController,
   createReviewSaveOperation,
+  createReviewTitleOperation,
+  reviewCreateOperationIsCurrent,
+  reviewSelectionIsActive,
+  reviewTitleOperationIsCurrent,
 } from '@/views/reviewLibraryLifecycle'
 
 const markdown = new MarkdownIt({ html: false, breaks: true, linkify: true })
@@ -62,6 +68,8 @@ const selection = reactive({ start: 0, end: 0 })
 let removeBeforeUnloadGuard: (() => void) | null = null
 let documentIdentitySequence = 0
 let pendingDocumentLoads = 0
+let titleRequestToken = 0
+let createRequestToken = 0
 const loadController = createReviewLoadController(async (reviewDate) => {
   const response = await getReview(reviewDate)
   return response.data.data
@@ -143,6 +151,8 @@ function setActiveDocument(document: ReviewDocument) {
 }
 
 async function loadDocument(reviewDate: string): Promise<boolean> {
+  titleRequestToken += 1
+  createRequestToken += 1
   pendingDocumentLoads += 1
   documentLoading.value = true
   documentError.value = ''
@@ -169,6 +179,10 @@ async function loadDocument(reviewDate: string): Promise<boolean> {
 }
 
 async function openReview(reviewDate: string, askToDiscard = true) {
+  if (reviewSelectionIsActive(current.value, reviewDate)) {
+    drawerOpen.value = false
+    return
+  }
   if (
     askToDiscard
     && (uploadPending.value || reviewDate !== activeDate.value)
@@ -188,15 +202,25 @@ async function handleDateChange(reviewDate: string | null) {
 }
 
 async function createActiveReview() {
+  const operation = createReviewCreateOperation(activeDate.value, ++createRequestToken)
   creating.value = true
   documentError.value = ''
   try {
-    const response = await createReview(activeDate.value)
-    setActiveDocument(response.data.data)
+    const response = await createReview(operation.reviewDate)
+    const result = applyReviewCreateResponse(
+      activeDate.value,
+      createRequestToken,
+      operation,
+      response.data.data,
+    )
+    if (!result.applied || !result.document) return
+    setActiveDocument(result.document)
     await fetchList()
     ElMessage.success('复盘已创建')
   } catch (error) {
-    documentError.value = errorMessage(error, '创建复盘失败')
+    if (reviewCreateOperationIsCurrent(activeDate.value, createRequestToken, operation)) {
+      documentError.value = errorMessage(error, '创建复盘失败')
+    }
   } finally {
     creating.value = false
   }
@@ -204,6 +228,7 @@ async function createActiveReview() {
 
 function updateTitle(value: string) {
   if (!current.value) return
+  titleRequestToken += 1
   current.value = markReviewTitleManual(current.value, value)
 }
 
@@ -240,21 +265,36 @@ async function saveReview() {
 
 async function generateTitle() {
   if (!current.value) return
+  const operation = createReviewTitleOperation(
+    current.value,
+    documentIdentity.value,
+    ++titleRequestToken,
+  )
   generating.value = true
   documentError.value = ''
   try {
-    const response = await generateReviewTitle(current.value.review_date, {
-      title: current.value.title,
-      body: current.value.body,
-      tags: current.value.tags,
-      stocks: current.value.stocks,
-    })
-    current.value = mergeTitleSuggestion(current.value, response.data.data)
+    const response = await generateReviewTitle(operation.reviewDate, operation.payload)
+    const result = applyReviewTitleResponse(
+      current.value,
+      documentIdentity.value,
+      titleRequestToken,
+      operation,
+      response.data.data,
+    )
+    if (!result.applied) return
+    current.value = result.current
     if (response.data.data.provider_fallback) {
       ElMessage.warning(response.data.data.provider_error || '标题服务已使用本地回退')
     }
   } catch (error) {
-    documentError.value = errorMessage(error, '标题生成失败')
+    if (reviewTitleOperationIsCurrent(
+      current.value,
+      documentIdentity.value,
+      titleRequestToken,
+      operation,
+    )) {
+      documentError.value = errorMessage(error, '标题生成失败')
+    }
   } finally {
     generating.value = false
   }

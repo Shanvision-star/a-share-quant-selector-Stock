@@ -1,9 +1,22 @@
-import type { ReviewDocument, ReviewUpdatePayload } from '@/api/reviews'
+import type {
+  ReviewDocument,
+  ReviewTitlePayload,
+  ReviewTitleSuggestion,
+  ReviewUpdatePayload,
+} from '@/api/reviews'
 import {
   createSavedReviewSnapshot,
+  mergeTitleSuggestion,
   reviewIsDirty,
   stripLevelOneHeadings,
 } from '@/views/reviewLibraryState'
+
+export function reviewSelectionIsActive(
+  active: ReviewDocument | null | undefined,
+  requestedDate: string,
+): boolean {
+  return active?.review_date === requestedDate
+}
 
 export interface ReviewSaveOperation {
   reviewDate: string
@@ -103,4 +116,109 @@ export function createReviewLoadController(
       latestRequest += 1
     },
   }
+}
+
+export interface ReviewTitleOperation {
+  reviewDate: string
+  documentIdentity: string
+  requestToken: number
+  titleSnapshot: string
+  payload: ReviewTitlePayload
+}
+
+export interface ReviewTitleResolution {
+  applied: boolean
+  current: ReviewDocument | null
+}
+
+export function createReviewTitleOperation(
+  review: ReviewDocument,
+  documentIdentity: string,
+  requestToken: number,
+): ReviewTitleOperation {
+  return {
+    reviewDate: review.review_date,
+    documentIdentity,
+    requestToken,
+    titleSnapshot: review.title,
+    payload: {
+      title: review.title,
+      body: review.body,
+      tags: [...review.tags],
+      stocks: review.stocks.map(stock => ({ ...stock })),
+    },
+  }
+}
+
+export function reviewTitleOperationIsCurrent(
+  active: ReviewDocument | null | undefined,
+  activeDocumentIdentity: string,
+  latestRequestToken: number,
+  operation: ReviewTitleOperation,
+): boolean {
+  return Boolean(
+    active
+    && active.review_date === operation.reviewDate
+    && activeDocumentIdentity === operation.documentIdentity
+    && latestRequestToken === operation.requestToken
+    && active.title === operation.titleSnapshot,
+  )
+}
+
+export function applyReviewTitleResponse(
+  active: ReviewDocument | null,
+  activeDocumentIdentity: string,
+  latestRequestToken: number,
+  operation: ReviewTitleOperation,
+  suggestion: ReviewTitleSuggestion,
+): ReviewTitleResolution {
+  if (!reviewTitleOperationIsCurrent(
+    active,
+    activeDocumentIdentity,
+    latestRequestToken,
+    operation,
+  )) {
+    return { applied: false, current: active }
+  }
+  return { applied: true, current: mergeTitleSuggestion(active!, suggestion) }
+}
+
+export interface ReviewCreateOperation {
+  reviewDate: string
+  requestToken: number
+}
+
+export interface ReviewCreateResolution {
+  applied: boolean
+  document: ReviewDocument | null
+}
+
+export function createReviewCreateOperation(
+  reviewDate: string,
+  requestToken: number,
+): ReviewCreateOperation {
+  return { reviewDate, requestToken }
+}
+
+export function reviewCreateOperationIsCurrent(
+  selectedDate: string,
+  latestRequestToken: number,
+  operation: ReviewCreateOperation,
+): boolean {
+  return selectedDate === operation.reviewDate && latestRequestToken === operation.requestToken
+}
+
+export function applyReviewCreateResponse(
+  selectedDate: string,
+  latestRequestToken: number,
+  operation: ReviewCreateOperation,
+  document: ReviewDocument,
+): ReviewCreateResolution {
+  if (
+    !reviewCreateOperationIsCurrent(selectedDate, latestRequestToken, operation)
+    || document.review_date !== operation.reviewDate
+  ) {
+    return { applied: false, document: null }
+  }
+  return { applied: true, document }
 }

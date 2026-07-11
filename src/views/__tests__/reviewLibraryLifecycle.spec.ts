@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ReviewDocument } from '@/api/reviews'
+import type { ReviewDocument, ReviewTitleSuggestion } from '@/api/reviews'
 import {
+  applyReviewCreateResponse,
   applyReviewSaveResponse,
+  applyReviewTitleResponse,
+  createReviewCreateOperation,
   createReviewLoadController,
   createReviewSaveOperation,
+  createReviewTitleOperation,
+  reviewSelectionIsActive,
 } from '@/views/reviewLibraryLifecycle'
 
 function review(reviewDate: string, overrides: Partial<ReviewDocument> = {}): ReviewDocument {
@@ -33,6 +38,12 @@ function deferred<T>() {
 }
 
 describe('review library lifecycle', () => {
+  it('treats selecting the active review document as a no-op', () => {
+    expect(reviewSelectionIsActive(review('2026-07-11'), '2026-07-11')).toBe(true)
+    expect(reviewSelectionIsActive(review('2026-07-11'), '2026-07-12')).toBe(false)
+    expect(reviewSelectionIsActive(null, '2026-07-11')).toBe(false)
+  })
+
   it('applies server metadata without replacing edits made after save started', () => {
     const submitted = review('2026-07-11')
     const operation = createReviewSaveOperation(submitted, 'document-1')
@@ -111,5 +122,77 @@ describe('review library lifecycle', () => {
 
     first.resolve(review('2026-07-11'))
     expect(await firstLoad).toEqual({ stale: true, reviewDate: '2026-07-11' })
+  })
+
+  it('ignores a deferred title candidate after switching dates', async () => {
+    const candidate = deferred<ReviewTitleSuggestion>()
+    const operation = createReviewTitleOperation(review('2026-07-11'), 'document-1', 1)
+    let active = review('2026-07-11')
+    let activeIdentity = 'document-1'
+    let latestToken = 1
+    const completion = candidate.promise.then(suggestion => applyReviewTitleResponse(
+      active,
+      activeIdentity,
+      latestToken,
+      operation,
+      suggestion,
+    ))
+
+    active = review('2026-07-12', { title: 'B 文档标题' })
+    activeIdentity = 'document-2'
+    latestToken = 2
+    candidate.resolve({
+      title: 'A 文档候选标题',
+      source: 'deepseek',
+      provider_fallback: false,
+      provider_error: null,
+      provider_error_code: null,
+    })
+
+    expect(await completion).toEqual({ applied: false, current: active })
+    expect(active).toMatchObject({ title: 'B 文档标题', title_source: 'manual' })
+  })
+
+  it('ignores a deferred title candidate after a manual title edit', async () => {
+    const candidate = deferred<ReviewTitleSuggestion>()
+    const operation = createReviewTitleOperation(review('2026-07-11'), 'document-1', 1)
+    const active = review('2026-07-11', { title: '请求期间手改标题', title_source: 'manual' })
+    const completion = candidate.promise.then(suggestion => applyReviewTitleResponse(
+      active,
+      'document-1',
+      1,
+      operation,
+      suggestion,
+    ))
+
+    candidate.resolve({
+      title: '过期候选标题',
+      source: 'deepseek',
+      provider_fallback: false,
+      provider_error: null,
+      provider_error_code: null,
+    })
+
+    expect(await completion).toEqual({ applied: false, current: active })
+    expect(active).toMatchObject({ title: '请求期间手改标题', title_source: 'manual' })
+  })
+
+  it('ignores a deferred create response after the selected date changes', async () => {
+    const created = deferred<ReviewDocument>()
+    const operation = createReviewCreateOperation('2026-07-11', 1)
+    let selectedDate = '2026-07-11'
+    let latestToken = 1
+    const completion = created.promise.then(document => applyReviewCreateResponse(
+      selectedDate,
+      latestToken,
+      operation,
+      document,
+    ))
+
+    selectedDate = '2026-07-12'
+    latestToken = 2
+    created.resolve(review('2026-07-11'))
+
+    expect(await completion).toEqual({ applied: false, document: null })
   })
 })

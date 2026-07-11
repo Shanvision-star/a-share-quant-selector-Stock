@@ -13,11 +13,15 @@ from web.backend.services.review_repository import ReviewRepository
 from web.backend.services.review_service import ReviewService
 
 
-def _png_bytes() -> bytes:
+def _image_bytes(image_format: str) -> bytes:
     image = Image.new("RGB", (2, 2), "red")
     raw = BytesIO()
-    image.save(raw, format="PNG")
+    image.save(raw, format=image_format)
     return raw.getvalue()
+
+
+def _png_bytes() -> bytes:
+    return _image_bytes("PNG")
 
 
 @pytest.fixture
@@ -99,6 +103,57 @@ def test_add_stock_deduplicates_and_title_generation_stays_offline(client: TestC
     assert "沐曦股份" in title.json()["data"]["title"]
 
 
+def test_generate_title_sanitizes_provider_errors(client: TestClient, monkeypatch) -> None:
+    """标题 provider 的内部错误只能留在服务端，响应必须使用固定脱敏信息。"""
+    client.post("/api/reviews/2026-07-11")
+    private_path = r"C:\private\review_library\config.json"
+    monkeypatch.setattr(
+        title_module,
+        "load_llm_config",
+        lambda: {"provider": "deepseek", "deepseek": {"api_key": "test-key"}},
+    )
+
+    def raise_provider_error(**_kwargs):
+        raise RuntimeError(f"provider failed: {private_path}")
+
+    monkeypatch.setattr(title_module, "call_deepseek", raise_provider_error)
+
+    response = client.post(
+        "/api/reviews/2026-07-11/generate-title",
+        json={"title": "原始标题", "body": "市场回暖。", "tags": [], "stocks": []},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["provider_error"] == "标题服务暂不可用，已使用本地候选"
+    assert response.json()["data"]["provider_error_code"] == "provider_unavailable"
+    assert private_path not in response.text
+    assert "review_library" not in response.text
+
+
+def test_update_deduplicates_normalized_stock_codes(client: TestClient) -> None:
+    """HTTP 保存必须复用服务层规则，只持久化同一代码的第一条股票。"""
+    created = client.post("/api/reviews/2026-07-11").json()["data"]
+    payload = {
+        "title": "今日复盘",
+        "status": "draft",
+        "title_source": "manual",
+        "tags": [],
+        "stocks": [
+            {"code": " 688802 ", "name": "沐曦股份"},
+            {"code": "688802", "name": "重复名称"},
+        ],
+        "body": "半导体观察",
+        "version": created["version"],
+    }
+
+    saved = client.put("/api/reviews/2026-07-11", json=payload)
+    loaded = client.get("/api/reviews/2026-07-11")
+
+    assert saved.status_code == 200
+    assert saved.json()["data"]["stocks"] == [{"code": "688802", "name": "沐曦股份"}]
+    assert loaded.json()["data"]["stocks"] == [{"code": "688802", "name": "沐曦股份"}]
+
+
 def test_upload_read_list_and_delete_attachment(client: TestClient) -> None:
     """附件上传、二进制读取、列表与删除均只经由仓储安全边界。"""
     client.post("/api/reviews/2026-07-11")
@@ -123,6 +178,54 @@ def test_upload_read_list_and_delete_attachment(client: TestClient) -> None:
     assert downloaded.content == _png_bytes()
     assert deleted.json()["data"]["deleted"] is True
     assert missing.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("filename", "image_format", "content_type"),
+    [
+        ("chart.jpg", "JPEG", "image/jpeg"),
+        ("chart.webp", "WEBP", "image/webp"),
+        ("chart.gif", "GIF", "image/gif"),
+    ],
+)
+def test_upload_accepts_supported_image_formats(
+    client: TestClient,
+    filename: str,
+    image_format: str,
+    content_type: str,
+) -> None:
+    """JPEG、WebP 与 GIF 均须通过真实图片签名校验后保存。"""
+    client.post("/api/reviews/2026-07-11")
+
+    response = client.post(
+        "/api/reviews/2026-07-11/attachments",
+        files={"file": (filename, _image_bytes(image_format), content_type)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["content_type"] == content_type
+
+
+def test_upload_rejects_svg_forged_mime_and_oversized_images(client: TestClient) -> None:
+    """SVG、MIME 与签名不符、超过 10 MiB 的附件都必须被拒绝。"""
+    client.post("/api/reviews/2026-07-11")
+    oversized_png = _png_bytes() + (b"\0" * (10 * 1024 * 1024))
+    responses = [
+        client.post(
+            "/api/reviews/2026-07-11/attachments",
+            files={"file": ("chart.svg", b"<svg xmlns='http://www.w3.org/2000/svg'/>", "image/svg+xml")},
+        ),
+        client.post(
+            "/api/reviews/2026-07-11/attachments",
+            files={"file": ("chart.png", _png_bytes(), "image/jpeg")},
+        ),
+        client.post(
+            "/api/reviews/2026-07-11/attachments",
+            files={"file": ("large.png", oversized_png, "image/png")},
+        ),
+    ]
+
+    assert all(response.status_code == 422 for response in responses)
 
 
 def test_invalid_dates_and_path_traversal_are_rejected_without_path_leaks(client: TestClient) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import logging
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -24,6 +25,7 @@ from web.backend.services.review_title_service import ReviewTitleService
 
 
 router = APIRouter(prefix="/api/reviews", tags=["复盘库"])
+logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_REVIEW_ROOT = _PROJECT_ROOT / "data" / "review_library"
@@ -122,6 +124,20 @@ def _list_item_data(document: ReviewDocument, repository: ReviewRepository) -> d
 def _body_summary(body: str) -> str:
     lines = [line.strip() for line in body.splitlines() if line.strip() and not line.startswith("#")]
     return " ".join(lines)[:200]
+
+
+def _title_suggestion_data(suggestion) -> dict:
+    """对 provider 失败统一脱敏，避免把配置或本地路径送到客户端。"""
+    provider_error = suggestion.provider_error
+    if provider_error:
+        logger.warning("复盘标题 provider 回退：%s", provider_error)
+    return {
+        "title": suggestion.title,
+        "source": suggestion.source,
+        "provider_fallback": suggestion.provider_fallback,
+        "provider_error": "标题服务暂不可用，已使用本地候选" if provider_error else None,
+        "provider_error_code": "provider_unavailable" if provider_error else None,
+    }
 
 
 def _raise_mapped_error(error: Exception) -> None:
@@ -256,15 +272,7 @@ def generate_title(
             body=payload.body,
         )
         suggestion = title_service.generate(candidate)
-        return {
-            "success": True,
-            "data": {
-                "title": suggestion.title,
-                "source": suggestion.source,
-                "provider_fallback": suggestion.provider_fallback,
-                "provider_error": suggestion.provider_error,
-            },
-        }
+        return {"success": True, "data": _title_suggestion_data(suggestion)}
     except Exception as error:
         _raise_mapped_error(error)
 

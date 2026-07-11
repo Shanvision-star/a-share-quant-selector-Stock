@@ -96,7 +96,7 @@ class ReviewService:
             status=status,
             title_source=title_source,
             tags=tuple(str(tag) for tag in tags),
-            stocks=tuple(_stock_from_mapping(stock) for stock in stocks),
+            stocks=_stocks_from_mappings(stocks),
             body=_body_with_title(clean_title, body),
         )
         return self.repository.save(updated, expected_version=expected_version)
@@ -131,7 +131,20 @@ def _standard_template(title: str) -> str:
 def _stock_from_mapping(stock: dict) -> ReviewStock:
     if not isinstance(stock, dict):
         raise ReviewValidationError("股票必须为对象")
-    return ReviewStock(code=str(stock.get("code") or ""), name=str(stock.get("name") or ""))
+    return ReviewStock(code=str(stock.get("code") or "").strip(), name=str(stock.get("name") or ""))
+
+
+def _stocks_from_mappings(stocks: list[dict]) -> tuple[ReviewStock, ...]:
+    """规范化股票代码并保留首次出现的条目，避免写入重复 frontmatter。"""
+    result: list[ReviewStock] = []
+    seen_codes: set[str] = set()
+    for mapping in stocks:
+        stock = _stock_from_mapping(mapping)
+        if stock.code in seen_codes:
+            continue
+        seen_codes.add(stock.code)
+        result.append(stock)
+    return tuple(result)
 
 
 def _body_with_title(title: str, body: str) -> str:

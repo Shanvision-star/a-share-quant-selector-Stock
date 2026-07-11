@@ -91,3 +91,29 @@ def test_list_reviews_applies_status_date_and_pagination(tmp_path) -> None:
 
     assert result["total"] == 2
     assert [item.review_date for item in result["items"]] == ["2026-07-10"]
+
+
+def test_update_review_deduplicates_normalized_stock_codes(tmp_path) -> None:
+    """更新路径保留同一代码的第一条股票，并规范化代码空白。"""
+    repository = ReviewRepository(tmp_path)
+    service = ReviewService(repository)
+    current, _ = service.create_or_get("2026-07-11")
+
+    saved = service.update_review(
+        "2026-07-11",
+        title="今日复盘",
+        status="draft",
+        title_source="manual",
+        tags=[],
+        stocks=[
+            {"code": " 688802 ", "name": "沐曦股份"},
+            {"code": "688802", "name": "重复名称"},
+        ],
+        body="半导体观察",
+        expected_version=current.version,
+    )
+
+    assert [(stock.code, stock.name) for stock in saved.stocks] == [("688802", "沐曦股份")]
+    assert [(stock.code, stock.name) for stock in repository.load("2026-07-11").stocks] == [
+        ("688802", "沐曦股份")
+    ]

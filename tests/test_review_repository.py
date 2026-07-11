@@ -282,13 +282,22 @@ def test_attachment_rejects_path_traversal_and_referenced_delete(tmp_path, refer
     assert repo.list_attachments("2026-07-11") == []
 
 
-def test_iter_documents_skips_malformed_yaml_frontmatter(tmp_path):
+def test_scan_documents_reports_malformed_yaml_without_blocking_valid_files(tmp_path):
     repo = ReviewRepository(tmp_path)
+    repo.save(ReviewDocument.new("2026-07-10"))
     malformed = tmp_path / "2026" / "07" / "2026-07-11.md"
-    malformed.parent.mkdir(parents=True)
+    malformed.parent.mkdir(parents=True, exist_ok=True)
     malformed.write_bytes(b"---\ntitle: [unterminated\n---\nbody")
 
-    assert repo.iter_documents() == []
+    documents, warnings = repo.scan_documents()
+
+    assert [document.review_date for document in documents] == ["2026-07-10"]
+    assert len(warnings) == 1
+    assert warnings[0].review_date == "2026-07-11"
+    assert warnings[0].relative_path == "2026/07/2026-07-11.md"
+    assert "备份" in str(warnings[0])
+    assert str(tmp_path.resolve()) not in str(warnings[0])
+    assert repo.iter_documents() == documents
 
 
 def test_parse_failure_does_not_expose_absolute_document_path(tmp_path):

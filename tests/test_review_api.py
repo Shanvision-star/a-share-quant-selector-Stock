@@ -75,6 +75,29 @@ def test_create_read_list_update_and_conflict(client: TestClient) -> None:
     assert listed.json()["data"]["items"][0]["review_date"] == "2026-07-11"
 
 
+def test_corrupt_review_is_visible_in_list_and_open_has_recovery_hint(
+    client: TestClient,
+    tmp_path,
+) -> None:
+    """损坏文件必须以相对路径告警出现，直接打开返回可恢复的 422。"""
+    review_root = tmp_path / "review_library"
+    malformed = review_root / "2026" / "07" / "2026-07-11.md"
+    malformed.parent.mkdir(parents=True)
+    malformed.write_bytes(b"---\ntitle: [unterminated\n---\nbody")
+
+    listed = client.get("/api/reviews")
+    opened = client.get("/api/reviews/2026-07-11")
+
+    warning = listed.json()["data"]["warnings"][0]
+    assert warning["review_date"] == "2026-07-11"
+    assert warning["relative_path"] == "2026/07/2026-07-11.md"
+    assert "备份" in warning["message"]
+    assert opened.status_code == 422
+    assert "2026/07/2026-07-11.md" in opened.json()["detail"]
+    assert "备份" in opened.json()["detail"]
+    assert str(review_root.resolve()) not in opened.text
+
+
 def test_add_stock_deduplicates_and_title_generation_stays_offline(client: TestClient) -> None:
     """同一股票只追加一次，未配置 provider 时返回本地标题候选。"""
     client.post("/api/reviews/2026-07-11")

@@ -8,6 +8,14 @@
 
 **Tech Stack:** Python 3、FastAPI、PyYAML、Pillow、pytest、Vue 3、TypeScript、Element Plus、markdown-it、DOMPurify、Vitest、Vite。
 
+## Completion Record
+
+- 状态：实现完成，已通过任务级审查、全分支审查及审查修复循环。
+- 顶层范围：`0d0b662..cdca43e`，后续损坏文档告警与最终 gitlink 收口记录在本计划之后的提交中。
+- 嵌套前端范围：`02d6325..7995326`，后续告警 UI 与最终收口记录在本计划之后的提交中。
+- 验证：后端 review pytest、前端全量 Vitest、`npm run build`、路由 import smoke、`git diff --check`、桌面与移动浏览器流程。
+- Provider 边界：默认测试和浏览器验收只验证 DeepSeek 未配置/失败时的本地回退，未执行真实 DeepSeek 付费 smoke。
+
 ## Global Constraints
 
 - 每个自然日最多一篇 `YYYY-MM-DD.md`；日期按 `Asia/Shanghai`。
@@ -16,7 +24,7 @@
 - 图片只允许 PNG/JPEG/WebP/GIF，单张最大 10 MiB；禁止 SVG 和路径穿越。
 - 标题生成必须显式触发；DeepSeek 不可用时本地回退，不能阻断保存。
 - 前端复用现有 `markdown-it`、`DOMPurify`、API 客户端和离开保护模式。
-- `web/frontend` 是独立 gitlink：从顶层记录的 `ba8eca511810f06d3b4da746d07da7f188930c1c` 初始化并创建 `codex/review-library`；先提交前端，再提交顶层 gitlink。
+- `web/frontend` 是独立 gitlink：实际功能基线为顶层记录的 `02d6325`，分支为 `codex/review-library`；先提交前端，再提交顶层 gitlink。
 - 不碰主工作区中用户未提交的 `TrackingView.vue`，只在隔离前端仓库基于 gitlink 提交实现。
 - 默认测试不调用真实 DeepSeek，不触发全市场更新或交易 provider。
 
@@ -34,7 +42,7 @@
 - Produces: `load(review_date) -> ReviewDocument | None`、`save(document, expected_version=None) -> ReviewDocument`、`iter_documents() -> list[ReviewDocument]`。
 - Produces: `save_attachment(review_date, upload_name, content_type, raw) -> AttachmentInfo`、`list_attachments(review_date)`、`read_attachment(review_date, filename)`、`delete_attachment(review_date, filename, force=False)`。
 
-- [ ] **Step 1: 写 repository 失败测试**
+- [x] **Step 1: 写 repository 失败测试**
 
 测试必须覆盖：合法路径、非法日期/穿越拒绝、frontmatter 往返、股票代码前导零、原子保存、旧版本 409 对应异常、图片签名和 10 MiB 限制、被正文引用的附件不能直接删除。
 
@@ -55,13 +63,13 @@ def test_save_rejects_stale_version(tmp_path):
         repo.save(replace(original, title="旧页面标题"), expected_version=original.version)
 ```
 
-- [ ] **Step 2: 运行测试确认红灯**
+- [x] **Step 2: 运行测试确认红灯**
 
 Run: `python -m pytest tests/test_review_repository.py -q`
 
 Expected: collection 失败，提示 `review_repository` 不存在。
 
-- [ ] **Step 3: 实现最小 repository**
+- [x] **Step 3: 实现最小 repository**
 
 关键类型和边界必须按以下签名实现：
 
@@ -91,13 +99,13 @@ class ReviewAttachmentReferencedError(RuntimeError):
 
 用 `yaml.safe_load/safe_dump` 解析 frontmatter；用同目录临时文件、`flush/fsync` 和 `os.replace` 原子写入；用 Pillow `Image.verify()` 校验图片实际格式；所有 resolve 后路径必须 `relative_to(self.root.resolve())` 成功。
 
-- [ ] **Step 4: 运行 repository 测试确认绿灯**
+- [x] **Step 4: 运行 repository 测试确认绿灯**
 
 Run: `python -m pytest tests/test_review_repository.py -q`
 
 Expected: 全部通过。
 
-- [ ] **Step 5: 提交 Task 1**
+- [x] **Step 5: 提交 Task 1**
 
 ```powershell
 git add web/backend/services/review_repository.py tests/test_review_repository.py
@@ -117,7 +125,7 @@ git commit -m "feat: add markdown review repository"
 - Produces: `ReviewService.create_or_get()`、`list_reviews()`、`update_review()`、`add_stock()`。
 - Produces: `ReviewTitleService.generate(document) -> TitleSuggestion`。
 
-- [ ] **Step 1: 写 service 失败测试**
+- [x] **Step 1: 写 service 失败测试**
 
 ```python
 def test_add_stock_appends_one_section_and_deduplicates(tmp_path):
@@ -150,13 +158,13 @@ def test_list_reviews_searches_title_stock_tag_and_body(tmp_path):
 
 标题测试分别 monkeypatch `load_llm_config` 和 `call_deepseek`：成功时断言 `source=deepseek`；未配置、超时、非法 JSON 时断言 `source=local_fallback` 且候选包含股票名称或首个有效句子。
 
-- [ ] **Step 2: 运行 service 测试确认红灯**
+- [x] **Step 2: 运行 service 测试确认红灯**
 
 Run: `python -m pytest tests/test_review_service.py tests/test_review_title_service.py -q`
 
 Expected: collection 失败，提示两个 service 模块不存在。
 
-- [ ] **Step 3: 实现模板、搜索、股票去重和标题回退**
+- [x] **Step 3: 实现模板、搜索、股票去重和标题回退**
 
 `TitleSuggestion` 固定字段为 `title: str`、`source: Literal["deepseek", "local_fallback"]`、`provider_fallback: bool`、`provider_error: str | None`。
 
@@ -172,13 +180,13 @@ Expected: collection 失败，提示两个 service 模块不存在。
 
 本地标题回退顺序固定为：股票名称（最多两个）→ 正文首个非标题句子 → 标签；压缩空白并限制 30 个字符。DeepSeek prompt 只要求 `{"title":"沐曦放量突破"}` 这种单字段 JSON，正文截断到 12,000 字符。
 
-- [ ] **Step 4: 运行 service 测试确认绿灯**
+- [x] **Step 4: 运行 service 测试确认绿灯**
 
 Run: `python -m pytest tests/test_review_service.py tests/test_review_title_service.py -q`
 
 Expected: 全部通过。
 
-- [ ] **Step 5: 提交 Task 2**
+- [x] **Step 5: 提交 Task 2**
 
 ```powershell
 git add web/backend/services/review_service.py web/backend/services/review_title_service.py tests/test_review_service.py tests/test_review_title_service.py
@@ -196,7 +204,7 @@ git commit -m "feat: add review library services"
 - Consumes: Task 1/2 repository、service、title service。
 - Produces: `/api/reviews` 及附件接口，响应统一为 `{"success": true, "data": {"review_date": "2026-07-11"}}` 这一 envelope 结构。
 
-- [ ] **Step 1: 写 API 失败测试**
+- [x] **Step 1: 写 API 失败测试**
 
 使用临时目录和 monkeypatch 的 service 构造独立 FastAPI client，覆盖：幂等创建、读取、列表筛选、保存、版本冲突 409、股票去重、标题回退来源、上传/读取/删除附件、非法日期 422、路径穿越 404/422。
 
@@ -210,19 +218,19 @@ def test_create_update_and_conflict(client):
     assert stale.status_code == 409
 ```
 
-- [ ] **Step 2: 运行 API 测试确认红灯**
+- [x] **Step 2: 运行 API 测试确认红灯**
 
 Run: `python -m pytest tests/test_review_api.py -q`
 
 Expected: collection 失败，提示 router 不存在。
 
-- [ ] **Step 3: 实现 Pydantic 请求模型和错误映射**
+- [x] **Step 3: 实现 Pydantic 请求模型和错误映射**
 
 创建 `ReviewUpdatePayload`、`ReviewStockPayload`、`ReviewTitlePayload`。路由把 `ReviewValidationError` 映射为 422、`ReviewConflictError` 和仍引用附件映射为 409、文件不存在映射为 404；错误内容不包含绝对路径。
 
 在 `web/backend/main.py` 导入并 `app.include_router(review.router)`，固定路由先于前端 SPA fallback 注册。
 
-- [ ] **Step 4: 运行 API 与 import smoke**
+- [x] **Step 4: 运行 API 与 import smoke**
 
 Run: `python -m pytest tests/test_review_api.py tests/test_frontend_spa_fallback.py -q`
 
@@ -230,7 +238,7 @@ Run: `python -c "from web.backend.main import app; print([r.path for r in app.ro
 
 Expected: 测试通过，输出包含 `/api/reviews` 和附件路由。
 
-- [ ] **Step 5: 提交 Task 3**
+- [x] **Step 5: 提交 Task 3**
 
 ```powershell
 git add web/backend/routers/review.py web/backend/main.py tests/test_review_api.py
@@ -250,7 +258,7 @@ git commit -m "feat: expose review library api"
 - Produces: `listReviews/createReview/getReview/updateReview/addStockToReview/generateReviewTitle/uploadReviewAttachment/deleteReviewAttachment`。
 - Produces: `rewriteReviewImageUrls()`、`reviewIsDirty()`、`mergeTitleSuggestion()`。
 
-- [ ] **Step 1: 初始化独立前端分支**
+- [x] **Step 1: 初始化独立前端分支**
 
 ```powershell
 git clone --no-checkout "D:\stock\20260329dingtalk\a-share-quant-selector-main-zuozhe\a-share-quant-selector-Stock\web\frontend" web/frontend
@@ -260,7 +268,7 @@ npm --prefix web/frontend install
 
 Expected: `git -C web/frontend status --short --branch` 显示 `codex/review-library` 且干净。
 
-- [ ] **Step 2: 写前端 API 和状态失败测试**
+- [x] **Step 2: 写前端 API 和状态失败测试**
 
 ```ts
 it('uploads an attachment as multipart form data', async () => {
@@ -279,17 +287,17 @@ it('rewrites only safe local review image paths', () => {
 })
 ```
 
-- [ ] **Step 3: 运行前端测试确认红灯**
+- [x] **Step 3: 运行前端测试确认红灯**
 
 Run: `npm --prefix web/frontend run test -- src/api/__tests__/reviewApi.spec.ts src/views/__tests__/reviewLibraryState.spec.ts`
 
 Expected: import 失败，提示目标模块不存在。
 
-- [ ] **Step 4: 实现类型化 API 和纯状态函数**
+- [x] **Step 4: 实现类型化 API 和纯状态函数**
 
 所有日期和附件名使用 `encodeURIComponent`；API 类型必须包括 `ReviewStatus`、`ReviewStock`、`ReviewDocument`、`ReviewListItem`、`ReviewTitleSuggestion`、`ReviewAttachment`。图片 URL 重写只接受 `./<date>.assets/<safe filename>`。
 
-- [ ] **Step 5: 运行前端测试确认绿灯**
+- [x] **Step 5: 运行前端测试确认绿灯**
 
 Run: `npm --prefix web/frontend run test -- src/api/__tests__/reviewApi.spec.ts src/views/__tests__/reviewLibraryState.spec.ts`
 
@@ -308,29 +316,29 @@ Expected: 全部通过。
 - Consumes: Task 4 API 和状态助手。
 - Produces: `/review-library` 可用页面。
 
-- [ ] **Step 1: 扩展状态测试覆盖编辑生命周期**
+- [x] **Step 1: 扩展状态测试覆盖编辑生命周期**
 
 增加标题手改后 `title_source=manual`、生成候选合并、保存快照 dirty 比较、图片 Markdown 在光标位置插入、状态筛选参数构造测试。
 
-- [ ] **Step 2: 实现双栏工作台**
+- [x] **Step 2: 实现双栏工作台**
 
 页面必须包含：左侧搜索/日期/状态/草稿和待跟进快捷筛选；右侧日期、标题、状态、标签、股票、生成标题、保存、编辑/预览页签；无文档时显示创建入口。标题字段与正文分离，保存时 API body 不包含一级标题。
 
 使用 Element Plus 图标按钮；图标不熟悉时提供 `title` tooltip。编辑器使用原生 textarea/`el-input type=textarea`，预览通过 `markdown-it({html:false})` + DOMPurify。
 
-- [ ] **Step 3: 实现截图上传、拖拽和粘贴**
+- [x] **Step 3: 实现截图上传、拖拽和粘贴**
 
 `ReviewAttachmentUploader.vue` 接收 `reviewDate` 和 `insertMarkdown(markdown)`；`paste/drop/change` 都调用同一个 `uploadFiles(files)`。上传失败逐张显示，成功后在当前光标位置插入后端返回的 Markdown。
 
-- [ ] **Step 4: 接入未保存保护和响应式布局**
+- [x] **Step 4: 接入未保存保护和响应式布局**
 
 复用 `bindBeforeUnloadGuard`；Vue router 离开时用 `onBeforeRouteLeave` 提示。桌面左栏宽度 300px，小于 900px 时改为抽屉；按钮、日期、标题不得溢出。
 
-- [ ] **Step 5: 接入路由和侧边栏**
+- [x] **Step 5: 接入路由和侧边栏**
 
 路由名固定 `ReviewLibrary`，路径 `/review-library`；侧边栏使用 Element Plus `Notebook` 或最接近的文档图标，标题“复盘库”。
 
-- [ ] **Step 6: 运行前端测试和构建**
+- [x] **Step 6: 运行前端测试和构建**
 
 Run: `npm --prefix web/frontend run test -- src/api/__tests__/reviewApi.spec.ts src/views/__tests__/reviewLibraryState.spec.ts`
 
@@ -350,21 +358,21 @@ Expected: 测试和 `vue-tsc -b && vite build` 全部通过。
 - Consumes: Task 4 `addStockToReview()`，Task 5 `/review-library` 路由。
 - Produces: 可复用按钮 props `{ code: string; name?: string; size?: string }`。
 
-- [ ] **Step 1: 写组件失败测试**
+- [x] **Step 1: 写组件失败测试**
 
 mock `addStockToReview` 和 router，分别断言：首次加入显示“已加入今日复盘”；重复返回显示“今日复盘中已存在”；失败时错误可见；点击“打开复盘”导航到 `{name:'ReviewLibrary', query:{date:<today>}}`。
 
-- [ ] **Step 2: 运行组件测试确认红灯**
+- [x] **Step 2: 运行组件测试确认红灯**
 
 Run: `npm --prefix web/frontend run test -- src/components/__tests__/AddToTodayReviewButton.spec.ts`
 
 Expected: import 失败，提示组件不存在。
 
-- [ ] **Step 3: 实现共享按钮并接入两个页面**
+- [x] **Step 3: 实现共享按钮并接入两个页面**
 
 按钮以 `Asia/Shanghai` 本地日期调用股票加入 API。StockDetail 放在股票操作区；TrackingView 放在每行操作区。两个页面不得复制 API 调用和消息分支。
 
-- [ ] **Step 4: 运行前端相关测试和构建**
+- [x] **Step 4: 运行前端相关测试和构建**
 
 Run: `npm --prefix web/frontend run test -- src/components/__tests__/AddToTodayReviewButton.spec.ts src/api/__tests__/reviewApi.spec.ts`
 
@@ -372,7 +380,7 @@ Run: `npm --prefix web/frontend run build`
 
 Expected: 全部通过。
 
-- [ ] **Step 5: 提交嵌套前端**
+- [x] **Step 5: 提交嵌套前端**
 
 ```powershell
 git -C web/frontend add src/api/reviews.ts src/api/__tests__/reviewApi.spec.ts src/views/reviewLibraryState.ts src/views/__tests__/reviewLibraryState.spec.ts src/views/ReviewLibraryView.vue src/components/ReviewAttachmentUploader.vue src/components/AddToTodayReviewButton.vue src/components/__tests__/AddToTodayReviewButton.spec.ts src/router/index.ts src/components/AppSidebar.vue src/views/StockDetail.vue src/views/TrackingView.vue
@@ -390,11 +398,11 @@ git -C web/frontend commit -m "feat: add markdown review library workspace"
 - Consumes: Tasks 1-6 全部产物。
 - Produces: 可从 README 找到的复盘库入口、完整验证证据和顶层提交。
 
-- [ ] **Step 1: 更新 README 当前能力与使用方法**
+- [x] **Step 1: 更新 README 当前能力与使用方法**
 
 在 Web 功能和启动后使用章节增加：侧边栏“复盘库”、每天一篇 Markdown、截图上传/粘贴、标题候选、状态与搜索、从股票详情/跟踪运营加入；注明文件位于 `data/review_library`，备份该目录即可迁移。
 
-- [ ] **Step 2: 跑后端完整相关测试**
+- [x] **Step 2: 跑后端完整相关测试**
 
 Run: `python -m pytest tests/test_review_repository.py tests/test_review_service.py tests/test_review_title_service.py tests/test_review_api.py tests/test_frontend_spa_fallback.py -q`
 
@@ -402,7 +410,7 @@ Run: `python -c "from web.backend.main import app; assert any(r.path == '/api/re
 
 Expected: 全部通过，import smoke 输出 `review routes ok`。
 
-- [ ] **Step 3: 跑前端完整测试和构建**
+- [x] **Step 3: 跑前端完整测试和构建**
 
 Run: `npm --prefix web/frontend run test -- src/api/__tests__/reviewApi.spec.ts src/views/__tests__/reviewLibraryState.spec.ts src/components/__tests__/AddToTodayReviewButton.spec.ts`
 
@@ -410,13 +418,13 @@ Run: `npm --prefix web/frontend run build`
 
 Expected: 全部通过。
 
-- [ ] **Step 4: 启动隔离服务并做浏览器验收**
+- [x] **Step 4: 启动隔离服务并做浏览器验收**
 
 后端使用未占用端口（优先 8023），前端使用未占用端口（优先 5180），并确保 Vite proxy 指向当前 worktree 后端。浏览器覆盖桌面 1440x900 和移动 390x844：创建过去日期、保存草稿、两只股票、防重复、粘贴 PNG、预览图片、标题本地回退、全文搜索、状态筛选、股票详情加入、跟踪页加入、未保存离开提示。
 
 同时检查页面无重叠、标题不溢出、移动端左栏为抽屉、图片非空且来自当前附件 API。
 
-- [ ] **Step 5: 检查差异并提交顶层收口**
+- [x] **Step 5: 检查差异并提交顶层收口**
 
 ```powershell
 git diff --check
@@ -426,7 +434,7 @@ git diff --cached --check
 git commit -m "feat: add markdown review library"
 ```
 
-- [ ] **Step 6: 最终核验提交和工作区状态**
+- [x] **Step 6: 最终核验提交和工作区状态**
 
 ```powershell
 git status --short --branch

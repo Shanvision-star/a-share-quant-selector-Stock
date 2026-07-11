@@ -46,7 +46,7 @@ class ReviewService:
         """按关键词、状态、股票和日期返回倒序分页的复盘列表。"""
         normalized_query = _normalize(query)
         normalized_stock = _normalize(stock)
-        documents = self.repository.iter_documents()
+        documents, warnings = self.repository.scan_documents()
         matched = [
             document
             for document in documents
@@ -66,6 +66,14 @@ class ReviewService:
             "total": len(matched),
             "limit": safe_limit,
             "offset": safe_offset,
+            "warnings": [
+                {
+                    "review_date": warning.review_date,
+                    "relative_path": warning.relative_path,
+                    "message": "复盘文件无法解析，请先备份原文件后修复 frontmatter 或 UTF-8 编码",
+                }
+                for warning in warnings
+            ],
         }
 
     def update_review(

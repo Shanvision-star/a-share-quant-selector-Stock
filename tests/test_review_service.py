@@ -108,6 +108,23 @@ def test_list_reviews_applies_status_date_and_pagination(tmp_path) -> None:
     assert [item.review_date for item in result["items"]] == ["2026-07-10"]
 
 
+def test_list_reviews_returns_recoverable_warning_for_corrupt_markdown(tmp_path) -> None:
+    """单篇损坏文件不阻断列表，并返回相对路径与恢复提示。"""
+    service = ReviewService(ReviewRepository(tmp_path))
+    service.create_or_get("2026-07-10")
+    malformed = tmp_path / "2026" / "07" / "2026-07-11.md"
+    malformed.write_bytes(b"---\ntitle: [unterminated\n---\nbody")
+
+    result = service.list_reviews()
+
+    assert [item.review_date for item in result["items"]] == ["2026-07-10"]
+    assert result["warnings"] == [{
+        "review_date": "2026-07-11",
+        "relative_path": "2026/07/2026-07-11.md",
+        "message": "复盘文件无法解析，请先备份原文件后修复 frontmatter 或 UTF-8 编码",
+    }]
+
+
 def test_update_review_deduplicates_normalized_stock_codes(tmp_path) -> None:
     """更新路径保留同一代码的第一条股票，并规范化代码空白。"""
     repository = ReviewRepository(tmp_path)

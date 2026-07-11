@@ -221,6 +221,7 @@ def list_reviews(
                 "total": result["total"],
                 "limit": result["limit"],
                 "offset": result["offset"],
+                "warnings": result["warnings"],
             },
         }
     except Exception as error:

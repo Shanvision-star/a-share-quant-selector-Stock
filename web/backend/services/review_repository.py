@@ -48,6 +48,17 @@ class ReviewValidationError(ValueError):
     """表示输入不满足复盘文件边界。"""
 
 
+class ReviewCorruptDocumentError(ReviewValidationError):
+    """表示磁盘中的单篇复盘无法解析，并只暴露相对定位。"""
+
+    def __init__(self, review_date: str, relative_path: str):
+        self.review_date = review_date
+        self.relative_path = relative_path
+        super().__init__(
+            f"复盘文件 {relative_path} 无法解析，请先备份原文件后修复 frontmatter 或 UTF-8 编码"
+        )
+
+
 class ReviewAttachmentReferencedError(RuntimeError):
     """表示正文仍引用待删除附件。"""
 
@@ -121,10 +132,14 @@ class ReviewRepository:
         if not path.is_file():
             return None
         raw = path.read_bytes()
-        metadata, body = _parse_document(raw)
-        document = _document_from_metadata(metadata, body)
-        if document.review_date != review_date:
-            raise ReviewValidationError("复盘文件日期与文件名不一致")
+        try:
+            metadata, body = _parse_document(raw)
+            document = _document_from_metadata(metadata, body)
+            if document.review_date != review_date:
+                raise ReviewValidationError("复盘文件日期与文件名不一致")
+        except ReviewValidationError as exc:
+            relative_path = path.relative_to(self.root).as_posix()
+            raise ReviewCorruptDocumentError(review_date, relative_path) from exc
         return replace(document, version=_version(raw))
 
     def save(self, document: ReviewDocument, expected_version: str | None = None) -> ReviewDocument:
@@ -180,17 +195,30 @@ class ReviewRepository:
         return replace(persisted, version=_version(raw))
 
     def iter_documents(self) -> list[ReviewDocument]:
+        documents, _warnings = self.scan_documents()
+        return documents
+
+    def scan_documents(self) -> tuple[list[ReviewDocument], list[ReviewCorruptDocumentError]]:
+        """扫描全部 Markdown，并把单篇损坏文件作为可恢复告警返回。"""
         documents: list[ReviewDocument] = []
+        warnings: list[ReviewCorruptDocumentError] = []
         for path in self.root.glob("*/*/*.md"):
             self._inside_root(path)
             review_date = path.stem
             try:
                 document = self.load(review_date)
+            except ReviewCorruptDocumentError as error:
+                warnings.append(error)
+                continue
             except ReviewValidationError:
+                warnings.append(ReviewCorruptDocumentError(review_date, path.relative_to(self.root).as_posix()))
                 continue
             if document is not None:
                 documents.append(document)
-        return sorted(documents, key=lambda document: document.review_date, reverse=True)
+        return (
+            sorted(documents, key=lambda document: document.review_date, reverse=True),
+            sorted(warnings, key=lambda warning: warning.review_date, reverse=True),
+        )
 
     def save_attachment(self, review_date: str, upload_name: str, content_type: str, raw: bytes) -> AttachmentInfo:
         _validate_review_date(review_date)

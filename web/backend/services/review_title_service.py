@@ -18,6 +18,7 @@ class TitleSuggestion:
     source: Literal["deepseek", "local_fallback"]
     provider_fallback: bool
     provider_error: str | None
+    provider_exception_type: str | None = None
 
 
 class ReviewTitleService:
@@ -35,8 +36,8 @@ class ReviewTitleService:
                 base_url=str(deepseek.get("base_url") or "https://api.deepseek.com/v1"),
                 model=str(deepseek.get("model") or "deepseek-chat"),
                 system_prompt=(
-                    "根据交易复盘生成简洁中文标题。"
-                    '只输出 {"title":"沐曦放量突破"} 这种单字段 JSON。'
+                    "根据交易复盘生成 8 到 30 个字符的简洁中文标题。"
+                    '只输出 {"title":"沐曦股份放量突破"} 这种单字段 JSON。'
                 ),
                 user_prompt=_build_user_prompt(document),
                 temperature=float(deepseek.get("temperature", 0.2)),
@@ -50,7 +51,8 @@ class ReviewTitleService:
                 _local_title(document),
                 "local_fallback",
                 True,
-                str(exc),
+                "provider_unavailable",
+                type(exc).__name__,
             )
 
 
@@ -71,6 +73,8 @@ def _provider_title(raw: object) -> str:
     title = _compact(raw["title"])
     if not title:
         raise ValueError("DeepSeek 标题为空")
+    if not 8 <= len(title) <= 30:
+        raise ValueError("DeepSeek 标题长度无效")
     return title
 
 

@@ -19,9 +19,9 @@ from web.backend.services.review_repository import (
 )
 
 
-def _png_bytes() -> bytes:
+def _png_bytes(color: str = "white") -> bytes:
     buffer = BytesIO()
-    Image.new("RGB", (1, 1), "white").save(buffer, format="PNG")
+    Image.new("RGB", (1, 1), color).save(buffer, format="PNG")
     return buffer.getvalue()
 
 
@@ -45,6 +45,67 @@ def test_save_and_load_round_trip_preserves_frontmatter_and_stock_code(tmp_path)
     assert loaded == saved
     assert loaded.stocks[0].code == "000001"
     assert (tmp_path / "2026" / "07" / "2026-07-11.md").is_file()
+
+
+def test_new_document_uses_manual_title_source_by_default() -> None:
+    """新建复盘默认由用户手动维护标题。"""
+    assert ReviewDocument.new("2026-07-11").title_source == "manual"
+
+
+def test_saved_frontmatter_uses_date_and_migrates_legacy_review_date(tmp_path) -> None:
+    """旧 review_date 可读，但下一次保存必须迁移到规范 date 字段。"""
+    repo = ReviewRepository(tmp_path)
+    path = tmp_path / "2026" / "07" / "2026-07-11.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(
+        (
+            "---\n"
+            "review_date: '2026-07-11'\n"
+            "title: 旧格式复盘\n"
+            "status: draft\n"
+            "title_source: manual\n"
+            "tags: []\n"
+            "stocks: []\n"
+            "created_at: '2026-07-11T09:00:00+08:00'\n"
+            "updated_at: '2026-07-11T09:00:00+08:00'\n"
+            "---\n"
+            "正文\n"
+        ).encode("utf-8")
+    )
+
+    legacy = repo.load("2026-07-11")
+    repo.save(legacy, expected_version=legacy.version)
+    snapshot = path.read_text(encoding="utf-8")
+
+    assert legacy.review_date == "2026-07-11"
+    assert "\ndate: '2026-07-11'\n" in snapshot
+    assert "review_date:" not in snapshot
+
+
+def test_load_accepts_utf8_bom_and_crlf_without_rewriting_body_newlines(tmp_path) -> None:
+    """解析 BOM/CRLF frontmatter 时保留正文原始换行。"""
+    repo = ReviewRepository(tmp_path)
+    path = tmp_path / "2026" / "07" / "2026-07-11.md"
+    path.parent.mkdir(parents=True)
+    raw = (
+        b"\xef\xbb\xbf---\r\n"
+        b"date: '2026-07-11'\r\n"
+        b"title: CRLF review\r\n"
+        b"status: draft\r\n"
+        b"title_source: manual\r\n"
+        b"tags: []\r\n"
+        b"stocks: []\r\n"
+        b"created_at: '2026-07-11T09:00:00+08:00'\r\n"
+        b"updated_at: '2026-07-11T09:00:00+08:00'\r\n"
+        b"---\r\n"
+        b"line one\r\nline two\r\n"
+    )
+    path.write_bytes(raw)
+
+    loaded = repo.load("2026-07-11")
+
+    assert loaded.body == "line one\r\nline two\r\n"
+    assert repo.iter_documents() == [loaded]
 
 
 @pytest.mark.parametrize("review_date", ["2026-7-11", "2026-02-30", "../2026-07-11", "2026-07-11/evil"])
@@ -145,30 +206,79 @@ def test_attachment_requires_valid_image_signature_and_size_limit(tmp_path):
 
     attachment = repo.save_attachment("2026-07-11", "chart.png", "image/png", _png_bytes())
 
-    assert attachment.filename == "chart.png"
-    assert repo.read_attachment("2026-07-11", "chart.png").raw == _png_bytes()
+    assert attachment.filename == "chart-0001.png"
+    assert repo.read_attachment("2026-07-11", attachment.filename).raw == _png_bytes()
+
+
+def test_repeated_attachment_names_are_unique_sorted_and_keep_real_extension(tmp_path):
+    """重复剪贴板文件名不得覆盖，生成名按序号稳定排序并保留图片真实格式。"""
+    repo = ReviewRepository(tmp_path)
+    first_raw = _png_bytes("white")
+    second_raw = _png_bytes("black")
+
+    first = repo.save_attachment("2026-07-11", "clipboard.png", "image/png", first_raw)
+    second = repo.save_attachment("2026-07-11", "clipboard.png", "image/png", second_raw)
+
+    assert [first.filename, second.filename] == ["clipboard-0001.png", "clipboard-0002.png"]
+    assert [item.filename for item in repo.list_attachments("2026-07-11")] == [
+        "clipboard-0001.png",
+        "clipboard-0002.png",
+    ]
+    assert repo.read_attachment("2026-07-11", first.filename).raw == first_raw
+    assert repo.read_attachment("2026-07-11", second.filename).raw == second_raw
+
+
+def test_attachment_delete_and_document_save_share_the_date_lock(tmp_path, monkeypatch):
+    """附件引用检查到删除期间，同日期文档保存不得穿插进入。"""
+    repo = ReviewRepository(tmp_path)
+    current = repo.save(ReviewDocument.new("2026-07-11"))
+    attachment = repo.save_attachment("2026-07-11", "chart.png", "image/png", _png_bytes())
+    attachment_path = tmp_path / "2026" / "07" / "2026-07-11.assets" / attachment.filename
+    unlink_started = threading.Event()
+    allow_unlink = threading.Event()
+    original_unlink = type(attachment_path).unlink
+
+    def delayed_unlink(path, *args, **kwargs):
+        if path == attachment_path:
+            unlink_started.set()
+            assert allow_unlink.wait(timeout=5)
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(attachment_path), "unlink", delayed_unlink)
+    updated = replace(current, title="并发保存")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        deleting = executor.submit(repo.delete_attachment, "2026-07-11", attachment.filename)
+        assert unlink_started.wait(timeout=5)
+        saving = executor.submit(repo.save, updated, current.version)
+        time.sleep(0.1)
+        save_was_blocked = not saving.done()
+        allow_unlink.set()
+        deleting.result(timeout=5)
+        saving.result(timeout=5)
+
+    assert save_was_blocked is True
 
 
 @pytest.mark.parametrize(
-    "reference",
-    ["./2026-07-11.assets/chart.png", "2026-07-11.assets/chart.png"],
+    "reference_prefix",
+    ["./2026-07-11.assets/", "2026-07-11.assets/"],
 )
-def test_attachment_rejects_path_traversal_and_referenced_delete(tmp_path, reference):
+def test_attachment_rejects_path_traversal_and_referenced_delete(tmp_path, reference_prefix):
     repo = ReviewRepository(tmp_path)
     repo.save(ReviewDocument.new("2026-07-11"))
-    repo.save_attachment("2026-07-11", "chart.png", "image/png", _png_bytes())
+    attachment = repo.save_attachment("2026-07-11", "chart.png", "image/png", _png_bytes())
     current = repo.load("2026-07-11")
     repo.save(
-        replace(current, body=f"![图表]({reference})"),
+        replace(current, body=f"![图表]({reference_prefix}{attachment.filename})"),
         expected_version=current.version,
     )
 
     with pytest.raises(ReviewValidationError):
         repo.read_attachment("2026-07-11", "../outside.png")
     with pytest.raises(ReviewAttachmentReferencedError):
-        repo.delete_attachment("2026-07-11", "chart.png")
+        repo.delete_attachment("2026-07-11", attachment.filename)
 
-    repo.delete_attachment("2026-07-11", "chart.png", force=True)
+    repo.delete_attachment("2026-07-11", attachment.filename, force=True)
     assert repo.list_attachments("2026-07-11") == []
 
 
@@ -179,3 +289,16 @@ def test_iter_documents_skips_malformed_yaml_frontmatter(tmp_path):
     malformed.write_bytes(b"---\ntitle: [unterminated\n---\nbody")
 
     assert repo.iter_documents() == []
+
+
+def test_parse_failure_does_not_expose_absolute_document_path(tmp_path):
+    """损坏 Markdown 的校验错误不得包含磁盘绝对路径。"""
+    repo = ReviewRepository(tmp_path)
+    malformed = tmp_path / "2026" / "07" / "2026-07-11.md"
+    malformed.parent.mkdir(parents=True)
+    malformed.write_bytes(b"not-frontmatter")
+
+    with pytest.raises(ReviewValidationError) as captured:
+        repo.load("2026-07-11")
+
+    assert str(tmp_path.resolve()) not in str(captured.value)

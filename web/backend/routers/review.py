@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 import logging
 from pathlib import Path
+import re
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -29,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_REVIEW_ROOT = _PROJECT_ROOT / "data" / "review_library"
+_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 class ReviewStockPayload(BaseModel):
@@ -130,7 +135,10 @@ def _title_suggestion_data(suggestion) -> dict:
     """对 provider 失败统一脱敏，避免把配置或本地路径送到客户端。"""
     provider_error = suggestion.provider_error
     if provider_error:
-        logger.warning("复盘标题 provider 回退：%s", provider_error)
+        logger.warning(
+            "复盘标题 provider 回退：error_code=provider_unavailable exception_type=%s",
+            suggestion.provider_exception_type or "UnknownError",
+        )
     return {
         "title": suggestion.title,
         "source": suggestion.source,
@@ -138,6 +146,38 @@ def _title_suggestion_data(suggestion) -> dict:
         "provider_error": "标题服务暂不可用，已使用本地候选" if provider_error else None,
         "provider_error_code": "provider_unavailable" if provider_error else None,
     }
+
+
+def _validate_date_range(date_from: str | None, date_to: str | None) -> None:
+    """在 HTTP 边界校验日历日期，避免把非法字符串带入服务层比较。"""
+    for value in (date_from, date_to):
+        if value is None:
+            continue
+        if _DATE_PATTERN.fullmatch(value) is None:
+            raise ReviewValidationError("日期筛选必须为 YYYY-MM-DD")
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ReviewValidationError("日期筛选不是有效日期") from exc
+        if parsed.strftime("%Y-%m-%d") != value:
+            raise ReviewValidationError("日期筛选必须为 YYYY-MM-DD")
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise ReviewValidationError("date_from 不能晚于 date_to")
+
+
+async def _read_limited_upload(file: UploadFile) -> bytes:
+    """分块读取到大小上限加一字节，越界后不再消费上传流。"""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        read_size = min(_UPLOAD_CHUNK_BYTES, _MAX_ATTACHMENT_BYTES - total + 1)
+        chunk = await file.read(read_size)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > _MAX_ATTACHMENT_BYTES:
+            raise ReviewValidationError("图片不能超过 10 MiB")
 
 
 def _raise_mapped_error(error: Exception) -> None:
@@ -164,6 +204,7 @@ def list_reviews(
 ):
     """返回按日期倒序的复盘检索结果和前端所需摘要。"""
     try:
+        _validate_date_range(date_from, date_to)
         result = service.list_reviews(
             query=query,
             status=status,
@@ -304,7 +345,7 @@ async def upload_attachment(
             review_date,
             file.filename or "",
             file.content_type or "",
-            await file.read(),
+            await _read_limited_upload(file),
         )
         return {
             "success": True,

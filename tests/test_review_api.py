@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
 import pytest
+from starlette.datastructures import UploadFile
 
 from web.backend.routers import review
 from web.backend.services import review_title_service as title_module
@@ -119,7 +120,7 @@ def test_add_stock_creates_a_missing_review(client: TestClient) -> None:
     assert payload["stocks"] == [{"code": "688802", "name": "沐曦股份"}]
 
 
-def test_generate_title_sanitizes_provider_errors(client: TestClient, monkeypatch) -> None:
+def test_generate_title_sanitizes_provider_errors(client: TestClient, monkeypatch, caplog) -> None:
     """标题 provider 的内部错误只能留在服务端，响应必须使用固定脱敏信息。"""
     client.post("/api/reviews/2026-07-11")
     private_path = r"C:\private\review_library\config.json"
@@ -134,16 +135,21 @@ def test_generate_title_sanitizes_provider_errors(client: TestClient, monkeypatc
 
     monkeypatch.setattr(title_module, "call_deepseek", raise_provider_error)
 
-    response = client.post(
-        "/api/reviews/2026-07-11/generate-title",
-        json={"title": "原始标题", "body": "市场回暖。", "tags": [], "stocks": []},
-    )
+    with caplog.at_level("WARNING", logger="web.backend.routers.review"):
+        response = client.post(
+            "/api/reviews/2026-07-11/generate-title",
+            json={"title": "原始标题", "body": "市场回暖。", "tags": [], "stocks": []},
+        )
 
     assert response.status_code == 200
     assert response.json()["data"]["provider_error"] == "标题服务暂不可用，已使用本地候选"
     assert response.json()["data"]["provider_error_code"] == "provider_unavailable"
     assert private_path not in response.text
     assert "review_library" not in response.text
+    assert private_path not in caplog.text
+    assert "provider failed" not in caplog.text
+    assert "provider_unavailable" in caplog.text
+    assert "RuntimeError" in caplog.text
 
 
 def test_update_deduplicates_normalized_stock_codes(client: TestClient) -> None:
@@ -207,6 +213,27 @@ def test_add_stock_normalizes_existing_code_before_deduplication(client: TestCli
     assert response.status_code == 200
     assert response.json()["data"]["already_exists"] is True
     assert response.json()["data"]["stocks"] == [{"code": "688802", "name": "沐曦股份"}]
+
+
+def test_concurrent_same_stock_requests_return_200_and_idempotent_result(client: TestClient) -> None:
+    """同股票并发请求不能向用户暴露 409，最终应有一次幂等命中。"""
+    client.post("/api/reviews/2026-07-11")
+    barrier = Barrier(2)
+
+    def post_stock():
+        barrier.wait(timeout=5)
+        return client.post(
+            "/api/reviews/2026-07-11/stocks",
+            json={"code": "688802", "name": "沐曦股份"},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = [future.result(timeout=10) for future in [executor.submit(post_stock) for _ in range(2)]]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert sorted(response.json()["data"]["already_exists"] for response in responses) == [False, True]
+    current = client.get("/api/reviews/2026-07-11").json()["data"]
+    assert current["stocks"] == [{"code": "688802", "name": "沐曦股份"}]
 
 
 def test_upload_read_list_and_delete_attachment(client: TestClient) -> None:
@@ -287,6 +314,46 @@ def test_upload_rejects_svg_forged_mime_and_oversized_images(client: TestClient)
     ]
 
     assert all(response.status_code == 422 for response in responses)
+
+
+def test_oversized_upload_is_read_in_bounded_chunks_and_stops_early(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    """上传超过 10 MiB 时只允许分块读取，并在越界后立即停止。"""
+    client.post("/api/reviews/2026-07-11")
+    requested_sizes: list[int] = []
+    original_read = UploadFile.read
+
+    async def recording_read(upload, size: int = -1):
+        requested_sizes.append(size)
+        return await original_read(upload, size)
+
+    monkeypatch.setattr(UploadFile, "read", recording_read)
+    response = client.post(
+        "/api/reviews/2026-07-11/attachments",
+        files={"file": ("large.png", _png_bytes() + b"0" * (11 * 1024 * 1024), "image/png")},
+    )
+
+    assert response.status_code == 422
+    assert requested_sizes
+    assert all(0 < size <= 1024 * 1024 for size in requested_sizes)
+    assert len(requested_sizes) == 11
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"date_from": "2026-7-01"},
+        {"date_to": "2026-02-30"},
+        {"date_from": "2026-07-12", "date_to": "2026-07-11"},
+    ],
+)
+def test_list_rejects_invalid_or_reversed_date_range(client: TestClient, params: dict) -> None:
+    """日期筛选在 API 边界严格校验格式、日历日期与先后顺序。"""
+    response = client.get("/api/reviews", params=params)
+
+    assert response.status_code == 422
 
 
 def test_invalid_dates_and_path_traversal_are_rejected_without_path_leaks(client: TestClient) -> None:

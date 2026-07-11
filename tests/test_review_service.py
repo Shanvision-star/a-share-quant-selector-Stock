@@ -165,3 +165,56 @@ def test_add_stock_normalizes_code_and_name_before_deduplication(tmp_path) -> No
 
     assert result["already_exists"] is True
     assert [(stock.code, stock.name) for stock in result["document"].stocks] == [("688802", "沐曦股份")]
+
+
+def test_concurrent_adds_keep_different_stocks(tmp_path, monkeypatch) -> None:
+    """不同股票并发加入时不能因旧版本冲突而丢失任一只。"""
+    repository = ReviewRepository(tmp_path)
+    service = ReviewService(repository)
+    service.create_or_get("2026-07-11")
+    barrier = Barrier(2)
+    original_save = repository.save
+
+    def synchronized_save(document, expected_version=None):
+        barrier.wait(timeout=5)
+        return original_save(document, expected_version)
+
+    monkeypatch.setattr(repository, "save", synchronized_save)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(service.add_stock, "2026-07-11", "688802", "沐曦股份"),
+            executor.submit(service.add_stock, "2026-07-11", "688256", "寒武纪"),
+        ]
+        results = [future.result(timeout=10) for future in futures]
+
+    current = service.get_review("2026-07-11")
+    assert all(result["already_exists"] is False for result in results)
+    assert {stock.code for stock in current.stocks} == {"688802", "688256"}
+    assert current.body.count("### 688802 沐曦股份") == 1
+    assert current.body.count("### 688256 寒武纪") == 1
+
+
+def test_concurrent_adds_of_same_stock_are_idempotent(tmp_path, monkeypatch) -> None:
+    """同股票并发加入最终只保留一次，后一结果报告 already_exists。"""
+    repository = ReviewRepository(tmp_path)
+    service = ReviewService(repository)
+    service.create_or_get("2026-07-11")
+    barrier = Barrier(2)
+    original_save = repository.save
+
+    def synchronized_save(document, expected_version=None):
+        barrier.wait(timeout=5)
+        return original_save(document, expected_version)
+
+    monkeypatch.setattr(repository, "save", synchronized_save)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(service.add_stock, "2026-07-11", "688802", "沐曦股份")
+            for _ in range(2)
+        ]
+        results = [future.result(timeout=10) for future in futures]
+
+    current = service.get_review("2026-07-11")
+    assert sorted(result["already_exists"] for result in results) == [False, True]
+    assert [stock.code for stock in current.stocks] == ["688802"]
+    assert current.body.count("### 688802 沐曦股份") == 1

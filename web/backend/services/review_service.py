@@ -99,20 +99,27 @@ class ReviewService:
 
     def add_stock(self, review_date: str, code: str, name: str) -> dict:
         """原子确保当天复盘存在，再按股票代码幂等地追加重点股票。"""
-        current, _ = self.create_or_get(review_date)
         clean_code = str(code).strip()
         clean_name = str(name).strip()
-        if any(stock.code == clean_code for stock in current.stocks):
-            return {"document": current, "already_exists": True}
-
         stock = ReviewStock(code=clean_code, name=clean_name)
-        updated = replace(
-            current,
-            stocks=(*current.stocks, stock),
-            body=_append_stock_section(current.body, stock),
-        )
-        saved = self.repository.save(updated, expected_version=current.version)
-        return {"document": saved, "already_exists": False}
+
+        def append_stock(current: ReviewDocument | None) -> tuple[ReviewDocument, bool]:
+            if current is None:
+                current = ReviewDocument.new(review_date)
+                current = replace(current, body=_standard_template(current.title))
+            if any(item.code == clean_code for item in current.stocks):
+                return current, False
+            return (
+                replace(
+                    current,
+                    stocks=(*current.stocks, stock),
+                    body=_append_stock_section(current.body, stock),
+                ),
+                True,
+            )
+
+        document, added = self.repository.mutate(review_date, append_stock)
+        return {"document": document, "already_exists": not added}
 
 
 def _standard_template(title: str) -> str:

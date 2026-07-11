@@ -13,7 +13,7 @@ import re
 import tempfile
 import threading
 import time
-from typing import Literal
+from typing import Callable, Literal
 from zoneinfo import ZoneInfo
 
 from PIL import Image, UnidentifiedImageError
@@ -28,6 +28,12 @@ _IMAGE_TYPES = {
     "JPEG": "image/jpeg",
     "WEBP": "image/webp",
     "GIF": "image/gif",
+}
+_IMAGE_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
 }
 _MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 _PROCESS_LOCKS: dict[Path, threading.Lock] = {}
@@ -73,7 +79,7 @@ class ReviewDocument:
             review_date=review_date,
             title=f"{review_date} 交易复盘",
             status="draft",
-            title_source="local_fallback",
+            title_source="manual",
             tags=(),
             stocks=(),
             body="",
@@ -108,6 +114,10 @@ class ReviewRepository:
 
     def load(self, review_date: str) -> ReviewDocument | None:
         path = self._document_path(review_date)
+        return self._load_unlocked(path, review_date)
+
+    def _load_unlocked(self, path: Path, review_date: str) -> ReviewDocument | None:
+        """调用方可在持有日期文档锁时读取，避免重复获取非重入文件锁。"""
         if not path.is_file():
             return None
         raw = path.read_bytes()
@@ -121,7 +131,7 @@ class ReviewRepository:
         _validate_document(document)
         path = self._document_path(document.review_date)
         with self._document_lock(path):
-            current = self.load(document.review_date)
+            current = self._load_unlocked(path, document.review_date)
             if expected_version is not None and (current is None or current.version != expected_version):
                 raise ReviewConflictError("复盘已被其他保存操作更新")
             return self._persist_locked(path, document, current)
@@ -131,10 +141,29 @@ class ReviewRepository:
         _validate_document(document)
         path = self._document_path(document.review_date)
         with self._document_lock(path):
-            current = self.load(document.review_date)
+            current = self._load_unlocked(path, document.review_date)
             if current is not None:
                 return current, False
             return self._persist_locked(path, document, None), True
+
+    def mutate(
+        self,
+        review_date: str,
+        mutation: Callable[[ReviewDocument | None], tuple[ReviewDocument, bool]],
+    ) -> tuple[ReviewDocument, bool]:
+        """在单篇文档锁内执行读改写，返回持久化文档和是否发生修改。"""
+        path = self._document_path(review_date)
+        with self._document_lock(path):
+            current = self._load_unlocked(path, review_date)
+            document, changed = mutation(current)
+            _validate_document(document)
+            if document.review_date != review_date:
+                raise ReviewValidationError("复盘文件日期与请求日期不一致")
+            if not changed:
+                if current is None:
+                    raise ReviewValidationError("复盘原子修改未创建文档")
+                return current, False
+            return self._persist_locked(path, document, current), True
 
     def _persist_locked(
         self,
@@ -165,48 +194,57 @@ class ReviewRepository:
 
     def save_attachment(self, review_date: str, upload_name: str, content_type: str, raw: bytes) -> AttachmentInfo:
         _validate_review_date(review_date)
-        filename = _validate_filename(upload_name)
+        upload_filename = _validate_filename(upload_name)
         actual_type = _validate_image(raw, content_type)
-        assets_path = self._assets_path(review_date)
-        assets_path.mkdir(parents=True, exist_ok=True)
-        target = self._attachment_path(review_date, filename)
-        self._atomic_write(target, raw)
+        document_path = self._document_path(review_date)
+        with self._document_lock(document_path):
+            assets_path = self._assets_path(review_date)
+            assets_path.mkdir(parents=True, exist_ok=True)
+            filename = _next_attachment_filename(assets_path, upload_filename, actual_type)
+            target = self._attachment_path(review_date, filename)
+            self._atomic_write(target, raw)
         return AttachmentInfo(filename=filename, content_type=actual_type, size=len(raw))
 
     def list_attachments(self, review_date: str) -> list[AttachmentInfo]:
-        assets_path = self._assets_path(review_date)
-        if not assets_path.is_dir():
-            return []
-        attachments: list[AttachmentInfo] = []
-        for path in assets_path.iterdir():
-            if not path.is_file():
-                continue
-            self._inside_root(path)
-            try:
-                content_type = _validate_image(path.read_bytes(), None)
-            except ReviewValidationError:
-                continue
-            attachments.append(AttachmentInfo(path.name, content_type, path.stat().st_size))
-        return sorted(attachments, key=lambda attachment: attachment.filename)
+        document_path = self._document_path(review_date)
+        with self._document_lock(document_path):
+            assets_path = self._assets_path(review_date)
+            if not assets_path.is_dir():
+                return []
+            attachments: list[AttachmentInfo] = []
+            for path in assets_path.iterdir():
+                if not path.is_file():
+                    continue
+                self._inside_root(path)
+                try:
+                    content_type = _validate_image(path.read_bytes(), None)
+                except ReviewValidationError:
+                    continue
+                attachments.append(AttachmentInfo(path.name, content_type, path.stat().st_size))
+            return sorted(attachments, key=lambda attachment: attachment.filename)
 
     def read_attachment(self, review_date: str, filename: str) -> AttachmentContent:
-        path = self._attachment_path(review_date, filename)
-        raw = path.read_bytes()
-        return AttachmentContent(filename=path.name, content_type=_validate_image(raw, None), raw=raw)
+        document_path = self._document_path(review_date)
+        with self._document_lock(document_path):
+            path = self._attachment_path(review_date, filename)
+            raw = path.read_bytes()
+            return AttachmentContent(filename=path.name, content_type=_validate_image(raw, None), raw=raw)
 
     def delete_attachment(self, review_date: str, filename: str, force: bool = False) -> None:
-        path = self._attachment_path(review_date, filename)
-        if not path.is_file():
-            raise FileNotFoundError(path.name)
-        if not force:
-            document = self.load(review_date)
-            references = (
-                f"./{review_date}.assets/{path.name}",
-                f"{review_date}.assets/{path.name}",
-            )
-            if document is not None and any(reference in document.body for reference in references):
-                raise ReviewAttachmentReferencedError("附件仍被复盘正文引用")
-        path.unlink()
+        document_path = self._document_path(review_date)
+        with self._document_lock(document_path):
+            path = self._attachment_path(review_date, filename)
+            if not path.is_file():
+                raise FileNotFoundError(path.name)
+            if not force:
+                document = self._load_unlocked(document_path, review_date)
+                references = (
+                    f"./{review_date}.assets/{path.name}",
+                    f"{review_date}.assets/{path.name}",
+                )
+                if document is not None and any(reference in document.body for reference in references):
+                    raise ReviewAttachmentReferencedError("附件仍被复盘正文引用")
+            path.unlink()
 
     def _document_path(self, review_date: str) -> Path:
         _validate_review_date(review_date)
@@ -305,6 +343,22 @@ def _validate_image(raw: bytes, declared_content_type: str | None) -> str:
     return content_type
 
 
+def _next_attachment_filename(assets_path: Path, upload_name: str, content_type: str) -> str:
+    """按同名附件现有最大序号生成稳定名称，扩展名以真实图片格式为准。"""
+    stem = Path(upload_name).stem
+    extension = _IMAGE_EXTENSIONS[content_type]
+    pattern = re.compile(rf"{re.escape(stem)}-(\d+){re.escape(extension)}")
+    sequence = max(
+        (
+            int(match.group(1))
+            for path in assets_path.iterdir()
+            if path.is_file() and (match := pattern.fullmatch(path.name)) is not None
+        ),
+        default=0,
+    )
+    return _validate_filename(f"{stem}-{sequence + 1:04d}{extension}")
+
+
 def _validate_document(document: ReviewDocument) -> None:
     _validate_review_date(document.review_date)
     if document.status not in {"draft", "completed", "follow_up"}:
@@ -324,7 +378,7 @@ def _validate_document(document: ReviewDocument) -> None:
 
 def _serialize_document(document: ReviewDocument) -> bytes:
     metadata = {
-        "review_date": document.review_date,
+        "date": document.review_date,
         "title": document.title,
         "status": document.status,
         "title_source": document.title_source,
@@ -339,15 +393,16 @@ def _serialize_document(document: ReviewDocument) -> bytes:
 
 def _parse_document(raw: bytes) -> tuple[dict, str]:
     try:
-        text = raw.decode("utf-8")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise ReviewValidationError("复盘文件不是 UTF-8 文本") from exc
-    if not text.startswith("---\n"):
+    if re.match(r"\A---\r?\n", text) is None:
         raise ReviewValidationError("复盘文件缺少 frontmatter")
-    try:
-        frontmatter, body = text[4:].split("\n---\n", 1)
-    except ValueError as exc:
-        raise ReviewValidationError("复盘文件 frontmatter 未闭合") from exc
+    match = re.match(r"\A---\r?\n(?P<frontmatter>.*?)\r?\n---\r?\n", text, flags=re.DOTALL)
+    if match is None:
+        raise ReviewValidationError("复盘文件 frontmatter 未闭合")
+    frontmatter = match.group("frontmatter")
+    body = text[match.end() :]
     try:
         metadata = yaml.safe_load(frontmatter)
     except yaml.YAMLError as exc:
@@ -363,8 +418,11 @@ def _document_from_metadata(metadata: dict, body: str) -> ReviewDocument:
             ReviewStock(code=str(stock["code"]), name=str(stock.get("name", "")))
             for stock in metadata.get("stocks", [])
         )
+        review_date = metadata.get("date", metadata.get("review_date"))
+        if review_date is None:
+            raise KeyError("date")
         document = ReviewDocument(
-            review_date=str(metadata["review_date"]),
+            review_date=str(review_date),
             title=str(metadata["title"]),
             status=str(metadata["status"]),
             title_source=str(metadata["title_source"]),

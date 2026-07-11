@@ -1,7 +1,10 @@
 """验证 Markdown 复盘仓储的持久化与文件安全边界。"""
 
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+import threading
+import time
 
 from PIL import Image
 import pytest
@@ -87,6 +90,32 @@ def test_save_rejects_stale_version(tmp_path):
         repo.save(replace(original, title="旧页面标题"), expected_version=original.version)
 
 
+def test_concurrent_saves_allow_only_one_matching_expected_version(tmp_path, monkeypatch):
+    repo = ReviewRepository(tmp_path)
+    original = repo.save(ReviewDocument.new("2026-07-11"))
+    start = threading.Barrier(2)
+    original_atomic_write = repo._atomic_write
+
+    def delayed_atomic_write(path, raw):
+        time.sleep(0.1)
+        original_atomic_write(path, raw)
+
+    monkeypatch.setattr(repo, "_atomic_write", delayed_atomic_write)
+
+    def save(title):
+        start.wait()
+        try:
+            return repo.save(replace(original, title=title), expected_version=original.version)
+        except ReviewConflictError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(save, ("标题一", "标题二")))
+
+    assert len([result for result in results if isinstance(result, ReviewDocument)]) == 1
+    assert len([result for result in results if isinstance(result, ReviewConflictError)]) == 1
+
+
 def test_attachment_requires_valid_image_signature_and_size_limit(tmp_path):
     repo = ReviewRepository(tmp_path)
 
@@ -101,13 +130,17 @@ def test_attachment_requires_valid_image_signature_and_size_limit(tmp_path):
     assert repo.read_attachment("2026-07-11", "chart.png").raw == _png_bytes()
 
 
-def test_attachment_rejects_path_traversal_and_referenced_delete(tmp_path):
+@pytest.mark.parametrize(
+    "reference",
+    ["./2026-07-11.assets/chart.png", "2026-07-11.assets/chart.png"],
+)
+def test_attachment_rejects_path_traversal_and_referenced_delete(tmp_path, reference):
     repo = ReviewRepository(tmp_path)
     repo.save(ReviewDocument.new("2026-07-11"))
     repo.save_attachment("2026-07-11", "chart.png", "image/png", _png_bytes())
     current = repo.load("2026-07-11")
     repo.save(
-        replace(current, body="![图表](./2026-07-11.assets/chart.png)"),
+        replace(current, body=f"![图表]({reference})"),
         expected_version=current.version,
     )
 
@@ -118,3 +151,12 @@ def test_attachment_rejects_path_traversal_and_referenced_delete(tmp_path):
 
     repo.delete_attachment("2026-07-11", "chart.png", force=True)
     assert repo.list_attachments("2026-07-11") == []
+
+
+def test_iter_documents_skips_malformed_yaml_frontmatter(tmp_path):
+    repo = ReviewRepository(tmp_path)
+    malformed = tmp_path / "2026" / "07" / "2026-07-11.md"
+    malformed.parent.mkdir(parents=True)
+    malformed.write_bytes(b"---\ntitle: [unterminated\n---\nbody")
+
+    assert repo.iter_documents() == []

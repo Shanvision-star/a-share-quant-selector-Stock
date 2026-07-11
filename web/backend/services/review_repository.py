@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from hashlib import sha256
@@ -10,6 +11,8 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import threading
+import time
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -27,6 +30,8 @@ _IMAGE_TYPES = {
     "GIF": "image/gif",
 }
 _MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+_PROCESS_LOCKS: dict[Path, threading.Lock] = {}
+_PROCESS_LOCKS_GUARD = threading.Lock()
 
 
 class ReviewConflictError(RuntimeError):
@@ -115,16 +120,17 @@ class ReviewRepository:
     def save(self, document: ReviewDocument, expected_version: str | None = None) -> ReviewDocument:
         _validate_document(document)
         path = self._document_path(document.review_date)
-        current = self.load(document.review_date)
-        if expected_version is not None and (current is None or current.version != expected_version):
-            raise ReviewConflictError("复盘已被其他保存操作更新")
+        with self._document_lock(path):
+            current = self.load(document.review_date)
+            if expected_version is not None and (current is None or current.version != expected_version):
+                raise ReviewConflictError("复盘已被其他保存操作更新")
 
-        now = _now()
-        created_at = current.created_at if current is not None else document.created_at
-        persisted = replace(document, created_at=created_at, updated_at=now, version="")
-        raw = _serialize_document(persisted)
-        self._atomic_write(path, raw)
-        return replace(persisted, version=_version(raw))
+            now = _now()
+            created_at = current.created_at if current is not None else document.created_at
+            persisted = replace(document, created_at=created_at, updated_at=now, version="")
+            raw = _serialize_document(persisted)
+            self._atomic_write(path, raw)
+            return replace(persisted, version=_version(raw))
 
     def iter_documents(self) -> list[ReviewDocument]:
         documents: list[ReviewDocument] = []
@@ -176,8 +182,11 @@ class ReviewRepository:
             raise FileNotFoundError(path.name)
         if not force:
             document = self.load(review_date)
-            reference = f"./{review_date}.assets/{path.name}"
-            if document is not None and reference in document.body:
+            references = (
+                f"./{review_date}.assets/{path.name}",
+                f"{review_date}.assets/{path.name}",
+            )
+            if document is not None and any(reference in document.body for reference in references):
                 raise ReviewAttachmentReferencedError("附件仍被复盘正文引用")
         path.unlink()
 
@@ -200,6 +209,19 @@ class ReviewRepository:
         except ValueError as exc:
             raise ReviewValidationError("路径不在复盘库目录内") from exc
         return resolved
+
+    @contextmanager
+    def _document_lock(self, document_path: Path):
+        lock_path = self._inside_root(document_path.with_name(f".{document_path.name}.lock"))
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        process_lock = _process_lock(lock_path)
+        with process_lock:
+            with lock_path.open("a+b") as lock_file:
+                _lock_file(lock_file)
+                try:
+                    yield
+                finally:
+                    _unlock_file(lock_file)
 
     def _atomic_write(self, path: Path, raw: bytes) -> None:
         path = self._inside_root(path)
@@ -308,7 +330,10 @@ def _parse_document(raw: bytes) -> tuple[dict, str]:
         frontmatter, body = text[4:].split("\n---\n", 1)
     except ValueError as exc:
         raise ReviewValidationError("复盘文件 frontmatter 未闭合") from exc
-    metadata = yaml.safe_load(frontmatter)
+    try:
+        metadata = yaml.safe_load(frontmatter)
+    except yaml.YAMLError as exc:
+        raise ReviewValidationError("复盘文件 frontmatter YAML 无效") from exc
     if not isinstance(metadata, dict):
         raise ReviewValidationError("复盘文件 frontmatter 无效")
     return metadata, body
@@ -339,3 +364,40 @@ def _document_from_metadata(metadata: dict, body: str) -> ReviewDocument:
 
 def _version(raw: bytes) -> str:
     return sha256(raw).hexdigest()
+
+
+def _process_lock(lock_path: Path) -> threading.Lock:
+    with _PROCESS_LOCKS_GUARD:
+        return _PROCESS_LOCKS.setdefault(lock_path, threading.Lock())
+
+
+def _lock_file(lock_file) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        lock_file.seek(0)
+        lock_file.write(b"\0")
+        lock_file.flush()
+        while True:
+            try:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                time.sleep(0.05)
+    else:
+        import fcntl
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_file(lock_file) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)

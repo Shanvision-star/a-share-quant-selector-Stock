@@ -1,6 +1,6 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ReviewListItem } from '@/api/reviews'
+import type { ReviewListItem, ReviewListWarning } from '@/api/reviews'
 import ReviewLibraryView from '@/views/ReviewLibraryView.vue'
 
 const listReviews = vi.hoisted(() => vi.fn())
@@ -39,8 +39,13 @@ function item(reviewDate: string, title: string): ReviewListItem {
   }
 }
 
-function response(items: ReviewListItem[], total = items.length, offset = 0) {
-  return Promise.resolve({ data: { data: { items, total, limit: 100, offset } } })
+function response(
+  items: ReviewListItem[],
+  total = items.length,
+  offset = 0,
+  warnings: ReviewListWarning[] = [],
+) {
+  return Promise.resolve({ data: { data: { items, total, limit: 100, offset, warnings } } })
 }
 
 function deferred<T>() {
@@ -163,5 +168,22 @@ describe('ReviewLibraryView list lifecycle', () => {
     expect(listReviews).toHaveBeenLastCalledWith(expect.objectContaining({ query: '筛选结果', offset: 0 }))
     expect(wrapper.text()).toContain('筛选结果')
     expect(wrapper.text()).not.toContain('旧复盘 101')
+  })
+
+  it('shows recoverable corrupt-file warnings with relative paths', async () => {
+    listReviews.mockReturnValueOnce(response([], 0, 0, [{
+      review_date: '2026-07-11',
+      relative_path: '2026/07/2026-07-11.md',
+      message: '复盘文件无法解析，请先备份原文件后修复 frontmatter 或 UTF-8 编码',
+    }]))
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const alert = wrapper.get('.review-list-pane [role="alert"]')
+    expect(alert.text()).toContain('发现 1 篇损坏复盘')
+    expect(alert.text()).toContain('2026/07/2026-07-11.md')
+    expect(alert.text()).toContain('备份')
+    expect(alert.text()).not.toContain('D:\\')
   })
 })

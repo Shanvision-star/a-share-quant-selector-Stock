@@ -34,6 +34,12 @@ export interface ReviewListItem {
   version: string
 }
 
+export interface ReviewListWarning {
+  review_date: string
+  relative_path: string
+  message: string
+}
+
 export interface ReviewTitleSuggestion {
   title: string
   source: Exclude<ReviewTitleSource, 'manual'>
@@ -64,6 +70,7 @@ export interface ReviewListResponse {
   total: number
   limit: number
   offset: number
+  warnings: ReviewListWarning[]
 }
 
 export interface ReviewTitlePayload {

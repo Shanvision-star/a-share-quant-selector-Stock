@@ -15,6 +15,7 @@ import {
   updateReview,
   type ReviewDocument,
   type ReviewListItem,
+  type ReviewListWarning,
   type ReviewStatus,
 } from '@/api/reviews'
 import {
@@ -49,6 +50,7 @@ const filters = reactive<{
 }>({ query: '', status: '', dateRange: null })
 const items = ref<ReviewListItem[]>([])
 const total = ref(0)
+const listWarnings = ref<ReviewListWarning[]>([])
 const current = ref<ReviewDocument | null>(null)
 const saved = ref<ReviewDocument | null>(null)
 const activeDate = ref(todayString())
@@ -82,6 +84,11 @@ const previewHtml = computed(() => {
   if (!current.value?.body.trim()) return ''
   const withApiImages = rewriteReviewImageUrls(current.value.body, current.value.review_date)
   return DOMPurify.sanitize(markdown.render(withApiImages), { USE_PROFILES: { html: true } })
+})
+const listWarningTitle = computed(() => {
+  const paths = listWarnings.value.slice(0, 3).map(warning => warning.relative_path).join('、')
+  const remaining = listWarnings.value.length > 3 ? ` 等 ${listWarnings.value.length} 篇` : ''
+  return `发现 ${listWarnings.value.length} 篇损坏复盘：${paths}${remaining}。请先备份原文件后修复。`
 })
 
 function todayString(): string {
@@ -139,12 +146,14 @@ async function fetchList(selectInitial = false, append = false) {
   const offset = append ? items.value.length : 0
   listLoading.value = true
   listError.value = ''
+  if (!append) listWarnings.value = []
   try {
     const response = await listReviews(buildReviewListParams(filters, offset))
     if (requestToken !== listRequestToken) return
     const page = response.data.data
     items.value = append ? [...items.value, ...page.items] : page.items
     total.value = page.total
+    listWarnings.value = page.warnings ?? []
     if (selectInitial && !route.query.date && items.value.length) {
       await openReview(items.value[0].review_date, false)
     }
@@ -424,6 +433,14 @@ onBeforeUnmount(() => {
       </div>
 
       <el-alert v-if="listError" :title="listError" type="error" show-icon :closable="false" />
+      <el-alert
+        v-if="listWarnings.length"
+        class="list-warning"
+        :title="listWarningTitle"
+        type="warning"
+        show-icon
+        :closable="false"
+      />
       <div v-loading="listLoading" class="review-list">
         <button
           v-for="item in items"
@@ -634,6 +651,11 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 120px;
   overflow: auto;
+}
+
+.list-warning {
+  margin: 8px 10px 0;
+  width: auto;
 }
 
 .review-list-item {

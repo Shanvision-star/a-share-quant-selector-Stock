@@ -5,6 +5,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import AddToTodayReviewButton from '@/components/AddToTodayReviewButton.vue'
 import {
   acknowledgeTrackingAlert,
   listTrackingItems,
@@ -842,7 +843,13 @@ onMounted(refreshItems)
       </el-table-column>
       <el-table-column label="名称" width="120">
         <template #default="{ row }">
-          <el-link type="primary" :underline="false" @click="goStockDetail(row.code)">{{ row.name || '-' }}</el-link>
+          <el-link
+            class="tracking-stock-name"
+            type="primary"
+            :underline="false"
+            :title="row.name || row.code"
+            @click="goStockDetail(row.code)"
+          >{{ row.name || '-' }}</el-link>
         </template>
       </el-table-column>
       <el-table-column prop="strategy_name" label="策略" width="140" show-overflow-tooltip />
@@ -916,8 +923,9 @@ onMounted(refreshItems)
         </template>
       </el-table-column>
       <el-table-column prop="next_action" label="下一步" width="120" />
-      <el-table-column label="操作" width="100" fixed="right">
+      <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
+          <AddToTodayReviewButton :code="row.code" :name="row.name" />
           <el-button size="small" type="danger" link @click="deleteOne(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -1002,6 +1010,13 @@ onMounted(refreshItems)
 }
 .entry-price-cell {
   cursor: pointer;
+}
+.tracking-stock-name {
+  display: inline-flex;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .entry-price-editor {
   font-size: 12px;

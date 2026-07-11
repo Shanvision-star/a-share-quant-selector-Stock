@@ -1,0 +1,85 @@
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import AddToTodayReviewButton from '@/components/AddToTodayReviewButton.vue'
+
+const addStockToReview = vi.hoisted(() => vi.fn())
+const routerPush = vi.hoisted(() => vi.fn())
+
+vi.mock('@/api/reviews', () => ({ addStockToReview }))
+vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }))
+
+enableAutoUnmount(afterEach)
+
+function mountButton() {
+  return mount(AddToTodayReviewButton, {
+    props: { code: '600519', name: '贵州茅台' },
+    global: {
+      stubs: {
+        'el-button': {
+          template: '<button :disabled="$attrs.disabled" @click="$emit(\'click\')"><slot /></button>',
+        },
+        'el-icon': true,
+      },
+    },
+  })
+}
+
+describe('AddToTodayReviewButton', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    addStockToReview.mockReset()
+    routerPush.mockReset()
+  })
+
+  it('uses the Asia/Shanghai date and confirms a newly added stock', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T16:30:00Z'))
+    addStockToReview.mockResolvedValue({ data: { data: { already_exists: false } } })
+    const wrapper = mountButton()
+
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(addStockToReview).toHaveBeenCalledWith('2026-01-02', {
+      code: '600519',
+      name: '贵州茅台',
+    })
+    expect(wrapper.text()).toContain('已加入今日复盘')
+  })
+
+  it('reports when the stock already exists in today\'s review', async () => {
+    addStockToReview.mockResolvedValue({ data: { data: { already_exists: true } } })
+    const wrapper = mountButton()
+
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('今日复盘中已存在')
+  })
+
+  it('keeps the failure visible', async () => {
+    addStockToReview.mockRejectedValue(new Error('网络不可用'))
+    const wrapper = mountButton()
+
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('网络不可用')
+  })
+
+  it('opens today\'s review directly', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-11T01:00:00+08:00'))
+    addStockToReview.mockResolvedValue({ data: { data: { already_exists: false } } })
+    const wrapper = mountButton()
+
+    await wrapper.get('button').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="open-review"]').trigger('click')
+
+    expect(routerPush).toHaveBeenCalledWith({
+      name: 'ReviewLibrary',
+      query: { date: '2026-07-11' },
+    })
+  })
+})

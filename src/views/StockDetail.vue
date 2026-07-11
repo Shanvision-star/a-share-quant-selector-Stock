@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import KlineChart from '@/components/KlineChart.vue'
 import StockInfoPanel from '@/components/StockInfoPanel.vue'
+import AddToTodayReviewButton from '@/components/AddToTodayReviewButton.vue'
 import { getStockPrice, getStrategyResultsHistory, getStockInfo, prefetchKline, prefetchKlineBatch, diagnoseStock, type LlmProfile } from '@/api'
 import { buildStrategyDayPrefetchCodes, getNeighborCodes } from '@/components/klineRequest'
 import { useStrategyListStore } from '@/stores/strategyList'
@@ -543,6 +544,7 @@ function formatListSimilarity(score: unknown): string {
         <h2>{{ displayStockName || '加载中' }} {{ code }}</h2>
         <div class="detail-actions">
           <span v-if="isSwitchingStock" class="switching-hint">切换中 {{ code }}</span>
+          <AddToTodayReviewButton :code="code" :name="displayStockName" />
           <el-checkbox v-model="showShortTermTrend">短期趋势线</el-checkbox>
           <el-checkbox v-model="showBullBearLine">知行多空线</el-checkbox>
           <div v-if="stockNavigation.total > 1" class="stock-nav-control" title="可用键盘 ↑ / ↓ 顺序切换">

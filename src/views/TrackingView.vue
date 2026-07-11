@@ -923,10 +923,12 @@ onMounted(refreshItems)
         </template>
       </el-table-column>
       <el-table-column prop="next_action" label="下一步" width="120" />
-      <el-table-column label="操作" width="140" fixed="right">
+      <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
-          <AddToTodayReviewButton :code="row.code" :name="row.name" />
-          <el-button size="small" type="danger" link @click="deleteOne(row)">删除</el-button>
+          <div class="tracking-row-actions">
+            <AddToTodayReviewButton :code="row.code" :name="row.name" />
+            <el-button size="small" type="danger" link @click="deleteOne(row)">删除</el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -1016,6 +1018,12 @@ onMounted(refreshItems)
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tracking-row-actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
   white-space: nowrap;
 }
 .entry-price-editor {

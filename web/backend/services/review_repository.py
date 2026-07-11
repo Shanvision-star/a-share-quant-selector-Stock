@@ -295,7 +295,7 @@ def _validate_image(raw: bytes, declared_content_type: str | None) -> str:
         with Image.open(BytesIO(raw)) as image:
             image_format = image.format
             image.verify()
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
         raise ReviewValidationError("附件图片签名无效") from exc
     content_type = _IMAGE_TYPES.get(image_format or "")
     if content_type is None:

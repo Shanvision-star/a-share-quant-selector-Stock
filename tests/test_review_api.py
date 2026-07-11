@@ -265,6 +265,8 @@ def test_upload_rejects_svg_forged_mime_and_oversized_images(client: TestClient)
     """SVG、MIME 与签名不符、超过 10 MiB 的附件都必须被拒绝。"""
     client.post("/api/reviews/2026-07-11")
     oversized_png = _png_bytes() + (b"\0" * (10 * 1024 * 1024))
+    corrupted_png = bytearray(_png_bytes())
+    corrupted_png[corrupted_png.index(b"IDAT") + 4] ^= 0xFF
     responses = [
         client.post(
             "/api/reviews/2026-07-11/attachments",
@@ -277,6 +279,10 @@ def test_upload_rejects_svg_forged_mime_and_oversized_images(client: TestClient)
         client.post(
             "/api/reviews/2026-07-11/attachments",
             files={"file": ("large.png", oversized_png, "image/png")},
+        ),
+        client.post(
+            "/api/reviews/2026-07-11/attachments",
+            files={"file": ("corrupted.png", bytes(corrupted_png), "image/png")},
         ),
     ]
 

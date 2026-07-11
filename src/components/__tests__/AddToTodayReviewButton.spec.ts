@@ -36,10 +36,12 @@ function mountButton() {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise
+    reject = rejectPromise
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 
 describe('AddToTodayReviewButton', () => {
@@ -133,5 +135,36 @@ describe('AddToTodayReviewButton', () => {
 
     expect(messageSuccess).toHaveBeenCalledTimes(1)
     expect(wrapper.find('.review-feedback').exists()).toBe(false)
+  })
+
+  it.each([
+    ['success', { already_exists: false }, messageSuccess, '已加入今日复盘'],
+    ['already exists', { already_exists: true }, messageInfo, '今日复盘中已存在'],
+  ] as const)('keeps deferred %s feedback after the stock name updates', async (_, result, message, text) => {
+    const request = deferred<any>()
+    addStockToReview.mockReturnValue(request.promise)
+    const wrapper = mountButton()
+
+    await wrapper.get('button').trigger('click')
+    await wrapper.setProps({ name: '贵州茅台（更新）' })
+
+    request.resolve({ data: { data: result } })
+    await flushPromises()
+
+    expect(message).toHaveBeenCalledWith(text)
+  })
+
+  it('keeps deferred failure feedback after the stock name updates', async () => {
+    const request = deferred<any>()
+    addStockToReview.mockReturnValue(request.promise)
+    const wrapper = mountButton()
+
+    await wrapper.get('button').trigger('click')
+    await wrapper.setProps({ name: '贵州茅台（更新）' })
+
+    request.reject(new Error('网络不可用'))
+    await flushPromises()
+
+    expect(messageError).toHaveBeenCalledWith('加入今日复盘失败：网络不可用')
   })
 })

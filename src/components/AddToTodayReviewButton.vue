@@ -20,7 +20,7 @@ const feedback = ref<'added' | 'exists' | 'failed' | null>(null)
 let requestToken = 0
 
 watch(
-  () => [props.code, props.name],
+  () => props.code,
   () => {
     requestToken += 1
     adding.value = false

@@ -63,6 +63,25 @@ def test_iter_documents_returns_dates_in_descending_order(tmp_path):
     assert [document.review_date for document in repo.iter_documents()] == ["2026-07-11", "2026-07-10"]
 
 
+def test_create_if_absent_is_atomic_for_concurrent_calls(tmp_path):
+    """同一日期并发条件创建时，只有一个调用可创建文件。"""
+    repo = ReviewRepository(tmp_path)
+    barrier = threading.Barrier(2)
+
+    def create():
+        barrier.wait(timeout=5)
+        return repo.create_if_absent(ReviewDocument.new("2026-07-11"))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(create) for _ in range(2)]
+        results = [future.result(timeout=5) for future in futures]
+
+    documents, created_flags = zip(*results)
+    assert sorted(created_flags) == [False, True]
+    assert len({document.version for document in documents}) == 1
+    assert repo.load("2026-07-11").version == documents[0].version
+
+
 def test_save_uses_same_directory_atomic_replace(tmp_path, monkeypatch):
     repo = ReviewRepository(tmp_path)
     calls = []

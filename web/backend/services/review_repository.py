@@ -124,13 +124,31 @@ class ReviewRepository:
             current = self.load(document.review_date)
             if expected_version is not None and (current is None or current.version != expected_version):
                 raise ReviewConflictError("复盘已被其他保存操作更新")
+            return self._persist_locked(path, document, current)
 
-            now = _now()
-            created_at = current.created_at if current is not None else document.created_at
-            persisted = replace(document, created_at=created_at, updated_at=now, version="")
-            raw = _serialize_document(persisted)
-            self._atomic_write(path, raw)
-            return replace(persisted, version=_version(raw))
+    def create_if_absent(self, document: ReviewDocument) -> tuple[ReviewDocument, bool]:
+        """在单篇文档锁内执行条件创建，避免并发请求互相覆盖版本。"""
+        _validate_document(document)
+        path = self._document_path(document.review_date)
+        with self._document_lock(path):
+            current = self.load(document.review_date)
+            if current is not None:
+                return current, False
+            return self._persist_locked(path, document, None), True
+
+    def _persist_locked(
+        self,
+        path: Path,
+        document: ReviewDocument,
+        current: ReviewDocument | None,
+    ) -> ReviewDocument:
+        """调用方持有文档锁时写入，保留首次创建时间并生成新版本。"""
+        now = _now()
+        created_at = current.created_at if current is not None else document.created_at
+        persisted = replace(document, created_at=created_at, updated_at=now, version="")
+        raw = _serialize_document(persisted)
+        self._atomic_write(path, raw)
+        return replace(persisted, version=_version(raw))
 
     def iter_documents(self) -> list[ReviewDocument]:
         documents: list[ReviewDocument] = []

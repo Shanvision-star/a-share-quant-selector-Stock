@@ -1,6 +1,8 @@
 """验证复盘 FastAPI 接口的 HTTP 契约与文件安全映射。"""
 
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+from threading import Barrier
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -9,7 +11,7 @@ import pytest
 
 from web.backend.routers import review
 from web.backend.services import review_title_service as title_module
-from web.backend.services.review_repository import ReviewRepository
+from web.backend.services.review_repository import ReviewDocument, ReviewRepository
 from web.backend.services.review_service import ReviewService
 
 
@@ -152,6 +154,45 @@ def test_update_deduplicates_normalized_stock_codes(client: TestClient) -> None:
     assert saved.status_code == 200
     assert saved.json()["data"]["stocks"] == [{"code": "688802", "name": "沐曦股份"}]
     assert loaded.json()["data"]["stocks"] == [{"code": "688802", "name": "沐曦股份"}]
+
+
+def test_create_review_is_atomic_for_concurrent_posts(client: TestClient, monkeypatch) -> None:
+    """两个并发 POST 只有一个可报告 created=true，版本不会被另一请求立刻覆盖。"""
+    barrier = Barrier(2)
+    original_new = ReviewDocument.new.__func__
+
+    def synchronized_new(cls, review_date: str):
+        barrier.wait(timeout=5)
+        return original_new(cls, review_date)
+
+    monkeypatch.setattr(ReviewDocument, "new", classmethod(synchronized_new))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(client.post, "/api/reviews/2026-07-11") for _ in range(2)]
+        responses = [future.result(timeout=10) for future in futures]
+
+    payloads = [response.json()["data"] for response in responses]
+    current = client.get("/api/reviews/2026-07-11").json()["data"]
+    assert all(response.status_code == 200 for response in responses)
+    assert sorted(payload["created"] for payload in payloads) == [False, True]
+    assert {payload["version"] for payload in payloads} == {current["version"]}
+
+
+def test_add_stock_normalizes_existing_code_before_deduplication(client: TestClient) -> None:
+    """API 追加带空白的既有股票代码时应返回 already_exists，而不是 422。"""
+    client.post("/api/reviews/2026-07-11")
+    client.post(
+        "/api/reviews/2026-07-11/stocks",
+        json={"code": "688802", "name": "沐曦股份"},
+    )
+
+    response = client.post(
+        "/api/reviews/2026-07-11/stocks",
+        json={"code": " 688802 ", "name": " 沐曦股份 "},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["already_exists"] is True
+    assert response.json()["data"]["stocks"] == [{"code": "688802", "name": "沐曦股份"}]
 
 
 def test_upload_read_list_and_delete_attachment(client: TestClient) -> None:

@@ -21,13 +21,9 @@ class ReviewService:
 
     def create_or_get(self, review_date: str) -> tuple[ReviewDocument, bool]:
         """取得当日复盘；不存在时按标准模板创建。"""
-        document = self.repository.load(review_date)
-        if document is not None:
-            return document, False
-
         document = ReviewDocument.new(review_date)
         document = replace(document, body=_standard_template(document.title))
-        return self.repository.save(document), True
+        return self.repository.create_if_absent(document)
 
     def get_review(self, review_date: str) -> ReviewDocument:
         """读取既有复盘，缺失时明确返回文件不存在错误。"""
@@ -104,10 +100,12 @@ class ReviewService:
     def add_stock(self, review_date: str, code: str, name: str) -> dict:
         """按股票代码幂等地追加 frontmatter 与重点股票标准章节。"""
         current = self.get_review(review_date)
-        if any(stock.code == code for stock in current.stocks):
+        clean_code = str(code).strip()
+        clean_name = str(name).strip()
+        if any(stock.code == clean_code for stock in current.stocks):
             return {"document": current, "already_exists": True}
 
-        stock = ReviewStock(code=code, name=name)
+        stock = ReviewStock(code=clean_code, name=clean_name)
         updated = replace(
             current,
             stocks=(*current.stocks, stock),

@@ -1,6 +1,9 @@
 """验证复盘业务服务的模板、检索和股票去重行为。"""
 
-from web.backend.services.review_repository import ReviewRepository
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
+from web.backend.services.review_repository import ReviewDocument, ReviewRepository
 from web.backend.services.review_service import ReviewService
 
 
@@ -117,3 +120,36 @@ def test_update_review_deduplicates_normalized_stock_codes(tmp_path) -> None:
     assert [(stock.code, stock.name) for stock in repository.load("2026-07-11").stocks] == [
         ("688802", "沐曦股份")
     ]
+
+
+def test_create_or_get_is_atomic_when_two_calls_start_together(tmp_path, monkeypatch) -> None:
+    """并发创建返回一个新建和一个既有版本，二者版本均仍可读取。"""
+    service = ReviewService(ReviewRepository(tmp_path))
+    barrier = Barrier(2)
+    original_new = ReviewDocument.new.__func__
+
+    def synchronized_new(cls, review_date: str):
+        barrier.wait(timeout=5)
+        return original_new(cls, review_date)
+
+    monkeypatch.setattr(ReviewDocument, "new", classmethod(synchronized_new))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(service.create_or_get, "2026-07-11") for _ in range(2)]
+        results = [future.result(timeout=5) for future in futures]
+
+    documents, created_flags = zip(*results)
+    assert sorted(created_flags) == [False, True]
+    assert len({document.version for document in documents}) == 1
+    assert service.get_review("2026-07-11").version == documents[0].version
+
+
+def test_add_stock_normalizes_code_and_name_before_deduplication(tmp_path) -> None:
+    """带首尾空白的既有代码应返回幂等结果，而不是触发仓储校验失败。"""
+    service = ReviewService(ReviewRepository(tmp_path))
+    service.create_or_get("2026-07-11")
+    service.add_stock("2026-07-11", "688802", "沐曦股份")
+
+    result = service.add_stock("2026-07-11", " 688802 ", " 沐曦股份 ")
+
+    assert result["already_exists"] is True
+    assert [(stock.code, stock.name) for stock in result["document"].stocks] == [("688802", "沐曦股份")]

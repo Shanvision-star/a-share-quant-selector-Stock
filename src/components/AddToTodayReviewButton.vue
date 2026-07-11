@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { DocumentAdd, FolderOpened } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { addStockToReview } from '@/api/reviews'
 
 const props = withDefaults(defineProps<{
@@ -16,7 +17,16 @@ const props = withDefaults(defineProps<{
 const router = useRouter()
 const adding = ref(false)
 const feedback = ref<'added' | 'exists' | 'failed' | null>(null)
-const failureMessage = ref('')
+let requestToken = 0
+
+watch(
+  () => [props.code, props.name],
+  () => {
+    requestToken += 1
+    adding.value = false
+    feedback.value = null
+  },
+)
 
 function todayInShanghai(date = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -36,20 +46,30 @@ function errorMessage(error: unknown): string {
 
 async function addToTodayReview() {
   if (!props.code || adding.value) return
+  const token = ++requestToken
+  const code = props.code
+  const name = props.name || code
   adding.value = true
   feedback.value = null
-  failureMessage.value = ''
   try {
     const response = await addStockToReview(todayInShanghai(), {
-      code: props.code,
-      name: props.name || props.code,
+      code,
+      name,
     })
-    feedback.value = response.data.data.already_exists ? 'exists' : 'added'
+    if (token !== requestToken) return
+    if (response.data.data.already_exists) {
+      feedback.value = 'exists'
+      ElMessage.info('今日复盘中已存在')
+    } else {
+      feedback.value = 'added'
+      ElMessage.success('已加入今日复盘')
+    }
   } catch (error) {
+    if (token !== requestToken) return
     feedback.value = 'failed'
-    failureMessage.value = errorMessage(error)
+    ElMessage.error(`加入今日复盘失败：${errorMessage(error)}`)
   } finally {
-    adding.value = false
+    if (token === requestToken) adding.value = false
   }
 }
 
@@ -62,7 +82,7 @@ function openTodayReview() {
 </script>
 
 <template>
-  <span class="today-review-action">
+  <span class="today-review-action" :data-feedback="feedback || undefined">
     <el-button
       link
       type="primary"
@@ -75,20 +95,16 @@ function openTodayReview() {
     >
       加入复盘
     </el-button>
-    <span v-if="feedback === 'added'" class="review-feedback success" role="status">已加入今日复盘</span>
-    <span v-else-if="feedback === 'exists'" class="review-feedback muted" role="status">今日复盘中已存在</span>
-    <span v-else-if="feedback === 'failed'" class="review-feedback failure" role="alert">加入今日复盘失败：{{ failureMessage }}</span>
     <el-button
-      v-if="feedback"
       data-test="open-review"
       link
+      circle
       :icon="FolderOpened"
       :size="size"
       title="打开今日复盘"
+      aria-label="打开今日复盘"
       @click="openTodayReview"
-    >
-      打开复盘
-    </el-button>
+    />
   </span>
 </template>
 
@@ -96,28 +112,14 @@ function openTodayReview() {
 .today-review-action {
   display: inline-flex;
   align-items: center;
-  max-width: 100%;
-  gap: 4px;
-  flex-wrap: wrap;
-  min-width: 0;
+  flex: 0 0 88px;
+  width: 88px;
+  height: 28px;
+  gap: 0;
   white-space: nowrap;
 }
 
-.review-feedback {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 12px;
-}
-
-.success {
-  color: #67c23a;
-}
-
-.muted {
-  color: var(--text-secondary);
-}
-
-.failure {
-  color: #f56c6c;
+.today-review-action :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 </style>

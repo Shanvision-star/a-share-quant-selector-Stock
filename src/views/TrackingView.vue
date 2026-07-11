@@ -923,7 +923,7 @@ onMounted(refreshItems)
         </template>
       </el-table-column>
       <el-table-column prop="next_action" label="下一步" width="120" />
-      <el-table-column label="操作" width="180" fixed="right">
+      <el-table-column label="操作" width="140" fixed="right">
         <template #default="{ row }">
           <AddToTodayReviewButton :code="row.code" :name="row.name" />
           <el-button size="small" type="danger" link @click="deleteOne(row)">删除</el-button>

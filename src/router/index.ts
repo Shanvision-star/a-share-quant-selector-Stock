@@ -61,6 +61,11 @@ const routes = [
     name: 'Zettaranc',
     component: () => import('@/views/ZettarancView.vue'),
   },
+  {
+    path: '/review-library',
+    name: 'ReviewLibrary',
+    component: () => import('@/views/ReviewLibraryView.vue'),
+  },
 ]
 
 const router = createRouter({

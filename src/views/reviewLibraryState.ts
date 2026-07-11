@@ -1,4 +1,12 @@
-import type { ReviewDocument, ReviewTitleSuggestion } from '@/api/reviews'
+import type {
+  ReviewDocument,
+  ReviewListParams,
+  ReviewStatus,
+  ReviewTitleSuggestion,
+} from '@/api/reviews'
+import MarkdownIt from 'markdown-it'
+
+const bodyMarkdownParser = new MarkdownIt({ html: false })
 
 type EditableReview = Pick<
   ReviewDocument,
@@ -43,6 +51,22 @@ export function reviewIsDirty(
   return JSON.stringify(editableReviewSnapshot(current)) !== JSON.stringify(editableReviewSnapshot(saved))
 }
 
+export function createSavedReviewSnapshot(review: ReviewDocument): ReviewDocument {
+  return {
+    ...review,
+    tags: [...review.tags],
+    stocks: review.stocks.map(stock => ({ ...stock })),
+  }
+}
+
+export function markReviewTitleManual(review: ReviewDocument, title: string): ReviewDocument {
+  return {
+    ...review,
+    title,
+    title_source: 'manual',
+  }
+}
+
 export function mergeTitleSuggestion(
   review: ReviewDocument,
   suggestion: ReviewTitleSuggestion,
@@ -52,4 +76,53 @@ export function mergeTitleSuggestion(
     title: suggestion.title,
     title_source: suggestion.source,
   }
+}
+
+export interface MarkdownInsertion {
+  value: string
+  cursor: number
+}
+
+export function insertMarkdownAtSelection(
+  value: string,
+  markdown: string,
+  selectionStart: number,
+  selectionEnd: number,
+): MarkdownInsertion {
+  const start = Math.max(0, Math.min(selectionStart, value.length))
+  const end = Math.max(start, Math.min(selectionEnd, value.length))
+  return {
+    value: `${value.slice(0, start)}${markdown}${value.slice(end)}`,
+    cursor: start + markdown.length,
+  }
+}
+
+export interface ReviewLibraryFilters {
+  query?: string
+  status?: ReviewStatus | ''
+  dateRange?: [string, string] | null
+}
+
+export function buildReviewListParams(filters: ReviewLibraryFilters): ReviewListParams {
+  const params: ReviewListParams = { limit: 100, offset: 0 }
+  const query = filters.query?.trim()
+  if (query) params.query = query
+  if (filters.status) params.status = filters.status
+  if (filters.dateRange?.[0]) params.date_from = filters.dateRange[0]
+  if (filters.dateRange?.[1]) params.date_to = filters.dateRange[1]
+  return params
+}
+
+export function stripLevelOneHeadings(markdown: string): string {
+  const removedLines = new Set<number>()
+  for (const token of bodyMarkdownParser.parse(markdown, {})) {
+    if (token.type !== 'heading_open' || token.tag !== 'h1' || !token.map) continue
+    for (let line = token.map[0]; line < token.map[1]; line += 1) removedLines.add(line)
+  }
+
+  return markdown
+    .split(/\r?\n/)
+    .filter((_line, index) => !removedLines.has(index))
+    .join('\n')
+    .trim()
 }

@@ -161,16 +161,25 @@ def _stocks_from_mappings(stocks: list[dict]) -> tuple[ReviewStock, ...]:
 
 
 def _body_with_title(title: str, body: str) -> str:
-    content = str(body).lstrip()
-    atx_heading = re.match(r"^#\s+(?P<title>.*?)(?:\s+#+)?\s*(?:\r?\n|$)", content)
-    setext_heading = re.match(r"^(?P<title>[^\r\n]+)\r?\n=+\s*(?:\r?\n|$)", content)
+    content = str(body).removeprefix("\ufeff")
+    leading_blank_lines = r"(?:[ \t]*(?:\r\n|\n|\r))*"
+    atx_heading = re.match(
+        rf"^{leading_blank_lines}#\s+(?P<title>.*?)(?:\s+#+)?\s*(?:\r?\n|\r|$)",
+        content,
+    )
+    setext_heading = re.match(
+        rf"^{leading_blank_lines}(?P<title>[^\r\n]+)(?:\r\n|\n|\r)=+\s*(?:\r\n|\n|\r|$)",
+        content,
+    )
     leading_heading = atx_heading or setext_heading
     if (
         leading_heading is not None
         and _compact(leading_heading.group("title")) == _compact(title)
     ):
-        content = content[leading_heading.end() :].lstrip()
-    return f"# {title}\n\n{content}".rstrip() + "\n"
+        content = content[leading_heading.end() :]
+        content = re.sub(r"^(?:[ \t]*(?:\r\n|\n|\r))+", "", content)
+    result = f"# {title}\n\n{content}"
+    return result if result.endswith(("\n", "\r")) else result + "\n"
 
 
 def _append_stock_section(body: str, stock: ReviewStock) -> str:

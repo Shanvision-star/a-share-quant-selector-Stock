@@ -12,8 +12,8 @@
 
 - 状态：实现完成，已通过任务级审查、全分支审查及审查修复循环。
 - 顶层范围：`0d0b662..codex/review-library-design`（最终分支 HEAD）。
-- 嵌套前端范围：`02d6325..cdf0e53`。
-- 验证：后端 review pytest `65 passed`、前端全量 Vitest `99 passed`、`npm run build`、10 条路由 import smoke、`git diff --check`、桌面与移动浏览器流程。
+- 嵌套前端范围：`02d6325..94b648b`。
+- 验证：后端 review pytest `66 passed`、前端全量 Vitest `100 passed`、`npm run build`、10 条路由 import smoke、`git diff --check`、桌面与移动浏览器流程。
 - Provider 边界：默认测试和浏览器验收只验证 DeepSeek 未配置/失败时的本地回退，未执行真实 DeepSeek 付费 smoke。
 
 ## Global Constraints

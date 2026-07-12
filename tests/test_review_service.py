@@ -183,6 +183,26 @@ def test_update_review_preserves_user_leading_h1_but_deduplicates_canonical_titl
     assert deduplicated.body == "# 交易复盘\n\n正文\n"
 
 
+def test_update_review_preserves_markdown_indentation_and_line_endings(tmp_path) -> None:
+    """正文前导四空格、Tab 和 CRLF 属于 Markdown 语义，保存时不得清理。"""
+    service = ReviewService(ReviewRepository(tmp_path))
+    current, _ = service.create_or_get("2026-07-11")
+    body = '    print("kept")\r\n\tcontinued\r\n正文  \r\n'
+
+    saved = service.update_review(
+        "2026-07-11",
+        title="缩进代码测试",
+        status="draft",
+        title_source="manual",
+        tags=[],
+        stocks=[],
+        body=body,
+        expected_version=current.version,
+    )
+
+    assert saved.body == f"# 缩进代码测试\n\n{body}"
+
+
 def test_create_or_get_is_atomic_when_two_calls_start_together(tmp_path, monkeypatch) -> None:
     """并发创建返回一个新建和一个既有版本，二者版本均仍可读取。"""
     service = ReviewService(ReviewRepository(tmp_path))

@@ -143,4 +143,13 @@ describe('review library state', () => {
     expect(editable.body).toBe('正文\n\n# 用户章节')
     expect(editable.title).toBe('盘中复盘')
   })
+
+  it('preserves indentation, CRLF, and trailing Markdown whitespace', () => {
+    const indented = '    print("kept")\r\n\tcontinued\r\n正文  \r\n'
+    expect(stripLevelOneHeadings(indented, '原始标题')).toBe(indented)
+    expect(stripLevelOneHeadings(
+      '# 原始标题\r\n\r\n    print("kept")\r\n正文  \r\n',
+      '原始标题',
+    )).toBe('    print("kept")\r\n正文  \r\n')
+  })
 })

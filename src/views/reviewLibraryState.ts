@@ -131,11 +131,26 @@ export function stripLevelOneHeadings(markdown: string, canonicalTitle: string):
     firstBlock?.type !== 'heading_open'
     || firstBlock.tag !== 'h1'
     || !firstBlock.map
-  ) return source.trim()
+  ) return source
   const inline = tokens[firstBlockIndex + 1]
   if (inline?.type !== 'inline' || inline.content.trim() !== canonicalTitle.trim()) {
-    return source.trim()
+    return source
   }
 
-  return source.split(/\r?\n/).slice(firstBlock.map[1]).join('\n').trim()
+  let offset = 0
+  for (let line = 0; line < firstBlock.map[1]; line += 1) {
+    const nextLf = source.indexOf('\n', offset)
+    const nextCr = source.indexOf('\r', offset)
+    const nextBreak = nextLf < 0
+      ? nextCr
+      : nextCr < 0
+        ? nextLf
+        : Math.min(nextLf, nextCr)
+    if (nextBreak < 0) {
+      offset = source.length
+      break
+    }
+    offset = nextBreak + (source[nextBreak] === '\r' && source[nextBreak + 1] === '\n' ? 2 : 1)
+  }
+  return source.slice(offset).replace(/^(?:[ \t]*(?:\r\n|\n|\r))+/, '')
 }

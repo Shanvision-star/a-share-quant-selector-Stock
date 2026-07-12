@@ -59,6 +59,12 @@ export function createSavedReviewSnapshot(review: ReviewDocument): ReviewDocumen
   }
 }
 
+export function createEditableReviewSnapshot(review: ReviewDocument): ReviewDocument {
+  const editable = createSavedReviewSnapshot(review)
+  editable.body = stripLevelOneHeadings(editable.body, editable.title)
+  return editable
+}
+
 export function markReviewTitleManual(review: ReviewDocument, title: string): ReviewDocument {
   return {
     ...review,
@@ -116,14 +122,20 @@ export function buildReviewListParams(
   return params
 }
 
-export function stripLevelOneHeadings(markdown: string): string {
+export function stripLevelOneHeadings(markdown: string, canonicalTitle: string): string {
   const source = markdown.replace(/^\uFEFF/, '')
-  const firstBlock = bodyMarkdownParser.parse(source, {}).find(token => token.map)
+  const tokens = bodyMarkdownParser.parse(source, {})
+  const firstBlockIndex = tokens.findIndex(token => token.map)
+  const firstBlock = tokens[firstBlockIndex]
   if (
     firstBlock?.type !== 'heading_open'
     || firstBlock.tag !== 'h1'
     || !firstBlock.map
   ) return source.trim()
+  const inline = tokens[firstBlockIndex + 1]
+  if (inline?.type !== 'inline' || inline.content.trim() !== canonicalTitle.trim()) {
+    return source.trim()
+  }
 
   return source.split(/\r?\n/).slice(firstBlock.map[1]).join('\n').trim()
 }

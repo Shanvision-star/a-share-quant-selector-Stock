@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ReviewDocument, ReviewTitleSuggestion } from '@/api/reviews'
 import {
   buildReviewListParams,
+  createEditableReviewSnapshot,
   createSavedReviewSnapshot,
   insertMarkdownAtSelection,
   markReviewTitleManual,
@@ -109,22 +110,37 @@ describe('review library state', () => {
   })
 
   it('removes only a leading ATX level-one document title', () => {
-    expect(stripLevelOneHeadings('\uFEFF  \n\n# 独立标题\n正文\n# 正文一级标题'))
+    expect(stripLevelOneHeadings('\uFEFF  \n\n# 独立标题\n正文\n# 正文一级标题', '独立标题'))
       .toBe('正文\n# 正文一级标题')
   })
 
   it('removes only a leading Setext level-one document title', () => {
-    expect(stripLevelOneHeadings('\n独立标题\n====\n正文\n后续一级标题\n===='))
+    expect(stripLevelOneHeadings('\n独立标题\n====\n正文\n后续一级标题\n====', '独立标题'))
       .toBe('正文\n后续一级标题\n====')
   })
 
   it('preserves later ATX and Setext level-one headings', () => {
-    expect(stripLevelOneHeadings('正文开场\n\n# 后续 ATX\n\n后续 Setext\n===='))
+    expect(stripLevelOneHeadings('正文开场\n\n# 后续 ATX\n\n后续 Setext\n====', '独立标题'))
       .toBe('正文开场\n\n# 后续 ATX\n\n后续 Setext\n====')
   })
 
   it('preserves level-one heading syntax inside fenced code', () => {
-    expect(stripLevelOneHeadings('```md\n# 代码标题\n代码 Setext\n====\n```\n正文'))
+    expect(stripLevelOneHeadings('```md\n# 代码标题\n代码 Setext\n====\n```\n正文', '独立标题'))
       .toBe('```md\n# 代码标题\n代码 Setext\n====\n```\n正文')
+  })
+
+  it('preserves a leading H1 that does not match the canonical title', () => {
+    expect(stripLevelOneHeadings('# 市场总览\n正文', '原始标题')).toBe('# 市场总览\n正文')
+  })
+
+  it('converts a server document into one editable body source', () => {
+    const editable = createEditableReviewSnapshot({
+      ...review,
+      title: '盘中复盘',
+      body: '# 盘中复盘\n\n正文\n\n# 用户章节',
+    })
+
+    expect(editable.body).toBe('正文\n\n# 用户章节')
+    expect(editable.title).toBe('盘中复盘')
   })
 })

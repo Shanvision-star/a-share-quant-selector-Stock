@@ -5,10 +5,10 @@ import type {
   ReviewUpdatePayload,
 } from '@/api/reviews'
 import {
+  createEditableReviewSnapshot,
   createSavedReviewSnapshot,
   mergeTitleSuggestion,
   reviewIsDirty,
-  stripLevelOneHeadings,
 } from '@/views/reviewLibraryState'
 
 export function reviewSelectionIsActive(
@@ -46,7 +46,7 @@ export function createReviewSaveOperation(
       title_source: submitted.title_source,
       tags: [...submitted.tags],
       stocks: submitted.stocks.map(stock => ({ ...stock })),
-      body: stripLevelOneHeadings(submitted.body),
+      body: submitted.body,
       version: submitted.version,
     },
   }
@@ -67,11 +67,12 @@ export function applyReviewSaveResponse(
     return { applied: false, current: active, saved: activeSaved }
   }
 
-  const saved = createSavedReviewSnapshot(serverReview)
+  const editableServerReview = createEditableReviewSnapshot(serverReview)
+  const saved = createSavedReviewSnapshot(editableServerReview)
   if (!reviewIsDirty(active, operation.submitted)) {
     return {
       applied: true,
-      current: createSavedReviewSnapshot(serverReview),
+      current: createSavedReviewSnapshot(editableServerReview),
       saved,
     }
   }
@@ -79,7 +80,7 @@ export function applyReviewSaveResponse(
   return {
     applied: true,
     current: {
-      ...serverReview,
+      ...editableServerReview,
       title: active.title,
       status: active.status,
       title_source: active.title_source,

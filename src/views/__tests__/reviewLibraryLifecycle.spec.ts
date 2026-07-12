@@ -38,6 +38,14 @@ function deferred<T>() {
 }
 
 describe('review library lifecycle', () => {
+  it('keeps a user-authored leading H1 in the save payload', () => {
+    const operation = createReviewSaveOperation(review('2026-07-11', {
+      body: '# 市场总览\n正文',
+    }), 'document-1')
+
+    expect(operation.payload.body).toBe('# 市场总览\n正文')
+  })
+
   it('treats selecting the active review document as a no-op', () => {
     expect(reviewSelectionIsActive(review('2026-07-11'), '2026-07-11')).toBe(true)
     expect(reviewSelectionIsActive(review('2026-07-11'), '2026-07-12')).toBe(false)

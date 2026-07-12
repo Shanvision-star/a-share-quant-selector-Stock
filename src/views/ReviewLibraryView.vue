@@ -20,7 +20,7 @@ import {
 } from '@/api/reviews'
 import {
   buildReviewListParams,
-  createSavedReviewSnapshot,
+  createEditableReviewSnapshot,
   insertMarkdownAtSelection,
   markReviewTitleManual,
   reviewIsDirty,
@@ -172,8 +172,8 @@ function loadMore() {
 }
 
 function setActiveDocument(document: ReviewDocument) {
-  current.value = createSavedReviewSnapshot(document)
-  saved.value = createSavedReviewSnapshot(document)
+  current.value = createEditableReviewSnapshot(document)
+  saved.value = createEditableReviewSnapshot(document)
   documentIdentity.value = `${document.review_date}:${++documentIdentitySequence}`
 }
 

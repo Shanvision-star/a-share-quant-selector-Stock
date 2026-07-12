@@ -3,6 +3,7 @@
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+import re
 import threading
 import time
 
@@ -206,7 +207,7 @@ def test_attachment_requires_valid_image_signature_and_size_limit(tmp_path):
 
     attachment = repo.save_attachment("2026-07-11", "chart.png", "image/png", _png_bytes())
 
-    assert attachment.filename == "chart-0001.png"
+    assert re.fullmatch(r"\d{8}-\d{6}-\d{3}\.png", attachment.filename)
     assert repo.read_attachment("2026-07-11", attachment.filename).raw == _png_bytes()
 
 
@@ -219,13 +220,42 @@ def test_repeated_attachment_names_are_unique_sorted_and_keep_real_extension(tmp
     first = repo.save_attachment("2026-07-11", "clipboard.png", "image/png", first_raw)
     second = repo.save_attachment("2026-07-11", "clipboard.png", "image/png", second_raw)
 
-    assert [first.filename, second.filename] == ["clipboard-0001.png", "clipboard-0002.png"]
-    assert [item.filename for item in repo.list_attachments("2026-07-11")] == [
-        "clipboard-0001.png",
-        "clipboard-0002.png",
-    ]
+    assert first.filename != second.filename
+    assert re.fullmatch(r"\d{8}-\d{6}-\d{3}\.png", first.filename)
+    assert re.fullmatch(r"\d{8}-\d{6}-\d{3}\.png", second.filename)
+    assert [item.filename for item in repo.list_attachments("2026-07-11")] == sorted([
+        first.filename,
+        second.filename,
+    ])
     assert repo.read_attachment("2026-07-11", first.filename).raw == first_raw
     assert repo.read_attachment("2026-07-11", second.filename).raw == second_raw
+
+
+@pytest.mark.parametrize("upload_name", ["review shot.png", "微信截图 20260712.png", "截图" * 200 + ".png"])
+def test_upload_name_is_not_used_as_storage_filename(tmp_path, upload_name):
+    """原始截图名可包含空格、中文或很长文本，磁盘名始终由服务端生成。"""
+    repo = ReviewRepository(tmp_path)
+
+    attachment = repo.save_attachment("2026-07-11", upload_name, "image/png", _png_bytes())
+
+    assert re.fullmatch(r"\d{8}-\d{6}-\d{3}\.png", attachment.filename)
+
+
+def test_first_attachment_does_not_read_later_valid_images(tmp_path, monkeypatch):
+    """列表首图只验证第一个有效文件，不读取当天后续完整图片。"""
+    repo = ReviewRepository(tmp_path)
+    first = repo.save_attachment("2026-07-11", "one.png", "image/png", _png_bytes("white"))
+    second = repo.save_attachment("2026-07-11", "two.png", "image/png", _png_bytes("black"))
+    original_read_bytes = type(tmp_path).read_bytes
+
+    def guarded_read_bytes(path):
+        if path.name == second.filename:
+            raise AssertionError("不应读取第二张完整图片")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(type(tmp_path), "read_bytes", guarded_read_bytes)
+
+    assert repo.first_attachment("2026-07-11").filename == first.filename
 
 
 def test_attachment_delete_and_document_save_share_the_date_lock(tmp_path, monkeypatch):

@@ -151,6 +151,38 @@ def test_update_review_deduplicates_normalized_stock_codes(tmp_path) -> None:
     ]
 
 
+def test_update_review_preserves_user_leading_h1_but_deduplicates_canonical_title(tmp_path) -> None:
+    """正文首个 H1 只有与标题字段一致时才视为服务端规范标题。"""
+    service = ReviewService(ReviewRepository(tmp_path))
+    current, _ = service.create_or_get("2026-07-11")
+
+    saved = service.update_review(
+        "2026-07-11",
+        title="交易复盘",
+        status="draft",
+        title_source="manual",
+        tags=[],
+        stocks=[],
+        body="# 市场总览\n正文",
+        expected_version=current.version,
+    )
+
+    assert saved.body == "# 交易复盘\n\n# 市场总览\n正文\n"
+
+    deduplicated = service.update_review(
+        "2026-07-11",
+        title="交易复盘",
+        status="draft",
+        title_source="manual",
+        tags=[],
+        stocks=[],
+        body="# 交易复盘\n\n正文",
+        expected_version=saved.version,
+    )
+
+    assert deduplicated.body == "# 交易复盘\n\n正文\n"
+
+
 def test_create_or_get_is_atomic_when_two_calls_start_together(tmp_path, monkeypatch) -> None:
     """并发创建返回一个新建和一个既有版本，二者版本均仍可读取。"""
     service = ReviewService(ReviewRepository(tmp_path))

@@ -162,7 +162,14 @@ def _stocks_from_mappings(stocks: list[dict]) -> tuple[ReviewStock, ...]:
 
 def _body_with_title(title: str, body: str) -> str:
     content = str(body).lstrip()
-    content = re.sub(r"^#\s+[^\n]*(?:\n+)?", "", content, count=1)
+    atx_heading = re.match(r"^#\s+(?P<title>.*?)(?:\s+#+)?\s*(?:\r?\n|$)", content)
+    setext_heading = re.match(r"^(?P<title>[^\r\n]+)\r?\n=+\s*(?:\r?\n|$)", content)
+    leading_heading = atx_heading or setext_heading
+    if (
+        leading_heading is not None
+        and _compact(leading_heading.group("title")) == _compact(title)
+    ):
+        content = content[leading_heading.end() :].lstrip()
     return f"# {title}\n\n{content}".rstrip() + "\n"
 
 

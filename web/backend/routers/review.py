@@ -109,10 +109,7 @@ def _attachment_data(attachment: AttachmentInfo) -> dict:
 
 
 def _list_item_data(document: ReviewDocument, repository: ReviewRepository) -> dict:
-    attachment_urls = [
-        f"/api/reviews/{document.review_date}/attachments/{attachment.filename}"
-        for attachment in repository.list_attachments(document.review_date)
-    ]
+    first_attachment = repository.first_attachment(document.review_date)
     return {
         "review_date": document.review_date,
         "title": document.title,
@@ -121,7 +118,11 @@ def _list_item_data(document: ReviewDocument, repository: ReviewRepository) -> d
         "stocks": [_stock_data(stock) for stock in document.stocks],
         "updated_at": document.updated_at,
         "body_summary": _body_summary(document.body),
-        "first_attachment_url": attachment_urls[0] if attachment_urls else None,
+        "first_attachment_url": (
+            f"/api/reviews/{document.review_date}/attachments/{first_attachment.filename}"
+            if first_attachment is not None
+            else None
+        ),
         "version": document.version,
     }
 

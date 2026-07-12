@@ -11,9 +11,9 @@
 ## Completion Record
 
 - 状态：实现完成，已通过任务级审查、全分支审查及审查修复循环。
-- 顶层范围：`0d0b662..cdca43e`，后续损坏文档告警与最终 gitlink 收口记录在本计划之后的提交中。
-- 嵌套前端范围：`02d6325..7995326`，后续告警 UI 与最终收口记录在本计划之后的提交中。
-- 验证：后端 review pytest、前端全量 Vitest、`npm run build`、路由 import smoke、`git diff --check`、桌面与移动浏览器流程。
+- 顶层范围：`0d0b662..codex/review-library-design`（最终分支 HEAD）。
+- 嵌套前端范围：`02d6325..cdf0e53`。
+- 验证：后端 review pytest `65 passed`、前端全量 Vitest `99 passed`、`npm run build`、10 条路由 import smoke、`git diff --check`、桌面与移动浏览器流程。
 - Provider 边界：默认测试和浏览器验收只验证 DeepSeek 未配置/失败时的本地回退，未执行真实 DeepSeek 付费 smoke。
 
 ## Global Constraints
@@ -262,7 +262,7 @@ git commit -m "feat: expose review library api"
 
 ```powershell
 git clone --no-checkout "D:\stock\20260329dingtalk\a-share-quant-selector-main-zuozhe\a-share-quant-selector-Stock\web\frontend" web/frontend
-git -C web/frontend checkout -b codex/review-library ba8eca511810f06d3b4da746d07da7f188930c1c
+git -C web/frontend checkout -b codex/review-library 02d6325
 npm --prefix web/frontend install
 ```
 

@@ -222,16 +222,34 @@ class ReviewRepository:
 
     def save_attachment(self, review_date: str, upload_name: str, content_type: str, raw: bytes) -> AttachmentInfo:
         _validate_review_date(review_date)
-        upload_filename = _validate_filename(upload_name)
+        _validate_upload_name(upload_name)
         actual_type = _validate_image(raw, content_type)
         document_path = self._document_path(review_date)
         with self._document_lock(document_path):
             assets_path = self._assets_path(review_date)
             assets_path.mkdir(parents=True, exist_ok=True)
-            filename = _next_attachment_filename(assets_path, upload_filename, actual_type)
+            filename = _next_attachment_filename(assets_path, actual_type)
             target = self._attachment_path(review_date, filename)
             self._atomic_write(target, raw)
         return AttachmentInfo(filename=filename, content_type=actual_type, size=len(raw))
+
+    def first_attachment(self, review_date: str) -> AttachmentInfo | None:
+        """只读取首个有效附件，供列表缩略图使用，避免扫描当天全部图片。"""
+        document_path = self._document_path(review_date)
+        with self._document_lock(document_path):
+            assets_path = self._assets_path(review_date)
+            if not assets_path.is_dir():
+                return None
+            for path in sorted(assets_path.iterdir(), key=lambda item: item.name):
+                if not path.is_file():
+                    continue
+                self._inside_root(path)
+                try:
+                    content_type = _validate_image(path.read_bytes(), None)
+                except ReviewValidationError:
+                    continue
+                return AttachmentInfo(path.name, content_type, path.stat().st_size)
+            return None
 
     def list_attachments(self, review_date: str) -> list[AttachmentInfo]:
         document_path = self._document_path(review_date)
@@ -352,6 +370,14 @@ def _validate_filename(filename: str) -> str:
     return filename
 
 
+def _validate_upload_name(filename: str) -> None:
+    """原始名称不落盘，只拒绝路径与 NUL，避免把上传解释为目录操作。"""
+    if not isinstance(filename, str) or not filename or "\0" in filename:
+        raise ReviewValidationError("附件名不安全")
+    if "/" in filename or "\\" in filename:
+        raise ReviewValidationError("附件名不安全")
+
+
 def _validate_image(raw: bytes, declared_content_type: str | None) -> str:
     if not isinstance(raw, bytes) or not raw:
         raise ReviewValidationError("附件必须是非空图片")
@@ -371,20 +397,15 @@ def _validate_image(raw: bytes, declared_content_type: str | None) -> str:
     return content_type
 
 
-def _next_attachment_filename(assets_path: Path, upload_name: str, content_type: str) -> str:
-    """按同名附件现有最大序号生成稳定名称，扩展名以真实图片格式为准。"""
-    stem = Path(upload_name).stem
+def _next_attachment_filename(assets_path: Path, content_type: str) -> str:
+    """按上海时区时间戳与锁内序号生成与原始上传名无关的磁盘名。"""
+    timestamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d-%H%M%S")
     extension = _IMAGE_EXTENSIONS[content_type]
-    pattern = re.compile(rf"{re.escape(stem)}-(\d+){re.escape(extension)}")
-    sequence = max(
-        (
-            int(match.group(1))
-            for path in assets_path.iterdir()
-            if path.is_file() and (match := pattern.fullmatch(path.name)) is not None
-        ),
-        default=0,
-    )
-    return _validate_filename(f"{stem}-{sequence + 1:04d}{extension}")
+    for sequence in range(1, 1000):
+        filename = f"{timestamp}-{sequence:03d}{extension}"
+        if not (assets_path / filename).exists():
+            return _validate_filename(filename)
+    raise ReviewValidationError("同一秒上传图片过多，请稍后重试")
 
 
 def _validate_document(document: ReviewDocument) -> None:

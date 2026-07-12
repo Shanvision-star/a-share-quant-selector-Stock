@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+import re
 from threading import Barrier
 
 from fastapi import FastAPI
@@ -309,6 +310,20 @@ def test_upload_accepts_supported_image_formats(
 
     assert response.status_code == 200
     assert response.json()["data"]["content_type"] == content_type
+
+
+@pytest.mark.parametrize("filename", ["review shot.png", "微信截图 20260712.png"])
+def test_upload_accepts_common_local_screenshot_names(client: TestClient, filename: str) -> None:
+    """原始本地文件名不参与磁盘命名，空格与中文不应导致 422。"""
+    client.post("/api/reviews/2026-07-11")
+
+    response = client.post(
+        "/api/reviews/2026-07-11/attachments",
+        files={"file": (filename, _png_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    assert re.fullmatch(r"\d{8}-\d{6}-\d{3}\.png", response.json()["data"]["filename"])
 
 
 def test_upload_rejects_svg_forged_mime_and_oversized_images(client: TestClient) -> None:

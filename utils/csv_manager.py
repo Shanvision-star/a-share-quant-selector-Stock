@@ -229,10 +229,11 @@ class CSVManager:
     
     def list_all_stocks(self):
         """列出所有已保存的股票代码"""
-        stocks = []
-        for csv_file in self.data_dir.rglob("*.csv"):
-            stock_code = csv_file.stem
-            stocks.append(stock_code)
+        stocks = {
+            csv_file.stem
+            for csv_file in self.data_dir.rglob("*.csv")
+            if csv_file.is_file()
+        }
         return sorted(stocks)
     
     def get_stock_count(self):

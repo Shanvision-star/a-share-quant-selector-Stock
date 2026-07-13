@@ -75,27 +75,41 @@ def _default_config_loader() -> dict:
 def _stock_csv_files() -> list[Path]:
     if not DATA_DIR.exists() or not DATA_DIR.is_dir():
         return []
-    return sorted(
-        path
-        for path in DATA_DIR.rglob("*.csv")
-        if path.is_file() and path.stem.isdigit() and len(path.stem) == 6
-    )
+    files_by_code: dict[str, Path] = {}
+    for path in sorted(DATA_DIR.rglob("*.csv")):
+        code = path.stem
+        if not path.is_file() or not code.isdigit() or len(code) != 6:
+            continue
+        canonical_path = DATA_DIR / code[:2] / f"{code}.csv"
+        current = files_by_code.get(code)
+        if current is None or path == canonical_path:
+            files_by_code[code] = path
+    return [files_by_code[code] for code in sorted(files_by_code)]
 
 
-def _first_csv_date(path: Path) -> str | None:
+def _latest_csv_date(path: Path) -> str | None:
     try:
         with path.open("r", encoding="utf-8", newline="") as file:
             reader = csv.reader(file)
             header = next(reader, None)
-            if not header or "date" not in header:
+            if not header:
                 return None
-            date_index = header.index("date")
+            normalized_header = [str(column).lstrip("\ufeff").strip() for column in header]
+            date_column = next(
+                (column for column in ("date", "日期") if column in normalized_header),
+                None,
+            )
+            if date_column is None:
+                return None
+            date_index = normalized_header.index(date_column)
+            latest = None
             for row in reader:
                 if date_index >= len(row):
                     continue
                 value = str(row[date_index]).strip()[:10]
                 if len(value) == 10 and value[4] == "-" and value[7] == "-":
-                    return value
+                    latest = value if latest is None or value > latest else latest
+            return latest
     except OSError:
         return None
     return None
@@ -131,7 +145,7 @@ def _default_data_status_loader() -> dict:
         board_stale = 0
         sample = select_status_sample(files, sample_size=10)
         for path in sample:
-            stock_date = _first_csv_date(path)
+            stock_date = _latest_csv_date(path)
             if not stock_date:
                 continue
             if stock_date < expected_date:

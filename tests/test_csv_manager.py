@@ -9,6 +9,19 @@ import pandas as pd
 from utils.csv_manager import CSVManager
 
 
+def test_list_all_stocks_deduplicates_legacy_and_canonical_paths(tmp_path):
+    """同一代码的新旧目录文件并存时，全市场任务只能处理一次。"""
+    csv_manager = CSVManager(tmp_path)
+    canonical_path = csv_manager.get_stock_path("603920")
+    canonical_path.write_text("date,close\n2026-07-13,39.22\n", encoding="utf-8")
+    (tmp_path / "603920.csv").write_text(
+        "日期,收盘\n2026-04-07,49.16\n",
+        encoding="utf-8",
+    )
+
+    assert csv_manager.list_all_stocks() == ["603920"]
+
+
 def test_update_stock_all_false_turnover_mask_does_not_raise(tmp_path):
     """无可估算换手率时应跳过赋值，不应让慢路径更新失败。"""
     csv_manager = CSVManager(tmp_path)

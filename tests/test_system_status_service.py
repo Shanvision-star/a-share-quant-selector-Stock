@@ -634,6 +634,35 @@ def test_default_data_loader_uses_stable_spread_sample(monkeypatch, tmp_path):
     assert status["boards"]["60"]["stale_ratio"] == 30.0
 
 
+def test_stock_csv_files_prefers_canonical_path_for_duplicate_code(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    canonical_dir = data_dir / "60"
+    canonical_dir.mkdir(parents=True)
+    canonical_path = canonical_dir / "603920.csv"
+    canonical_path.write_text("date,close\n2026-07-13,39.22\n", encoding="utf-8")
+    (data_dir / "603920.csv").write_text(
+        "日期,收盘\n2026-04-07,49.16\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(svc_mod, "DATA_DIR", data_dir)
+
+    assert svc_mod._stock_csv_files() == [canonical_path]
+
+
+def test_latest_csv_date_accepts_chinese_header_and_unsorted_rows(tmp_path):
+    path = tmp_path / "688519.csv"
+    path.write_text(
+        "日期,股票代码,收盘\n"
+        "2026-01-05,688519,80.0\n"
+        "2026-07-13,688519,88.0\n"
+        "2026-05-29,688519,82.0\n",
+        encoding="utf-8",
+    )
+
+    assert svc_mod._latest_csv_date(path) == "2026-07-13"
+
+
 def test_default_update_runs_query_filters_update_types_before_limit(monkeypatch, tmp_path):
     db_path = tmp_path / "web_strategy_cache.db"
     conn = sqlite3.connect(db_path)

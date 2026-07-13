@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 import yaml
 
+from utils.status_sampling import select_status_sample
 from utils.trading_calendar import previous_a_share_trading_day
 
 
@@ -128,7 +129,7 @@ def _default_data_status_loader() -> dict:
     for board, files in board_files.items():
         board_latest = None
         board_stale = 0
-        sample = files[:10]
+        sample = select_status_sample(files, sample_size=10)
         for path in sample:
             stock_date = _first_csv_date(path)
             if not stock_date:

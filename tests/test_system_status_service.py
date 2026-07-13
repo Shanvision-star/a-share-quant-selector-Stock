@@ -613,6 +613,27 @@ def test_default_data_loader_is_side_effect_free(monkeypatch, tmp_path):
     assert not svc_mod.WEB_STRATEGY_CACHE_DB_FILE.exists()
 
 
+def test_default_data_loader_uses_stable_spread_sample(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    stale_indexes = {6, 12, 19}
+    for index in range(20):
+        trade_date = "2026-06-18" if index in stale_indexes else "2026-06-19"
+        (data_dir / f"600{index:03d}.csv").write_text(
+            f"date,close\n{trade_date},10.0\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(svc_mod, "DATA_DIR", data_dir)
+    monkeypatch.setattr(svc_mod, "_default_requested_trade_date", lambda: "2026-06-19")
+
+    status = svc_mod._default_data_status_loader()
+
+    assert status["checked_count"] == 10
+    assert status["stale_count"] == 3
+    assert status["boards"]["60"]["stale_ratio"] == 30.0
+
+
 def test_default_update_runs_query_filters_update_types_before_limit(monkeypatch, tmp_path):
     db_path = tmp_path / "web_strategy_cache.db"
     conn = sqlite3.connect(db_path)

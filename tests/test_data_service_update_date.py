@@ -219,8 +219,26 @@ def test_run_data_update_continues_rebuild_when_update_is_partial(monkeypatch):
         cb = kwargs.get("progress_callback")
         if cb:
             try:
-                cb("progress", {"progress": 50, "message": "rebuild..."})
-                cb("progress", {"progress": 100, "message": "done"})
+                cb(
+                    "progress",
+                    {
+                        "progress": 50,
+                        "message": "rebuild...",
+                        "processed": 1,
+                        "total": 2,
+                        "matched": 1,
+                    },
+                )
+                cb(
+                    "progress",
+                    {
+                        "progress": 100,
+                        "message": "done",
+                        "processed": 2,
+                        "total": 2,
+                        "matched": 3,
+                    },
+                )
             except Exception:
                 pass
         return {"total": 3, "trade_date": "2026-05-14", "groups": {"b1": []}}
@@ -229,9 +247,14 @@ def test_run_data_update_continues_rebuild_when_update_is_partial(monkeypatch):
 
     finished = []
     events_recorded = []
+    update_run_calls = []
     monkeypatch.setattr(data_service.repo, "generate_run_id", lambda: "run-partial")
     monkeypatch.setattr(data_service.repo, "create_run", lambda *args, **kwargs: None)
-    monkeypatch.setattr(data_service.repo, "update_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        data_service.repo,
+        "update_run",
+        lambda run_id, **kwargs: update_run_calls.append(kwargs),
+    )
     monkeypatch.setattr(data_service.repo, "finish_run", lambda *args, **kwargs: finished.append(args))
     monkeypatch.setattr(
         data_service.repo,
@@ -265,3 +288,8 @@ def test_run_data_update_continues_rebuild_when_update_is_partial(monkeypatch):
     # run 最终被标为 done 而非 error
     assert finished[-1][0] == "run-partial"
     assert finished[-1][1] == "done"
+    assert any(call.get("total_count") == 2 for call in update_run_calls)
+    assert any(
+        call.get("processed_count") == 2 and call.get("matched_count") == 3
+        for call in update_run_calls
+    )

@@ -1026,21 +1026,33 @@ def get_strategy_cache_status(strategy_filter: str = 'all', target_date: str = N
         except Exception:
             latest_event = None
 
+        persisted_processed = int(running_run.get('processed_count') or 0)
+        persisted_total = int(running_run.get('total_count') or 0)
+        persisted_progress = (
+            min(100, int(persisted_processed * 100 / persisted_total))
+            if persisted_total > 0
+            else 0
+        )
+
         rebuild_state = {
             'is_running': True,
             'strategy_filter': running_run.get('strategy_filter'),
             'target_date': running_run.get('trade_date'),
             'started_at': running_run.get('started_at'),
             'completed_at': running_run.get('completed_at'),
-            'progress': latest_event.get('progress', 0) if latest_event else 0,
+            'progress': (
+                latest_event.get('progress')
+                if latest_event and latest_event.get('progress') is not None
+                else persisted_progress
+            ),
             'message': (
                 (latest_event or {}).get('message')
                 or running_run.get('message')
                 or '策略缓存正在重建。'
             ),
             'current_strategy': (latest_event or {}).get('strategy_name'),
-            'processed': running_run.get('processed_count', 0),
-            'total': running_run.get('total_count', 0),
+            'processed': persisted_processed,
+            'total': persisted_total,
             'matched': running_run.get('matched_count', 0),
             'last_status': running_run.get('status', 'running'),
         }

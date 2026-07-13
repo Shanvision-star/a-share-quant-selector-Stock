@@ -674,16 +674,41 @@ async def _run_data_update_unlocked(
         },
     }
 
+    rebuild_total = max(1, len(csv_manager.list_all_stocks()))
     try:
-        repo.update_run(run_id, stage='rebuild')
+        repo.update_run(
+            run_id,
+            stage='rebuild',
+            total_count=rebuild_total,
+            processed_count=0,
+            matched_count=0,
+            message=f'{effective_date} 数据更新完成，策略缓存重建中',
+        )
     except Exception:
         pass
 
     event_queue: queue.Queue = queue.Queue()
+    last_persisted_progress = -5
 
     def rebuild_progress_callback(event_type: str, data: dict):
         """将策略重建的进度映射到总体进度 42%-98%"""
+        nonlocal last_persisted_progress
         raw_progress = data.get('progress', 0)
+        processed = int(data.get('processed') or 0)
+        total = int(data.get('total') or rebuild_total)
+        matched = int(data.get('matched') or 0)
+        if raw_progress >= last_persisted_progress + 5 or raw_progress >= 100:
+            try:
+                repo.update_run(
+                    run_id,
+                    processed_count=processed,
+                    total_count=total,
+                    matched_count=matched,
+                    message=data.get('message') or '策略缓存重建中',
+                )
+                last_persisted_progress = raw_progress
+            except Exception:
+                pass
         mapped_progress = 42 + int(raw_progress * 0.56)
         data['progress'] = min(98, mapped_progress)
         data['run_id'] = run_id

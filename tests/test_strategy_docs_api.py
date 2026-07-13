@@ -16,8 +16,28 @@ from fastapi.testclient import TestClient
 from web.backend.routers import strategy_docs as docs_module
 
 
-@pytest.fixture(scope="module")
-def client() -> TestClient:
+@pytest.fixture
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    docs_root = tmp_path / "docs"
+    zettaranc_root = tmp_path / "zettaranc"
+    fixtures = {
+        docs_root / "B1_CASE_STRATEGY.md": "# B1 案例战法\n",
+        docs_root / "B2_STRATEGY.md": "# B2 战法说明\n",
+        docs_root / "PROJECT_EXECUTION_LOGIC_AND_WEB_NOTES.md": "# 项目执行逻辑\n",
+        zettaranc_root / "docs" / "CHANGELOG.md": "# CHANGELOG\n\nv3.3.2\n",
+        zettaranc_root / "docs" / "USER_GUIDE.md": "# USER GUIDE\n",
+        zettaranc_root / "knowledge" / "workflow.md": "# Workflow\n",
+        zettaranc_root / "knowledge" / "life-decision.md": "# Life Decision\n",
+    }
+    for path, content in fixtures.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    monkeypatch.setattr(docs_module, "_DOCS_ROOT", docs_root)
+    monkeypatch.setattr(docs_module, "_ZETTARANC_ROOT", zettaranc_root)
+    monkeypatch.setitem(docs_module._SOURCE_ROOTS, "local", docs_root)
+    monkeypatch.setitem(docs_module._SOURCE_ROOTS, "zettaranc", zettaranc_root)
+
     # 用 FastAPI 直接挂 router，避免拉起全量 main:app 触发其它启动钩子
     from fastapi import FastAPI
 

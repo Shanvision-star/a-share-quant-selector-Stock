@@ -126,22 +126,34 @@ python3 main.py run --b2-match --workers 8
 
 ```bat
 # 双击项目根目录下的 start_dev.bat
-# 会自动分别打开后端（port 8001）和前端（port 5173）两个窗口
+# 检查版本和端口后启动后端（8001）与前端（5173），两端健康检查通过才算完成
 start_dev.bat
 ```
+
+如果提示端口被占用，请先关闭旧的后端或 Vite 窗口再重试；脚本不会自动改用其他端口。若提示前端子仓版本不一致，应先把 `web/frontend` 切换到根仓库记录的 gitlink 提交。
 
 ### 分步启动 Web 工作台
 
 ```bash
 # 终端1：启动 FastAPI 后端（供前端 /api 代理，监听 8001）
 cd web && npm run backend
-# 等价于：uvicorn web.backend.main:app --host 0.0.0.0 --port 8001 --reload
+# 等价于：python scripts/run_web_backend.py --host 127.0.0.1 --port 8001
 # Windows 提示：Git Bash / PowerShell 7+ 支持 &&；旧版 PowerShell 5 请改用分号：cd web; npm run backend
 
 # 终端2：启动前端 Vite 开发服务（监听 5173，/api 自动代理到 8001）
 cd web && npm run dev
 # 访问：http://localhost:5173
 ```
+
+### 自动测试门禁
+
+```bash
+python -m pytest -q
+```
+
+默认测试只采集 `tests/` 和 `web/backend/tests/`。根目录的 EmQuant/DLL/钉钉脚本及 `third_party/` 属于手动供应商联调，不会在默认测试中自动访问外部服务或加载本机 DLL。
+
+依赖本机历史行情的案例回归需显式运行 `python -m pytest -m local_data`；默认门禁不会把某台机器上的 `data/` 内容当成所有环境都具备的测试夹具。
 
 ### 复盘库使用与备份
 
@@ -186,7 +198,7 @@ cd web && npm run dev
 | 前端开发地址 | `http://127.0.0.1:5173` | Vite Dev Server |
 | 后端 API 地址 | `http://127.0.0.1:8001` | FastAPI + uvicorn |
 | 代理规则 | `/api → http://localhost:8001` | 见 `web/frontend/vite.config.ts` |
-| 一键启动（Windows） | `start_dev.bat` | 双击自动开两个终端 |
+| 一键启动（Windows） | `start_dev.bat` | 版本与端口检查通过后打开两个终端 |
 
 ### Web 工作台特色功能
 
@@ -568,8 +580,8 @@ EMA(EMA(CLOSE, 10), 10)
 | `.\.venv\Scripts\python.exe .\main.py backtest --backtest-days 3 --k-threshold 20 --trend-drop-pct 5` | 自定义回溯参数，验证低位 K 值与趋势线回落条件。 |
 | `.\.venv\Scripts\python.exe .\main.py web` | 启动 Web 服务（默认地址与端口）。 |
 | `.\.venv\Scripts\python.exe .\main.py web --host 0.0.0.0 --port 5000` | 自定义 Web 服务监听地址与端口。 |
-| `cd web && npm run backend` | 一键启动 FastAPI Web 后端（`0.0.0.0:8001`，供 Vite 代理）。PowerShell 5 用 `;` 替换 `&&`：`cd web; npm run backend`。 |
-| `cd web && npm run dev` | 启动 Vite 前端开发服务（`0.0.0.0:5173`，`/api` 自动转发到 `8001`）。PowerShell 5 用 `;` 替换 `&&`：`cd web; npm run dev`。 |
+| `cd web && npm run backend` | 启动 FastAPI Web 后端（`127.0.0.1:8001`，供 Vite 代理）。PowerShell 5 用 `;` 替换 `&&`：`cd web; npm run backend`。 |
+| `cd web && npm run dev` | 启动 Vite 前端开发服务（固定 `127.0.0.1:5173`，端口占用时直接失败）。PowerShell 5 用 `;` 替换 `&&`：`cd web; npm run dev`。 |
 | `.\.venv\Scripts\python.exe .\main.py schedule` | 启动内置定时调度循环。 |
 | `.\.venv\Scripts\python.exe .\main.py run --config config/config.yaml` | 指定配置文件运行（测试/生产隔离）。 |
 | `.\.venv\Scripts\python.exe .\main.py --version` | 输出 Python、akshare、pandas、系统版本信息。 |

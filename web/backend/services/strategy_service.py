@@ -1104,6 +1104,7 @@ def get_strategy_cache_status(strategy_filter: str = 'all', target_date: str = N
         },
         'is_latest': snapshot_date == effective_date,
         'selected_strategy_available': strategy_filter == 'all' or strategy_filter in available_groups,
+        'source': 'file',
     })
 
     if snapshot_date != effective_date:

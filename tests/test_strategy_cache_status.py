@@ -55,6 +55,7 @@ def test_cache_status_ignores_running_run_from_previous_backend_process(monkeypa
     status = strategy_service.get_strategy_cache_status("all", target_date)
 
     assert status["status"] == "ready"
+    assert status["source"] == "file"
     assert status["rebuild"].get("is_running") is False
     assert status["latest_run_status"] == "error"
     assert finished and finished[0][0] == "old-run"

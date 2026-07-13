@@ -1,7 +1,6 @@
 """数据状态与更新服务"""
 import queue
 import sys
-import random
 import asyncio
 import concurrent.futures
 import threading
@@ -26,6 +25,19 @@ _PROCESS_STARTED_AT = datetime.now()
 _UPDATE_JOB_LOCK = threading.Lock()
 _UPDATE_JOB_STATE: Dict[str, Any] = {}
 _UPDATE_RUN_TYPES = {'update_and_rebuild', 'update_only'}
+
+
+def _select_status_sample(codes: list[str], sample_size: int = 10) -> list[str]:
+    """稳定选择状态抽样股票，避免每次刷新因随机样本造成状态抖动。"""
+    ordered = sorted(str(code) for code in codes)
+    if len(ordered) <= sample_size:
+        return ordered
+    if sample_size <= 1:
+        return [ordered[0]]
+
+    last_index = len(ordered) - 1
+    indexes = [int(index * last_index / (sample_size - 1)) for index in range(sample_size)]
+    return [ordered[index] for index in indexes]
 
 
 def _parse_repo_datetime(value):
@@ -126,7 +138,7 @@ def get_data_status() -> dict:
     checked = 0
 
     for board_name, codes in boards.items():
-        sample = random.sample(codes, min(10, len(codes))) if codes else []
+        sample = _select_status_sample(codes, sample_size=10) if codes else []
         board_latest = None
         board_stale = 0
 

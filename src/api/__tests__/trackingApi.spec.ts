@@ -4,9 +4,11 @@ import api, {
   batchCreateTrackingFromSelection,
   createTrackingItem,
   evaluateTrackingItem,
+  getLatestTrackingLoopRun,
   getTrackingLLMAdvice,
   ignoreTrackingAlert,
   listTrackingItems,
+  runTrackingPostClose,
   type TrackingCreatePayload,
 } from '@/api'
 
@@ -80,5 +82,24 @@ describe('tracking API', () => {
     await batchCreateTrackingFromSelection(intakePayload)
 
     expect(postSpy).toHaveBeenCalledWith('/tracking/batch-from-selection', intakePayload)
+  })
+
+  it('loads and runs the post-close tracking loop', async () => {
+    const getSpy = vi.spyOn(api, 'get').mockResolvedValue({
+      data: { success: true, data: null },
+    } as any)
+    const postSpy = vi.spyOn(api, 'post').mockResolvedValue({
+      data: { success: true, data: { status: 'done' } },
+    } as any)
+
+    await getLatestTrackingLoopRun()
+    await runTrackingPostClose({ trigger: 'manual', sync_first: true, per_slot_limit: 8 })
+
+    expect(getSpy).toHaveBeenCalledWith('/tracking/loops/runs/latest')
+    expect(postSpy).toHaveBeenCalledWith('/tracking/loops/post-close/run', {
+      trigger: 'manual',
+      sync_first: true,
+      per_slot_limit: 8,
+    })
   })
 })

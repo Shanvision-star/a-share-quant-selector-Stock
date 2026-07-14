@@ -5,7 +5,9 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { RefreshRight, VideoPlay } from '@element-plus/icons-vue'
 import AddToTodayReviewButton from '@/components/AddToTodayReviewButton.vue'
+import { trackingLoopStatusMeta, trackingLoopSummary } from '@/views/trackingLoopState'
 import {
   acknowledgeTrackingAlert,
   listTrackingItems,
@@ -20,13 +22,17 @@ import {
   batchDeleteTrackingItems,
   deleteTrackingItem,
   syncCloseTracking,
+  clearKlineCache,
   createTrackingItem,
+  getLatestTrackingLoopRun,
   getStockNameByCode,
   getSignalClose,
   patchTrackingEntryPrice,
+  runTrackingPostClose,
   type TrackingItem,
   type TrackingAlertItem,
   type TrackingAdvice,
+  type TrackingLoopRun,
 } from '@/api'
 
 // —— 列表状态 ——
@@ -66,6 +72,72 @@ const importLoading = ref(false)
 
 // —— 收盘同步状态 ——
 const syncCloseLoading = ref(false)
+
+// —— 收盘循环状态 ——
+const latestLoopRun = ref<TrackingLoopRun | null>(null)
+const loopLoading = ref(false)
+const loopStatusLoading = ref(false)
+const loopLoadError = ref('')
+const loopStatusMeta = computed(() => trackingLoopStatusMeta(latestLoopRun.value?.status))
+const loopRunTime = computed(() => {
+  const value = latestLoopRun.value?.completed_at || latestLoopRun.value?.started_at
+  return value ? value.replace('T', ' ').slice(0, 19) : '-'
+})
+
+async function loadLatestLoopRun() {
+  loopStatusLoading.value = true
+  loopLoadError.value = ''
+  try {
+    const response = await getLatestTrackingLoopRun()
+    latestLoopRun.value = response.data?.data ?? null
+  } catch (error: any) {
+    loopLoadError.value = error?.response?.data?.detail || error?.message || '运行状态加载失败'
+  } finally {
+    loopStatusLoading.value = false
+  }
+}
+
+async function runPostCloseLoop() {
+  try {
+    await ElMessageBox.confirm(
+      '将同步活跃跟踪股票行情、执行规则评估并分发待处理告警。确认现在运行吗？',
+      '运行收盘循环',
+      { type: 'warning', confirmButtonText: '运行', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+
+  loopLoading.value = true
+  try {
+    const response = await runTrackingPostClose({
+      trigger: 'manual',
+      sync_first: true,
+      slot: 'post_close',
+      per_slot_limit: 8,
+    })
+    const result = response.data?.data
+    if (!result) throw new Error('后端未返回收盘循环结果')
+    latestLoopRun.value = result
+
+    if (result?.status === 'busy') {
+      ElMessage.warning('已有收盘循环正在运行，请稍后刷新状态')
+    } else if (result?.status === 'partial') {
+      ElMessage.warning(`收盘循环部分完成：${trackingLoopSummary(result)}`)
+    } else if (result?.status === 'error') {
+      ElMessage.error(`收盘循环失败：${trackingLoopSummary(result)}`)
+    } else {
+      ElMessage.success(`收盘循环完成：${trackingLoopSummary(result)}`)
+    }
+
+    if (result?.status !== 'busy') clearKlineCache()
+    await Promise.all([refreshItems(), loadLatestLoopRun()])
+  } catch (error: any) {
+    ElMessage.error(`收盘循环请求失败：${error?.response?.data?.detail || error?.message || error}`)
+  } finally {
+    loopLoading.value = false
+  }
+}
 
 // —— 单股添加状态 ——
 // 设计原因：批量导入对运营是高频路径；但调试/补单/试加单股票时弹窗+粘贴框过重，
@@ -359,6 +431,7 @@ async function runSyncClose() {
     const errorCnt = (d.errors ?? []).length
     const evalTotal = d.evaluation?.total ?? 0
     const statusChangeCnt = (d.evaluation?.status_changes ?? []).length
+    clearKlineCache()
     ElMessage.success(
       `收盘同步完成：行情更新 ${updatedCnt} 只 / 跳过 ${skippedCnt} / 失败 ${errorCnt}；` +
       `已评估 ${evalTotal} 条，状态推进 ${statusChangeCnt} 条`,
@@ -610,7 +683,9 @@ function priorityTagType(p?: number) {
 
 const hasItems = computed(() => items.value.length > 0)
 
-onMounted(refreshItems)
+onMounted(() => {
+  void Promise.all([refreshItems(), loadLatestLoopRun()])
+})
 </script>
 
 <template>
@@ -647,6 +722,44 @@ onMounted(refreshItems)
       </el-button>
       <span class="hint">共 {{ items.length }} 条</span>
     </div>
+
+    <section
+      class="loop-status-bar"
+      data-test="tracking-loop-status"
+      v-loading="loopStatusLoading"
+    >
+      <div class="loop-status-main">
+        <div class="loop-status-heading">
+          <strong>收盘循环</strong>
+          <el-tag :type="loopStatusMeta.tagType as any" size="small">
+            {{ loopStatusMeta.label }}
+          </el-tag>
+          <span class="loop-status-time">{{ loopRunTime }}</span>
+        </div>
+        <div class="loop-status-summary" :class="{ 'is-error': loopLoadError }">
+          {{ loopLoadError || trackingLoopSummary(latestLoopRun) }}
+        </div>
+      </div>
+      <div class="loop-status-actions">
+        <el-button
+          :icon="RefreshRight"
+          circle
+          title="刷新收盘循环状态"
+          aria-label="刷新收盘循环状态"
+          :loading="loopStatusLoading"
+          @click="loadLatestLoopRun"
+        />
+        <el-button
+          type="primary"
+          :icon="VideoPlay"
+          data-test="run-tracking-loop"
+          :loading="loopLoading"
+          @click="runPostCloseLoop"
+        >
+          运行收盘循环
+        </el-button>
+      </div>
+    </section>
 
     <!-- 单股添加表单：代码 → 自动补全名称 → 可选买入价/数量 → 添加 -->
     <div class="toolbar single-add-bar">
@@ -1000,6 +1113,46 @@ onMounted(refreshItems)
   color: var(--text-secondary);
   font-size: 12px;
 }
+.loop-status-bar {
+  min-height: 64px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--el-color-primary);
+  background: var(--bg-secondary);
+}
+.loop-status-main {
+  min-width: 0;
+}
+.loop-status-heading,
+.loop-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.loop-status-heading strong {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.loop-status-time,
+.loop-status-summary {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.loop-status-summary {
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+.loop-status-summary.is-error {
+  color: var(--el-color-danger);
+}
+.loop-status-actions {
+  flex: 0 0 auto;
+}
 .single-add-bar {
   background: var(--bg-secondary);
   padding: 8px 12px;
@@ -1087,5 +1240,14 @@ onMounted(refreshItems)
   font-size: 13px;
   color: var(--text-primary);
   font-weight: 500;
+}
+@media (max-width: 760px) {
+  .loop-status-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .loop-status-actions {
+    justify-content: flex-end;
+  }
 }
 </style>

@@ -19,4 +19,11 @@ describe('TrackingView action column layout contract', () => {
       /\.tracking-row-actions\s*\{[^}]*display:\s*inline-flex;[^}]*gap:\s*\d+px;[^}]*align-items:\s*center;[^}]*white-space:\s*nowrap;/s,
     )
   })
+
+  it('surfaces the post-close loop action and latest operational state', () => {
+    expect(trackingViewSource).toMatch(/data-test="tracking-loop-status"/)
+    expect(trackingViewSource).toMatch(/data-test="run-tracking-loop"/)
+    expect(trackingViewSource).toContain('运行收盘循环')
+    expect(trackingViewSource).toContain('trackingLoopSummary(latestLoopRun)')
+  })
 })

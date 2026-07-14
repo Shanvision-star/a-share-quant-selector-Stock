@@ -681,6 +681,37 @@ export const batchCreateTrackingItems = (payload: TrackingBatchCreatePayload) =>
 export const syncCloseTracking = (params?: { date?: string }) =>
   api.post('/tracking/sync-close', {}, { params })
 
+export interface TrackingLoopRun {
+  run_id?: string
+  loop_type: string
+  eval_date?: string | null
+  slot: string
+  status: 'running' | 'done' | 'partial' | 'error' | 'busy' | string
+  trigger: 'manual' | 'cron' | 'api' | string
+  sync_first: boolean
+  per_slot_limit: number
+  started_at?: string | null
+  completed_at?: string | null
+  sync?: Record<string, any> | null
+  evaluation?: Record<string, any> | null
+  dispatch?: Record<string, any> | null
+  error?: Record<string, any> | null
+}
+
+export interface TrackingPostClosePayload {
+  eval_date?: string
+  slot?: string
+  per_slot_limit?: number
+  sync_first?: boolean
+  trigger?: 'manual' | 'cron' | 'api'
+}
+
+export const getLatestTrackingLoopRun = () =>
+  api.get<{ success: boolean; data: TrackingLoopRun | null }>('/tracking/loops/runs/latest')
+
+export const runTrackingPostClose = (payload: TrackingPostClosePayload = {}) =>
+  api.post<{ success: boolean; data: TrackingLoopRun }>('/tracking/loops/post-close/run', payload)
+
 // 根据股票代码查询名称（供前端输入代码后自动补全名称）
 // 返回 {success, data: {code, name}}；查不到时 name = '未知'
 export const getStockNameByCode = (code: string) =>

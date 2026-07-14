@@ -20,6 +20,7 @@ import {
   batchDeleteTrackingItems,
   deleteTrackingItem,
   syncCloseTracking,
+  clearKlineCache,
   createTrackingItem,
   getStockNameByCode,
   getSignalClose,
@@ -359,6 +360,8 @@ async function runSyncClose() {
     const errorCnt = (d.errors ?? []).length
     const evalTotal = d.evaluation?.total ?? 0
     const statusChangeCnt = (d.evaluation?.status_changes ?? []).length
+    // 收盘同步会改写本地 CSV；清掉浏览器内存中的旧 K 线，避免跳转详情页仍显示同步前日期。
+    clearKlineCache()
     ElMessage.success(
       `收盘同步完成：行情更新 ${updatedCnt} 只 / 跳过 ${skippedCnt} / 失败 ${errorCnt}；` +
       `已评估 ${evalTotal} 条，状态推进 ${statusChangeCnt} 条`,

@@ -2,6 +2,7 @@
 
 > 单股跟踪 + 规则评估 + LLM 建议 + OrderIntent 操盘闭环。  
 > 状态更新（2026-06-25）：Tracking Agent Loop MVP 已合入当前 `web` 主线；本文是运行/回归速查，不再是待实施清单。
+> 运营更新（2026-07-14）：Tracking 页面已提供 Post-close Loop 手动入口和最近运行摘要；cron 与真实告警通道仍保持独立边界。
 > 后端入口在 `web/backend/main.py`，前端入口在 `web/frontend/src/views/TrackingView.vue`。
 > 配套设计文档：`docs/B2_STRATEGY.md`、`docs/PROJECT_EXECUTION_LOGIC_AND_WEB_NOTES.md`。
 
@@ -84,6 +85,8 @@ Tracking-Agent 把"选股池命中 → 持续观察 → 规则告警 → LLM 建
 [`web/frontend/src/views/TrackingView.vue`](../web/frontend/src/views/TrackingView.vue) 提供：
 
 - **列表与筛选**：按 status / code 过滤；展示 `signal_date`、`last_eval_date`、`next_action`、`latest_intent` 摘要。
+- **收盘循环状态带**：读取 `GET /api/tracking/loops/runs/latest`，区分 `done / partial / error / running / missing`，展示行情同步、规则评估、告警去重和分发计数。
+- **手动运行收盘循环**：确认后调用 `POST /api/tracking/loops/post-close/run`；`busy / partial / error` 使用不同反馈，完成同步后清理浏览器 K 线缓存并刷新跟踪列表。
 - **顶部动作**：「批量规则评估」调用 `POST /api/tracking/evaluate-rules`，toast 显示 `已评估 N 条；新增告警 M（去重 K）`。
 - **行展开**：
   - 「近期告警」列表（调用 `GET /api/tracking/alerts?tracking_id=...`）；
@@ -227,5 +230,5 @@ tracking.router                  # 通配兜底
 ## 11. Post-closeout 边界
 
 - **Manual Pool → Tracking Intake Bridge**：后续若要增强人工池到跟踪池的运营体验，应只围绕 `/api/manual-selections/*` 与 `/api/tracking/batch-from-selection` 的错误反馈、重复项展示和日期选择展开。
-- **Post-close Loop Runner**：P0 后端入口已落地为 `POST /api/tracking/loops/post-close/run`，当前只做手动/API 触发的收盘后编排与运行记录。后续若要接入 cron、前端按钮或真实钉钉通道，应另开规格；默认测试仍使用 mock provider，真实 provider smoke 单独记录。
+- **Post-close Loop Runner**：后端入口与 Tracking 前端手动按钮均已落地，运行记录通过 `GET /api/tracking/loops/runs/latest` 回显。后续若要接入 cron 或真实钉钉通道，应另开规格；默认测试仍使用 mock provider，真实 provider smoke 单独记录。
 - **券商/QMT/自动下单**：不属于当前 Tracking Agent Loop MVP。`OrderIntent` 只允许人工确认或否决，不自动提交订单。

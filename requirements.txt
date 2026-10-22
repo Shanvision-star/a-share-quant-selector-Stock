@@ -10,6 +10,7 @@ scipy>=1.10.0
 Pillow>=10.0.0
 fastdtw>=0.3.4
 fastapi>=0.104.0
+httpx>=0.28,<1
 uvicorn[standard]>=0.24.0
 sse-starlette>=1.8.0
 python-multipart>=0.0.6

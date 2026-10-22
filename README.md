@@ -10,6 +10,14 @@
 
 > **分支规则：代码和 Markdown 文档改动都先开 `codex/*` 或明确 feature 分支处理，验证后再合并回 `web`，避免半成品污染主线。**
 
+### 桌面工作台与 Agent（本分支）
+
+双击根目录 `Open-Desktop.cmd`，或执行 `npm --prefix desktop start`。Electron 复用当前工作区的 `.venv`、CSV、SQLite 与复盘文件，启动独立回环服务，退出时关闭该服务。白色工作台保留原有策略、K 线、选股池、回测、数据更新、跟踪和复盘入口；Agent 支持本地整理、DeepSeek 研究、运行追踪、JSON 导出和人工确认后追加复盘。
+
+首次使用需要安装现有 Python 依赖、执行 `npm --prefix web/frontend ci` 与 `npm --prefix web/frontend run build`，然后 `npm --prefix desktop ci`。MCP 另装 `python -m pip install -r requirements-agent.txt`。此桌面包依赖已有项目环境，不是内置全套 Python 的独立安装版。
+
+Codex 可运行 `.venv/Scripts/python.exe scripts/quant_tools.py capabilities`，或通过 `scripts/quant_mcp.py` 使用 stdio MCP。完整接口、配置与验证记录见 [桌面与 Agent 使用说明](docs/desktop-agent-workspace.md)。
+
 - **多策略量化引擎**：碗口反弹（BowlRebound）、B1完美图形匹配、B2三分类策略、阶段型B1前瞻扫描，多策略并行，按需组合。
 - **全市场并发扫描**：自动按CPU核心数分配线程，单核设备自动降级；策略默认只读取近期窗口并复用共享指标，目标是在本地缓存完整时将全市场选股控制在10分钟内。
 - **全自动风险过滤**：ST/*ST、退市、异常成交量、最大阴量出逃信号，多重过滤保障选股质量。

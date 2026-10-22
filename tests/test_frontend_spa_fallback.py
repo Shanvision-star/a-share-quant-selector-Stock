@@ -16,3 +16,15 @@ def test_spa_route_falls_back_to_index_html(tmp_path):
 
     assert response.status_code == 200
     assert "回测工作台" in response.text
+
+
+def test_spa_cannot_read_files_above_distribution(tmp_path):
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    (dist_dir / "index.html").write_text("workspace", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("private", encoding="utf-8")
+    app = FastAPI()
+    mount_frontend(app, dist_dir)
+    response = TestClient(app).get("/%2e%2e/secret.txt")
+    assert response.status_code == 404
+    assert "private" not in response.text

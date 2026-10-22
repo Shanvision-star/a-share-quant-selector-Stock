@@ -1,0 +1,39 @@
+{
+  "name": "a-share-quant-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A-share Quant desktop workspace",
+  "main": "main.cjs",
+  "author": "A-share Quant",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.cjs",
+    "prepack": "install-electron",
+    "predist": "install-electron",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "local.ashare.quant",
+    "productName": "A-share Quant",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.cjs",
+      "package.json"
+    ],
+    "win": {
+      "target": "portable",
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "A-share-Quant-${version}.exe"
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.15.3"
+  }
+}

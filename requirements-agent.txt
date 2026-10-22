@@ -1,0 +1,2 @@
+# MCP 独立于普通 Web 启动，CLI 直接复用现有 httpx。
+mcp==1.30.0

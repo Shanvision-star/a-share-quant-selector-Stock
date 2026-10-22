@@ -54,6 +54,8 @@ config/llm.yaml
 # Web dependency artifacts
 web/node_modules/
 web/package-lock.json
+desktop/node_modules/
+desktop/release/
 
 # Local git worktrees
 .worktrees/

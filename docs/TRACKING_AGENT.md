@@ -6,6 +6,8 @@
 > 后端入口在 `web/backend/main.py`，前端入口在 `web/frontend/src/views/TrackingView.vue`。
 > 配套设计文档：`docs/B2_STRATEGY.md`、`docs/PROJECT_EXECUTION_LOGIC_AND_WEB_NOTES.md`。
 
+> 桌面工作台分支新增独立研究 Agent：读取跟踪快照、策略历史和复盘，保存运行证据，通过 HTTP / CLI / MCP 调用。它不接管下面的规则循环或 OrderIntent 确认，也不自动下单。接口与验收见 [desktop-agent-workspace.md](desktop-agent-workspace.md)。
+
 ---
 
 ## 1. 概述

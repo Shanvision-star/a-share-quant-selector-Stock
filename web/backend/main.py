@@ -77,6 +77,7 @@ from web.backend.routers import (
     tracking_intent,
     zettaranc,
     review,
+    workspace_agent,
 )
 
 
@@ -103,6 +104,8 @@ async def lifespan(_app: FastAPI):
     # 启动阶段
     try:
         init_database()
+        from web.backend.services.workspace_agent import workspace_agent as research_agent
+        research_agent.store.init(recover=True)
     except Exception:
         logger.exception("启动时初始化 SQLite 失败")
         raise
@@ -131,6 +134,9 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+from web.backend.services.desktop_auth import DesktopAuthMiddleware
+app.add_middleware(DesktopAuthMiddleware)
 
 # CORS 配置：通过 WEB_CORS_ORIGINS 环境变量控制白名单
 _cors_origins = _resolve_cors_origins()
@@ -176,6 +182,7 @@ app.include_router(tracking_intent.router)
 app.include_router(tracking.router)
 app.include_router(zettaranc.router)
 app.include_router(review.router)
+app.include_router(workspace_agent.router)
 
 
 @app.get("/api/health")
@@ -201,7 +208,9 @@ def mount_frontend(target_app: FastAPI, dist_dir: Path) -> None:
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
 
-        requested_file = dist_dir / full_path
+        requested_file = (dist_dir / full_path).resolve()
+        if not requested_file.is_relative_to(dist_dir.resolve()):
+            raise HTTPException(status_code=404, detail="Not Found")
         if full_path and requested_file.is_file():
             return FileResponse(str(requested_file))
 

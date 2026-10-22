@@ -1,0 +1,60 @@
+"""Codex stdio MCP：将研究与整理接入同一审计后端，不向 stdout 写日志。"""
+
+from typing import Literal
+
+from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+
+from quant_tools import request, run_endpoint
+
+mcp = FastMCP("A-share Quant", instructions="先读取真实来源和日期再分析。研究运行会持久化，模型模式会调用配置的供应商。保存复盘仅在用户明确授权后 confirmed=true。没有交易执行权限。")
+READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True)
+
+
+@mcp.tool(annotations=READ)
+def quant_status() -> dict:
+    """检查现有数据、策略和跟踪运行状态，不触发更新。"""
+    return request("GET", "system/status")
+
+
+@mcp.tool(annotations=READ)
+def quant_capabilities() -> dict:
+    """查看本机 Agent 的任务与模型配置状态，不返回密钥。"""
+    return request("GET", "agent/capabilities")
+
+
+@mcp.tool(annotations=WRITE)
+def quant_research(question: str, task: Literal["candidates", "tracking", "reviews"] = "candidates",
+                   code: str | None = None, trade_date: str | None = None, limit: int = 20,
+                   mode: Literal["local", "model"] = "local") -> dict:
+    """建立可追踪研究任务。local 取证供 Codex 分析，model 调用已配置模型；返回 run_id 后用 quant_run 获取结果。"""
+    return request("POST", "agent/runs", {"question": question, "task": task, "code": code, "trade_date": trade_date, "limit": limit, "mode": mode})
+
+
+@mcp.tool(annotations=READ)
+def quant_runs() -> dict:
+    """列出近期运行，用于数据整理和任务追踪。"""
+    return request("GET", "agent/runs")
+
+
+@mcp.tool(annotations=READ)
+def quant_run(run_id: str) -> dict:
+    """取得输入、结果、原始证据快照、SHA256、模型用量和失败记录。"""
+    return request("GET", run_endpoint(run_id))
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+def quant_cancel(run_id: str) -> dict:
+    """取消未完成任务；已发出的模型请求可能仍消耗 token。"""
+    return request("POST", run_endpoint(run_id, "/cancel"))
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+def quant_save_review(run_id: str, review_date: str, confirmed: bool = False) -> dict:
+    """用户明确确认后追加报告到指定日期复盘，幂等且保留原文。"""
+    return request("POST", run_endpoint(run_id, "/review"), {"review_date": review_date, "confirmed": confirmed})
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")

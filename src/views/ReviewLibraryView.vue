@@ -402,14 +402,14 @@ onBeforeUnmount(() => {
     <aside class="review-list-pane" :class="{ open: drawerOpen }">
       <header class="list-header">
         <div>
-          <h1>复盘库</h1>
+          <h2>全部复盘</h2>
           <span>{{ total }} 篇</span>
         </div>
-        <el-button :icon="Refresh" circle size="small" title="刷新列表" :loading="listLoading" @click="fetchList()" />
+        <el-button :icon="Refresh" circle size="small" title="刷新列表" aria-label="刷新复盘列表" :loading="listLoading" @click="fetchList()" />
       </header>
 
       <div class="filters">
-        <el-input v-model="filters.query" clearable placeholder="搜索标题、正文、股票" @keyup.enter="fetchList()">
+        <el-input v-model="filters.query" clearable placeholder="搜索标题、正文、股票" aria-label="搜索复盘" @keyup.enter="fetchList()">
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
         <el-date-picker
@@ -481,7 +481,7 @@ onBeforeUnmount(() => {
       </div>
     </aside>
 
-    <main class="review-workspace">
+    <section class="review-workspace">
       <header class="workspace-toolbar">
         <div class="toolbar-left">
           <el-button v-if="isMobile" :icon="Menu" circle title="打开复盘列表" @click="drawerOpen = true" />
@@ -571,7 +571,7 @@ onBeforeUnmount(() => {
           <el-button type="primary" :icon="Collection" :loading="creating" @click="createActiveReview">创建 {{ activeDate }} 复盘</el-button>
         </el-empty>
       </div>
-    </main>
+    </section>
   </section>
 </template>
 
@@ -614,7 +614,7 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.list-header h1 {
+.list-header h2 {
   font-size: 17px;
   line-height: 1.2;
 }

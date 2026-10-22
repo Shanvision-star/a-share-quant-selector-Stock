@@ -1,124 +1,233 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { House, Refresh, Setting, DataAnalysis, List, Star, Aim, Document, Notebook } from '@element-plus/icons-vue'
-
+import { ref } from 'vue'
+import { useRoute } from 'vue-router'
+import {
+  House,
+  Refresh,
+  Setting,
+  DataAnalysis,
+  List,
+  Star,
+  Aim,
+  Document,
+  Notebook,
+  Monitor,
+  Fold,
+  Expand,
+} from '@element-plus/icons-vue'
 const route = useRoute()
-const router = useRouter()
-const isCollapsed = ref(false)
-const activeIndex = computed(() => route.path)
-
-function navigate(path: string) {
-  router.push(path)
-}
+const collapsed = ref(false)
+const items = [
+  { path: '/', label: '工作台', icon: House },
+  { path: '/strategy-results', label: '策略结果', icon: List },
+  { path: '/manual-pool', label: '选股池', icon: Star },
+  { path: '/tracking', label: '跟踪', icon: Aim },
+  { path: '/backtest', label: '回测', icon: DataAnalysis },
+  { path: '/review-library', label: '复盘', icon: Notebook },
+  { path: '/zettaranc', label: 'Zettaranc', icon: DataAnalysis },
+  { path: '/strategy-docs', label: '战法文档', icon: Document },
+]
+const utilities = [
+  { path: '/update', label: '数据更新', icon: Refresh },
+  { path: '/status', label: '系统状态', icon: Monitor },
+  { path: '/settings', label: '设置', icon: Setting },
+]
 </script>
-
 <template>
-  <div class="sidebar" :class="{ collapsed: isCollapsed }">
-    <div class="sidebar-header">
-      <span v-if="!isCollapsed" class="sidebar-title">A-share Quant</span>
-      <span v-else class="sidebar-title-short">AQ</span>
-    </div>
-    <el-menu
-      :default-active="activeIndex"
-      :collapse="isCollapsed"
-      @select="navigate"
-      class="sidebar-menu"
+  <nav class="sidebar" :class="{ collapsed }" aria-label="主导航">
+    <RouterLink to="/" class="brand" aria-label="A-share Quant 工作台"
+      ><span class="brand-mark" aria-hidden="true">a<span>•</span></span
+      ><span class="brand-name">A-share<span>Quant</span></span></RouterLink
     >
-      <el-menu-item index="/">
-        <el-icon><House /></el-icon>
-        <template #title>首页总览</template>
-      </el-menu-item>
-      <el-menu-item index="/strategy-results">
-        <el-icon><List /></el-icon>
-        <template #title>策略结果</template>
-      </el-menu-item>
-      <el-menu-item index="/manual-pool">
-        <el-icon><Star /></el-icon>
-        <template #title>人工选股池</template>
-      </el-menu-item>
-      <el-menu-item index="/update">
-        <el-icon><Refresh /></el-icon>
-        <template #title>数据更新</template>
-      </el-menu-item>
-      <el-menu-item index="/settings">
-        <el-icon><Setting /></el-icon>
-        <template #title>参数设置</template>
-      </el-menu-item>
-      <el-menu-item index="/status">
-        <el-icon><Setting /></el-icon>
-        <template #title>系统状态</template>
-      </el-menu-item>
-      <el-menu-item index="/backtest">
-        <el-icon><DataAnalysis /></el-icon>
-        <template #title>回测</template>
-      </el-menu-item>
-      <el-menu-item index="/tracking">
-        <el-icon><Aim /></el-icon>
-        <template #title>跟踪运营</template>
-      </el-menu-item>
-      <el-menu-item index="/review-library">
-        <el-icon><Notebook /></el-icon>
-        <template #title>复盘库</template>
-      </el-menu-item>
-      <!-- 任务 B：战法文档入口 -->
-      <el-menu-item index="/strategy-docs">
-        <el-icon><Document /></el-icon>
-        <template #title>战法文档</template>
-      </el-menu-item>
-      <!-- Zettaranc 综合看板 -->
-      <el-menu-item index="/zettaranc">
-        <el-icon><DataAnalysis /></el-icon>
-        <template #title>Zettaranc 看板</template>
-      </el-menu-item>
-    </el-menu>
-    <div class="sidebar-toggle" @click="isCollapsed = !isCollapsed">
-      <span>{{ isCollapsed ? '>>' : '<<' }}</span>
+    <div class="nav-primary">
+      <RouterLink
+        v-for="item in items"
+        :key="item.path"
+        :to="item.path"
+        :class="{ selected: route.path === item.path }"
+        :aria-label="item.label"
+        :title="collapsed ? item.label : undefined"
+        ><el-icon><component :is="item.icon" /></el-icon
+        ><span>{{ item.label }}</span
+        ><i class="nav-dot" v-if="route.path === item.path" aria-hidden="true"
+      /></RouterLink>
     </div>
-  </div>
+    <div class="nav-utilities">
+      <RouterLink
+        v-for="item in utilities"
+        :key="item.path"
+        :to="item.path"
+        :class="{ selected: route.path === item.path }"
+        :aria-label="item.label"
+        :title="collapsed ? item.label : undefined"
+        ><el-icon><component :is="item.icon" /></el-icon
+        ><span>{{ item.label }}</span></RouterLink
+      >
+    </div>
+    <button
+      class="sidebar-toggle"
+      :aria-label="collapsed ? '展开导航' : '收起导航'"
+      :aria-expanded="!collapsed"
+      @click="collapsed = !collapsed"
+    >
+      <el-icon><Expand v-if="collapsed" /><Fold v-else /></el-icon
+      ><span v-if="!collapsed">收起</span>
+    </button>
+  </nav>
 </template>
-
 <style scoped>
 .sidebar {
-  width: 200px;
-  min-height: 100vh;
+  width: 204px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background-color: var(--bg-secondary);
-  border-right: 1px solid var(--border-color);
-  transition: width 0.3s;
+  padding: 26px 14px 14px;
+  background: rgba(244, 246, 250, 0.76);
+  backdrop-filter: blur(32px);
+  border-right: 1px solid #e5e9ef;
+  transition: width 0.22s ease;
+  overflow-y: auto;
 }
-.sidebar.collapsed {
-  width: 64px;
-}
-.sidebar-header {
-  height: 50px;
+.brand {
   display: flex;
   align-items: center;
-  justify-content: center;
-  border-bottom: 1px solid var(--border-color);
-  color: var(--text-primary);
-  font-size: 16px;
-  font-weight: bold;
+  gap: 12px;
+  text-decoration: none;
+  color: #1d2636;
+  padding: 0 13px 36px;
+  white-space: nowrap;
 }
-.sidebar-title-short {
+.brand-mark {
+  font-size: 36px;
+  letter-spacing: -4px;
+  font-weight: 750;
+  line-height: 1;
+}
+.brand-mark > span {
+  color: #4c88f1;
+}
+.brand-name {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.2px;
+}
+.brand-name > span {
+  display: block;
+  font-size: 11px;
+  color: #8390a3;
+  font-weight: 500;
+  letter-spacing: 1.4px;
+}
+.nav-primary,
+.nav-utilities {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.sidebar a:not(.brand) {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  border-radius: 10px;
+  padding: 12px;
+  color: #687487;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  position: relative;
+  white-space: nowrap;
+  transition:
+    background 0.18s,
+    color 0.18s;
+}
+.sidebar a:not(.brand):hover {
+  background: #e9edf4;
+  color: #243550;
+}
+.sidebar a.selected {
+  background: white;
+  color: #286ad4;
+  box-shadow: 0 3px 12px #304c7010;
+  border: 1px solid #e5eaf3;
+  padding: 11px;
+}
+.sidebar .el-icon {
   font-size: 18px;
+  flex-shrink: 0;
 }
-.sidebar-menu {
-  flex: 1;
-  border-right: none !important;
+.selected .nav-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #4c88f1;
+  margin-left: auto;
+}
+.nav-utilities {
+  margin-top: auto;
+  padding-top: 30px;
 }
 .sidebar-toggle {
-  height: 36px;
+  border: 0;
+  background: transparent;
+  color: #8490a0;
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 11px;
+  padding: 20px 12px 4px;
   cursor: pointer;
-  color: var(--text-secondary);
-  border-top: 1px solid var(--border-color);
+  font: inherit;
+  font-size: 11px;
 }
-.sidebar-toggle:hover {
-  color: var(--text-primary);
-  background-color: var(--bg-tertiary);
+.collapsed {
+  width: 70px;
+  padding-inline: 10px;
+}
+.collapsed .brand {
+  padding-inline: 4px;
+}
+.collapsed .brand-name,
+.collapsed a:not(.brand) > span,
+.collapsed .selected .nav-dot {
+  display: none;
+}
+.collapsed a:not(.brand) {
+  justify-content: center;
+}
+.collapsed .sidebar-toggle {
+  justify-content: center;
+}
+.collapsed .brand-mark {
+  font-size: 30px;
+}
+@media (max-width: 800px) {
+  .sidebar {
+    width: 66px;
+    padding-inline: 8px;
+  }
+  .brand {
+    padding-inline: 5px;
+  }
+  .brand-name,
+  .sidebar a:not(.brand) > span,
+  .selected .nav-dot,
+  .sidebar-toggle {
+    display: none;
+  }
+  .sidebar a:not(.brand) {
+    justify-content: center;
+  }
+  .brand-mark {
+    font-size: 30px;
+  }
+  .nav-utilities {
+    padding-top: 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar a {
+    transition: none;
+  }
 }
 </style>

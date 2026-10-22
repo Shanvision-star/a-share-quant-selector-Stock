@@ -283,7 +283,7 @@ onMounted(async () => {
         <div v-if="!store.dates.length" class="date-empty">暂无人工选股记录</div>
       </aside>
 
-      <main class="result-panel" v-loading="store.loading">
+      <section class="result-panel" v-loading="store.loading">
         <div class="result-header">
           <strong>{{ selectedDate || `${dateRange[0]} ~ ${dateRange[1]}` }}</strong>
           <span class="hint">共 {{ filteredItems.length }} 只，已选 {{ selectedVisibleItems.length }} 只</span>
@@ -342,7 +342,7 @@ onMounted(async () => {
             </el-table-column>
           </el-table>
         </div>
-      </main>
+      </section>
     </div>
   </div>
 </template>

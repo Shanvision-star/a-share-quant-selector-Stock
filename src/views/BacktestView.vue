@@ -821,10 +821,6 @@ onBeforeUnmount(() => {
 <template>
   <div class="backtest-view">
     <div class="backtest-toolbar">
-      <div>
-        <h2>回测工作台</h2>
-        <p>策略候选可批量回测；人工选股默认单只或勾选后回测，避免误把整个池子一次性导入。</p>
-      </div>
       <div class="toolbar-actions">
         <el-button :loading="candidateLoading" @click="handleLoadCandidates">{{ params.source === 'manual' ? '加载人工选股' : '加载策略候选' }}</el-button>
         <el-button type="primary" :loading="loading" :disabled="loading" @click="handleRunBacktest">{{ loading ? '回测运行中' : '开始回测' }}</el-button>
@@ -975,7 +971,7 @@ onBeforeUnmount(() => {
               </el-form-item>
             </el-collapse-item>
             <!-- 任务 C：组合策略 / 多战法融合面板。默认折叠并保留旧行为，启用后可融合多战法或按权重组合。 -->
-            <el-collapse-item title="组合策略与多战法融合 (任务C)" name="portfolio">
+            <el-collapse-item title="组合策略与多战法融合" name="portfolio">
               <div class="param-grid two">
                 <el-form-item label="信号融合模式">
                   <el-select v-model="params.signal_merge_mode" size="small">
@@ -1008,7 +1004,7 @@ onBeforeUnmount(() => {
         </el-form>
       </section>
 
-      <main class="result-panel">
+      <section class="result-panel">
         <section class="candidate-panel">
           <div class="section-head">
             <strong>策略候选列表</strong>
@@ -1201,7 +1197,7 @@ onBeforeUnmount(() => {
             <el-table-column prop="drawdown_pct" label="回撤%" width="120" />
           </el-table>
         </div>
-      </main>
+      </section>
     </div>
 
     <el-drawer

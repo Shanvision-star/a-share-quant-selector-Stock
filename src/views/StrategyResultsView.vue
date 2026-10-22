@@ -585,7 +585,6 @@ function formatDuration(start: string, end?: string) {
     <div class="status-card" v-loading="cacheLoading">
       <div class="status-card-head">
         <div>
-          <h2>策略结果工作台</h2>
           <div class="status-meta">
             <el-tag :type="getStatusType(cacheStatus?.status)" size="small">
               {{ getStatusLabel(cacheStatus?.status) }}

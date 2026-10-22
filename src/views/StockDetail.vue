@@ -865,6 +865,8 @@ function formatListSimilarity(score: unknown): string {
   border-bottom: 1px solid #ebeef5;
 }
 .detail-header h2 {
+  flex-shrink: 0;
+  white-space: nowrap;
   margin: 0;
   font-size: 18px;
   color: #303133;

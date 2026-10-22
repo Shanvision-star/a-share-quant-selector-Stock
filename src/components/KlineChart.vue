@@ -10,6 +10,7 @@ import { buildVolumeAxisScaleForZoom } from '@/utils/klineVolumeScale'
 
 const props = withDefaults(defineProps<{
   code: string
+  compact?: boolean
   period?: string
   limit?: number
   signals?: Array<Record<string, any>>
@@ -29,6 +30,7 @@ const props = withDefaults(defineProps<{
   showAdjVolume?: boolean
 }>(), {
   period: 'daily',
+  compact: false,
   limit: 2600,
   signals: () => [],
   showShortTermTrend: true,
@@ -570,7 +572,7 @@ async function renderChart() {
     const [maAData, maBData, maCData, maDData] = maPeriods.map(
       (p: number) => sanitizeIndicator((indicators as any)[`ma${p}`] ?? []),
     )
-    const maColors = ['#f5c878', '#ff6d9e', '#42a5f5', '#ab47bc']
+    const maColors = ['#b98525', '#ff6d9e', '#42a5f5', '#ab47bc']
     const bbiData = sanitizeIndicator(indicators.bbi)
     const shortTrendData = sanitizeIndicator(indicators.short_term_trend)
     const bullBearData = sanitizeIndicator(indicators.bull_bear_line)
@@ -599,17 +601,17 @@ async function renderChart() {
     const bollResult = props.showBoll ? computeBOLL(ohlcBars, 20, 2) : { upper: [], middle: [], lower: [] }
     const subIndicatorSeries = activeSubIndicator.value === 'kdj'
       ? [
-          { name: 'K', type: 'line', data: kData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
+          { name: 'K', type: 'line', data: kData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#b98525' } },
           { name: 'D', type: 'line', data: dData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#42a5f5' } },
           { name: 'J', type: 'line', data: jData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#ab47bc' } },
         ]
       : activeSubIndicator.value === 'rsi'
         ? [
-            { name: 'RSI14', type: 'line', data: rsiData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
+            { name: 'RSI14', type: 'line', data: rsiData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#b98525' } },
           ]
         : activeSubIndicator.value === 'wr'
           ? [
-              { name: 'WR10', type: 'line', data: wr10Data, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
+              { name: 'WR10', type: 'line', data: wr10Data, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#b98525' } },
               { name: 'WR20', type: 'line', data: wr20Data, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#42a5f5' } },
             ]
           : activeSubIndicator.value === 'dmi'
@@ -645,7 +647,7 @@ async function renderChart() {
             },
           ]
         : [
-            { name: 'DIF', type: 'line', data: difData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#f5c878' } },
+            { name: 'DIF', type: 'line', data: difData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#b98525' } },
             { name: 'DEA', type: 'line', data: deaData, xAxisIndex: 3, yAxisIndex: 3, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#42a5f5' } },
             { name: 'MACD', type: 'bar', data: macdBars, xAxisIndex: 3, yAxisIndex: 3 },
           ]
@@ -710,14 +712,14 @@ async function renderChart() {
 
     const option: echarts.EChartsOption = {
       animation: false,
-      backgroundColor: '#131722',
+      backgroundColor: '#ffffff',
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'cross' },
-        backgroundColor: 'rgba(20,30,45,0.92)',
-        borderColor: '#363a45',
+        backgroundColor: 'rgba(255,255,255,0.96)',
+        borderColor: '#dce3ed',
         padding: [6, 8],
-        textStyle: { color: '#d1d4dc', fontSize: 11, lineHeight: 14 },
+        textStyle: { color: '#334155', fontSize: 11, lineHeight: 14 },
         confine: true,
         position: (point: number[], _params: any, _dom: any, _rect: any, size: any) => {
           const [px] = point
@@ -750,10 +752,10 @@ async function renderChart() {
           const turnoverStr = (bar as any).turnover > 0 ? `${((bar as any).turnover as number).toFixed(2)}%` : '-'
           const amountStr = (bar as any).amount > 0 ? `${((bar as any).amount as number).toFixed(2)}万` : '-'
           const volRatio = (bar as any).vol_ratio_10d
-          const volRatioColor = volRatio == null ? '#d1d4dc' : volRatio >= 1.5 ? '#ef5350' : volRatio < 1.0 ? '#26a69a' : '#d1d4dc'
+          const volRatioColor = volRatio == null ? '#334155' : volRatio >= 1.5 ? '#ef5350' : volRatio < 1.0 ? '#26a69a' : '#334155'
           const volRatioStr = volRatio != null ? `<span style="color:${volRatioColor}">x${volRatio.toFixed(2)}</span>` : ''
           return `<div style="min-width:160px;font-size:11px">
-            <div style="font-weight:600;margin-bottom:3px;color:#d1d4dc">${bar.date}</div>
+            <div style="font-weight:600;margin-bottom:3px;color:#334155">${bar.date}</div>
             <table style="border-collapse:collapse;width:100%">
               <tr><td>开</td><td style="text-align:right">${(bar.open ?? 0).toFixed(2)}</td><td style="padding-left:8px">高</td><td style="text-align:right;color:#ef5350">${(bar.high ?? 0).toFixed(2)}</td></tr>
               <tr><td>低</td><td style="text-align:right;color:#26a69a">${(bar.low ?? 0).toFixed(2)}</td><td style="padding-left:8px">收</td><td style="text-align:right;color:${changeColor}">${(bar.close ?? 0).toFixed(2)}</td></tr>
@@ -766,9 +768,13 @@ async function renderChart() {
         },
       },
       legend: {
+        show: !props.compact,
+        type: 'scroll',
+        left: 60,
+        right: 290,
         data: legendData,
         top: 5,
-        textStyle: { color: '#787b86', fontSize: 11 },
+        textStyle: { color: '#718096', fontSize: 11 },
         itemWidth: 14,
         itemHeight: 2,
         selected: legendSelected,
@@ -783,52 +789,52 @@ async function renderChart() {
           type: 'category',
           data: axisDates,
           gridIndex: 0,
-          axisLine: { lineStyle: { color: '#363a45' } },
+          axisLine: { lineStyle: { color: '#dce3ed' } },
           axisLabel: { show: false, formatter: (value: unknown) => formatAxisCategory(value) },
         },
         {
           type: 'category',
           data: axisDates,
           gridIndex: 1,
-          axisLine: { lineStyle: { color: '#363a45' } },
+          axisLine: { lineStyle: { color: '#dce3ed' } },
           axisLabel: { show: false, formatter: (value: unknown) => formatAxisCategory(value) },
         },
         {
           type: 'category',
           data: axisDates,
           gridIndex: 2,
-          axisLine: { lineStyle: { color: '#363a45' } },
+          axisLine: { lineStyle: { color: '#dce3ed' } },
           axisLabel: { show: false, formatter: (value: unknown) => formatAxisCategory(value) },
         },
         {
           type: 'category',
           data: axisDates,
           gridIndex: 3,
-          axisLine: { lineStyle: { color: '#363a45' } },
+          axisLine: { lineStyle: { color: '#dce3ed' } },
           axisLabel: {
-            color: '#787b86',
+            color: '#718096',
             fontSize: 10,
             formatter: (value: unknown) => formatAxisCategory(value),
           },
         },
       ],
       yAxis: [
-        { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
-        { scale: false, min: 0, max: initialVolumeScale.max, gridIndex: 1, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
-        { scale: false, min: 0, max: initialVolumeScale.max, gridIndex: 2, splitNumber: 2, splitLine: { lineStyle: { color: '#1e222d' } }, axisLabel: { color: '#787b86' } },
+        { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: '#eef2f7' } }, axisLabel: { color: '#718096' } },
+        { scale: false, min: 0, max: initialVolumeScale.max, gridIndex: 1, splitNumber: 2, splitLine: { lineStyle: { color: '#eef2f7' } }, axisLabel: { color: '#718096', formatter: (v: number) => v >= 1e8 ? `${(v / 1e8).toFixed(1)}亿` : v >= 1e4 ? `${(v / 1e4).toFixed(0)}万` : String(v) } },
+        { scale: false, min: 0, max: initialVolumeScale.max, gridIndex: 2, splitNumber: 2, splitLine: { lineStyle: { color: '#eef2f7' } }, axisLabel: { color: '#718096', formatter: (v: number) => v >= 1e8 ? `${(v / 1e8).toFixed(1)}亿` : v >= 1e4 ? `${(v / 1e4).toFixed(0)}万` : String(v) } },
         {
           scale: true,
           gridIndex: 3,
           splitNumber: activeSubIndicator.value === 'brick' ? 5 : 2,
           splitLine: {
             lineStyle: {
-              color: '#1e222d',
+              color: '#eef2f7',
               type: activeSubIndicator.value === 'brick' ? 'dotted' : 'solid',
             },
           },
           axisLabel: activeSubIndicator.value === 'brick'
             ? { show: false }
-            : { color: '#787b86' },
+            : { color: '#718096' },
         },
       ],
       dataZoom: [
@@ -849,9 +855,9 @@ async function renderChart() {
           filterMode: 'weakFilter',
           bottom: 5,
           height: 18,
-          borderColor: '#363a45',
+          borderColor: '#dce3ed',
           fillerColor: 'rgba(41,98,255,0.2)',
-          backgroundColor: 'rgba(19,23,34,0.75)',
+          backgroundColor: 'rgba(241,245,250,0.85)',
           handleStyle: { color: '#2962ff' },
           moveHandleStyle: { color: '#5b8ff9' },
           showDataShadow: false,
@@ -1268,7 +1274,7 @@ function renderIntradayChart(bars: any[]) {
   }
   const option: echarts.EChartsOption = {
     animation: false,
-    backgroundColor: '#1e222d',
+    backgroundColor: '#eef2f7',
     grid: [
       { left: 56, right: 12, top: 24, bottom: '38%' },
       { left: 56, right: 12, top: '68%', bottom: 24 },
@@ -1276,38 +1282,38 @@ function renderIntradayChart(bars: any[]) {
     xAxis: [
       {
         type: 'category', data: times, gridIndex: 0,
-        axisLabel: { color: '#787b86', fontSize: 9, interval: Math.floor(times.length / 5) },
-        axisLine: { lineStyle: { color: '#363a45' } },
+        axisLabel: { color: '#718096', fontSize: 9, interval: Math.floor(times.length / 5) },
+        axisLine: { lineStyle: { color: '#dce3ed' } },
         axisTick: { show: false },
       },
       {
         type: 'category', data: times, gridIndex: 1,
-        axisLabel: { color: '#787b86', fontSize: 9, interval: Math.floor(times.length / 5) },
-        axisLine: { lineStyle: { color: '#363a45' } },
+        axisLabel: { color: '#718096', fontSize: 9, interval: Math.floor(times.length / 5) },
+        axisLine: { lineStyle: { color: '#dce3ed' } },
         axisTick: { show: false },
       },
     ],
     yAxis: [
       {
         scale: true, gridIndex: 0, splitNumber: 4,
-        splitLine: { lineStyle: { color: '#2a2e39' } },
-        axisLabel: { color: '#787b86', fontSize: 10, formatter: (v: number) => v.toFixed(2) },
+        splitLine: { lineStyle: { color: '#e6ebf2' } },
+        axisLabel: { color: '#718096', fontSize: 10, formatter: (v: number) => v.toFixed(2) },
       },
       {
         scale: false, min: 0, max: (v: any) => (v?.max ?? 0) * 1.05,
         gridIndex: 1, splitNumber: 2,
         splitLine: { show: false },
-        axisLabel: { color: '#787b86', fontSize: 9 },
+        axisLabel: { color: '#718096', fontSize: 9 },
       },
     ],
     axisPointer: { link: [{ xAxisIndex: [0, 1] }] },
     dataZoom: [{ type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 }],
     tooltip: {
       trigger: 'axis',
-      axisPointer: { type: 'cross', crossStyle: { color: '#787b86' } },
-      backgroundColor: '#1e222d',
-      borderColor: '#363a45',
-      textStyle: { color: '#d1d4dc', fontSize: 11 },
+      axisPointer: { type: 'cross', crossStyle: { color: '#718096' } },
+      backgroundColor: '#eef2f7',
+      borderColor: '#dce3ed',
+      textStyle: { color: '#334155', fontSize: 11 },
       formatter: (params: any) => {
         if (!Array.isArray(params) || !params.length) return ''
         const idx = params[0].dataIndex
@@ -1317,7 +1323,7 @@ function renderIntradayChart(bars: any[]) {
         const c = (bar.close ?? 0).toFixed(2)
         const chg = refPrice ? ((bar.close - refPrice) / refPrice * 100).toFixed(2) : '0.00'
         const clr = (bar.close ?? 0) >= refPrice ? '#ef5350' : '#26a69a'
-        return `<div style="line-height:1.6"><b style="color:#d1d4dc">${t}</b><br/>价格: <span style="color:${clr}">${c}</span><br/>涨幅: <span style="color:${clr}">${chg}%</span><br/>成交量: ${(bar.volume ?? 0).toLocaleString()}</div>`
+        return `<div style="line-height:1.6"><b style="color:#334155">${t}</b><br/>价格: <span style="color:${clr}">${c}</span><br/>涨幅: <span style="color:${clr}">${chg}%</span><br/>成交量: ${(bar.volume ?? 0).toLocaleString()}</div>`
       },
     },
     series: [
@@ -1553,7 +1559,7 @@ onUnmounted(() => {
       >{{ preset.label }}</button>
     </div>
 
-    <div class="sub-indicator-selector">
+    <div v-if="props.subIndicator === undefined" class="sub-indicator-selector">
       <button
         v-for="item in SUB_INDICATOR_OPTIONS"
         :key="item.key"
@@ -1724,7 +1730,7 @@ onUnmounted(() => {
 .kline-chart {
   width: 100%;
   height: 100%;
-  background: #131722;
+  background: #ffffff;
 }
 .chart-status-overlay {
   position: absolute;
@@ -1776,10 +1782,10 @@ onUnmounted(() => {
   align-items: center;
   gap: 7px;
   padding: 4px 8px;
-  border: 1px solid #363a45;
+  border: 1px solid #dce3ed;
   border-radius: 4px;
   background: rgba(30, 34, 45, 0.92);
-  color: #d1d4dc;
+  color: #334155;
   font-size: 11px;
   line-height: 1.2;
   pointer-events: none;
@@ -1826,14 +1832,14 @@ onUnmounted(() => {
 .range-stats-popup {
   position: absolute;
   z-index: 40;
-  background: #1e222d;
-  border: 1px solid #363a45;
+  background: #eef2f7;
+  border: 1px solid #dce3ed;
   border-radius: 6px;
   padding: 8px 10px;
   min-width: 195px;
   box-shadow: 0 4px 16px rgba(0,0,0,0.5);
   font-size: 12px;
-  color: #d1d4dc;
+  color: #334155;
 }
 .range-stats-header {
   display: flex;
@@ -1842,14 +1848,14 @@ onUnmounted(() => {
   margin-bottom: 6px;
   font-size: 11px;
   font-weight: 600;
-  color: #9598a1;
-  border-bottom: 1px solid #2a2e39;
+  color: #64748b;
+  border-bottom: 1px solid #e6ebf2;
   padding-bottom: 5px;
 }
 .range-stats-close {
   background: transparent;
   border: none;
-  color: #787b86;
+  color: #718096;
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
@@ -1863,7 +1869,7 @@ onUnmounted(() => {
   margin-bottom: 3px;
 }
 .range-stats-label {
-  color: #787b86;
+  color: #718096;
   white-space: nowrap;
 }
 .range-stats-value {
@@ -1884,16 +1890,16 @@ onUnmounted(() => {
   padding: 2px 7px;
   font-size: 11px;
   line-height: 1.5;
-  color: #787b86;
+  color: #718096;
   background: transparent;
-  border: 1px solid #363a45;
+  border: 1px solid #dce3ed;
   border-radius: 3px;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
   user-select: none;
 }
 .zoom-preset-btn:hover {
-  color: #d1d4dc;
+  color: #334155;
   border-color: #5b8ff9;
 }
 .zoom-preset-btn.active {
@@ -1915,16 +1921,16 @@ onUnmounted(() => {
   padding: 2px 8px;
   font-size: 11px;
   line-height: 1.5;
-  color: #a8adbd;
-  background: rgba(19, 23, 34, 0.72);
-  border: 1px solid #363a45;
+  color: #596b83;
+  background: rgba(245,248,252,0.9);
+  border: 1px solid #dce3ed;
   border-radius: 3px;
   cursor: pointer;
   user-select: none;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
 .sub-indicator-btn:hover {
-  color: #d1d4dc;
+  color: #334155;
   border-color: #5b8ff9;
 }
 .sub-indicator-btn.active {
@@ -1945,7 +1951,7 @@ onUnmounted(() => {
 .panel-label-text {
   font-size: 10px;
   font-weight: 500;
-  color: #9598a1;
+  color: #64748b;
   user-select: none;
   line-height: 1;
   letter-spacing: 0.2px;
@@ -1962,7 +1968,7 @@ onUnmounted(() => {
   user-select: none;
 }
 .panel-collapse-btn:hover {
-  color: #d1d4dc;
+  color: #334155;
 }
 .panel-collapse-btn.collapsed {
   color: #5b8ff9;
@@ -1983,8 +1989,8 @@ onUnmounted(() => {
   width: 540px;
   height: 360px;
   z-index: 30;
-  background: #1e222d;
-  border: 1px solid #363a45;
+  background: #eef2f7;
+  border: 1px solid #dce3ed;
   border-radius: 6px;
   overflow: hidden;
   display: flex;
@@ -1996,14 +2002,14 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   padding: 5px 8px;
-  border-bottom: 1px solid #2a2e39;
+  border-bottom: 1px solid #e6ebf2;
   flex-shrink: 0;
   cursor: move;
   user-select: none;
 }
 .intraday-popup-title {
   font-size: 11px;
-  color: #d1d4dc;
+  color: #334155;
   font-weight: 500;
   flex: 1;
   white-space: nowrap;
@@ -2017,15 +2023,15 @@ onUnmounted(() => {
 .intraday-period-btn {
   padding: 1px 6px;
   font-size: 10px;
-  color: #787b86;
+  color: #718096;
   background: transparent;
-  border: 1px solid #363a45;
+  border: 1px solid #dce3ed;
   border-radius: 2px;
   cursor: pointer;
   transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
 .intraday-period-btn:hover {
-  color: #d1d4dc;
+  color: #334155;
   border-color: #5b8ff9;
 }
 .intraday-period-btn.active {
@@ -2035,7 +2041,7 @@ onUnmounted(() => {
 }
 .intraday-close-btn {
   font-size: 14px;
-  color: #787b86;
+  color: #718096;
   background: transparent;
   border: none;
   cursor: pointer;
@@ -2057,7 +2063,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   font-size: 12px;
-  color: #787b86;
+  color: #718096;
 }
 .intraday-body-err {
   color: #ef5350;
@@ -2065,9 +2071,9 @@ onUnmounted(() => {
 /* ── 分时弹窗日期导航按钮 ─────────────────────────────────── */
 .intraday-nav-btn {
   font-size: 10px;
-  color: #787b86;
+  color: #718096;
   background: transparent;
-  border: 1px solid #363a45;
+  border: 1px solid #dce3ed;
   border-radius: 2px;
   padding: 1px 4px;
   cursor: pointer;
@@ -2075,7 +2081,7 @@ onUnmounted(() => {
   transition: color 0.12s, border-color 0.12s;
 }
 .intraday-nav-btn:hover:not(:disabled) {
-  color: #d1d4dc;
+  color: #334155;
   border-color: #5b8ff9;
 }
 .intraday-nav-btn:disabled {

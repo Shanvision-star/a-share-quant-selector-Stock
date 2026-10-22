@@ -92,10 +92,6 @@ function formatDetailValue(value: unknown) {
 <template>
   <div class="system-status-view" v-loading="loading">
     <div class="status-header">
-      <div>
-        <h2>系统状态</h2>
-        <p>只读检查数据、策略缓存与后端链路；本页不会触发数据更新或策略重建。</p>
-      </div>
       <div class="status-actions">
         <el-button :icon="RefreshRight" :loading="loading" @click="loadStatus">
           刷新状态

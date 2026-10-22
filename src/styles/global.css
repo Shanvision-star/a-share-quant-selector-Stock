@@ -1,97 +1,181 @@
-/* TradingView 暗色主题 */
 :root {
-  --bg-primary: #131722;
-  --bg-secondary: #1e222d;
-  --bg-tertiary: #2a2e39;
-  --text-primary: #d1d4dc;
-  --text-secondary: #787b86;
-  --text-accent: #2962ff;
-  --color-up: #ef5350;
-  --color-down: #26a69a;
-  --border-color: #363a45;
+  color-scheme: light;
+  --bg-primary: #f8f9fc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f1f4f9;
+  --text-primary: #202c3e;
+  --text-secondary: #69778c;
+  --text-accent: #3478db;
+  --color-up: #db5662;
+  --color-down: #15997c;
+  --border-color: #e7ebf2;
+  --el-color-primary: #3478db;
+  --el-color-primary-light-3: #6e9de5;
+  --el-color-primary-light-5: #9ebcec;
+  --el-color-primary-light-7: #c4d6f4;
+  --el-color-primary-light-8: #dbe7f9;
+  --el-color-primary-light-9: #edf3fd;
+  --el-color-primary-dark-2: #2863b8;
+  --el-text-color-primary: #202c3e;
+  --el-text-color-regular: #536176;
+  --el-text-color-secondary: #69778c;
+  --el-border-color: #dfe5ee;
+  --el-border-color-light: #e7ebf2;
+  --el-border-color-lighter: #edf0f5;
+  --el-border-radius-base: 8px;
+  --el-fill-color-light: #f5f7fb;
+  --el-bg-color-page: #f8f9fc;
+  --el-font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
 }
-
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
-
-html, body, #app {
+html,
+body,
+#app {
   width: 100%;
   height: 100%;
   overflow: hidden;
 }
-
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  background-color: var(--bg-primary);
+  font-family: var(--el-font-family);
+  background: var(--bg-primary);
   color: var(--text-primary);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
 }
-
-/* 滚动条 */
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+button,
+a,
+input,
+textarea,
+summary {
+  -webkit-tap-highlight-color: transparent;
+}
+:focus-visible {
+  outline: 2px solid #4f8ce5;
+  outline-offset: 3px;
+}
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--bg-secondary);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--bg-tertiary);
-  border-radius: 3px;
+  background: #cbd3e0;
+  border-radius: 8px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #434651;
-}
-
-/* Element Plus 暗色覆盖 */
-.el-menu {
-  background-color: var(--bg-secondary) !important;
-  border-right: 1px solid var(--border-color) !important;
-}
-.el-menu-item {
-  color: var(--text-secondary) !important;
-}
-.el-menu-item:hover,
-.el-menu-item.is-active {
-  color: var(--text-primary) !important;
-  background-color: var(--bg-tertiary) !important;
-}
-.el-table {
-  --el-table-bg-color: var(--bg-secondary);
-  --el-table-tr-bg-color: var(--bg-secondary);
-  --el-table-header-bg-color: var(--bg-tertiary);
-  --el-table-row-hover-bg-color: var(--bg-tertiary);
-  --el-table-text-color: var(--text-primary);
-  --el-table-header-text-color: var(--text-secondary);
-  --el-table-border-color: var(--border-color);
-}
-.el-pagination {
-  --el-pagination-text-color: var(--text-secondary);
-  --el-pagination-bg-color: var(--bg-secondary);
-  --el-pagination-button-bg-color: var(--bg-tertiary);
+  background: #a9b7ca;
 }
 .el-card {
-  --el-card-bg-color: var(--bg-secondary);
   --el-card-border-color: var(--border-color);
-  color: var(--text-primary);
+  border-radius: 16px !important;
+  box-shadow: 0 3px 20px #24355004 !important;
 }
-.el-input__wrapper {
-  background-color: var(--bg-tertiary) !important;
-  box-shadow: 0 0 0 1px var(--border-color) inset !important;
+.el-card__header {
+  font-weight: 600;
+  border-bottom-color: var(--border-color);
 }
-.el-input__inner {
-  color: var(--text-primary) !important;
+.el-table {
+  --el-table-bg-color: #fff;
+  --el-table-tr-bg-color: #fff;
+  --el-table-header-bg-color: #f8fafd;
+  --el-table-row-hover-bg-color: #f0f5fd;
+  --el-table-text-color: #354359;
+  --el-table-header-text-color: #738197;
+  --el-table-border-color: #edf0f5;
+  border-radius: 12px;
+  font-size: 12px !important;
+  font-variant-numeric: tabular-nums;
+}
+.el-table th.el-table__cell {
+  font-weight: 500;
+  height: 42px;
+}
+.el-table td.el-table__cell {
+  height: 45px;
+}
+.el-table .el-table__cell {
+  padding: 8px 0;
+}
+.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background: #fbfcfe;
+}
+.el-input__wrapper,
+.el-select__wrapper {
+  border-radius: 8px !important;
+  background-color: #fff !important;
+}
+.el-dialog,
+.el-message-box {
+  border-radius: 18px !important;
+}
+.el-dialog {
+  max-width: calc(100vw - 24px);
+}
+.el-button {
+  font-weight: 500;
+}
+.el-button--primary {
+  box-shadow: 0 3px 7px #3478db12;
+}
+.el-tag {
+  border-radius: 6px;
 }
 .el-tabs__item {
-  color: var(--text-secondary) !important;
+  font-size: 13px;
 }
-.el-tabs__item.is-active {
-  color: var(--text-accent) !important;
+.el-tabs__nav-wrap:after {
+  height: 1px !important;
+  background: var(--border-color) !important;
 }
-
-/* 涨跌颜色 */
-.price-up { color: var(--color-up); }
-.price-down { color: var(--color-down); }
-.price-flat { color: var(--text-secondary); }
+.el-alert {
+  border-radius: 10px;
+}
+.el-pagination {
+  font-size: 12px;
+}
+.el-empty__description p {
+  font-size: 12px;
+}
+.price-up {
+  color: var(--color-up);
+}
+.price-down {
+  color: var(--color-down);
+}
+.price-flat {
+  color: var(--text-secondary);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *:before,
+  *:after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -159,7 +159,7 @@ watch(search, () => {
         <div v-if="!loadingList && filteredDocs.length === 0" class="empty-hint">无匹配文档</div>
       </div>
     </aside>
-    <main class="docs-main" v-loading="loadingDoc">
+    <section class="docs-main" v-loading="loadingDoc">
       <div v-if="currentDoc" class="docs-header">
         <h1>{{ currentDoc.title }}</h1>
         <div class="meta">
@@ -171,7 +171,7 @@ watch(search, () => {
       <div ref="contentRef" class="docs-content markdown-body" v-html="renderedHtml"></div>
       <el-button v-if="currentDoc" class="back-to-top" type="primary" circle size="small" @click="scrollToTop">↑</el-button>
       <div v-if="!currentDoc && !loadingDoc" class="empty-hint">请选择左侧文档</div>
-    </main>
+    </section>
   </div>
 </template>
 

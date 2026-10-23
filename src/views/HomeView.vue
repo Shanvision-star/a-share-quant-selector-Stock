@@ -29,7 +29,11 @@ const focusPeriod = ref('daily')
 const focusOptions = computed(() => Array.from(new Map(todayResults.value.map(item => [item.code, item])).values()))
 const focusedStock = computed(() => todayResults.value.find(item => item.code === focusCode.value) || todayResults.value[0])
 
-watch(() => focusedStock.value?.code, code => { if (code) stockContext.currentCode = code }, { immediate: true })
+watch(() => focusedStock.value?.code, code => {
+  if (!code) return
+  focusCode.value = code
+  stockContext.currentCode = code
+}, { immediate: true })
 
 // 股票列表
 const tableData = ref<any[]>([])

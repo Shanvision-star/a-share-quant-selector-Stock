@@ -1,6 +1,12 @@
 """Codex stdio MCP：将研究与整理接入同一审计后端，不向 stdout 写日志。"""
 
 from typing import Literal
+from pathlib import Path
+import sys
+
+# Windows 嵌入式 Python 的 _pth 隔离不会自动加入脚本目录；固定项目根以支持桌面内置解释器。
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations

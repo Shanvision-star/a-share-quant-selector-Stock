@@ -886,10 +886,10 @@ async function renderChart() {
         { name: maLegendNames[1], type: 'line', data: maBData, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: maColors[1] } },
         { name: maLegendNames[2], type: 'line', data: maCData, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: maColors[2] } },
         { name: maLegendNames[3], type: 'line', data: maDData, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: maColors[3] } },
-        // BBI → 蓝色；短期趋势线 → 白色；知行多空线 → 黄色
+          // 白底上提高对比度，并用实线和虚线区分两条趋势线。
         { name: 'BBI', type: 'line', data: bbiData, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1.4, color: '#1e90ff' } },
-        { name: '短期趋势线', type: 'line', data: shortTrendData, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1.5, color: '#ffffff', type: 'dashed' } },
-        { name: '知行多空线', type: 'line', data: bullBearData, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1.5, color: '#ffcc00', type: 'dashed' } },
+        { name: '短期趋势线', type: 'line', data: shortTrendData, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, z: 5, itemStyle: { color: '#7c3aed' }, lineStyle: { width: 2.2, color: '#7c3aed', type: 'solid' } },
+        { name: '知行多空线', type: 'line', data: bullBearData, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, z: 6, itemStyle: { color: '#a16207' }, lineStyle: { width: 2.2, color: '#a16207', type: 'dashed' } },
         // 任务 A：布林带（主图叠加），仅当父组件 showBoll=true 时计算并绘制
         ...(props.showBoll
           ? [

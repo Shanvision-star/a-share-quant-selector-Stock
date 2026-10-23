@@ -17,12 +17,14 @@ import {
   cancelAgentRun,
   getAgentCapabilities,
   getAgentRun,
+  getDailyAgentStatus,
   listAgentRuns,
   saveAgentReview,
   startAgentRun,
   type AgentCapabilities,
   type AgentRun,
   type AgentTask,
+  type DailyAgentStatus,
 } from '@/api/agent'
 defineEmits<{ close: [] }>()
 const route = useRoute()
@@ -33,6 +35,13 @@ const mode = ref<'local' | 'model'>('local')
 const capabilities = ref<AgentCapabilities | null>(null)
 const runs = ref<AgentRun[]>([])
 const current = ref<AgentRun | null>(null)
+const daily = ref<DailyAgentStatus | null>(null)
+let dailyTimer: ReturnType<typeof setTimeout> | undefined
+const dailyLabels = { not_run: '未运行', pending: '待运行', running: '进行中', failed: '未完成', completed: '已完成' }
+async function refreshDaily() {
+  try { daily.value = (await getDailyAgentStatus()).data } catch { daily.value = null }
+  if (!disposed) dailyTimer = setTimeout(() => { void refreshDaily() }, 15000)
+}
 const error = ref('')
 const sending = ref(false)
 const saving = ref(false)
@@ -208,6 +217,7 @@ watch(
   { immediate: true },
 )
 onMounted(async () => {
+  void refreshDaily()
   try {
     capabilities.value = (await getAgentCapabilities()).data
     await refreshHistory()
@@ -224,6 +234,7 @@ onBeforeUnmount(() => {
   disposed = true
   generation++
   clearTimeout(timer)
+  clearTimeout(dailyTimer)
 })
 </script>
 <template>
@@ -246,6 +257,13 @@ onBeforeUnmount(() => {
         @click="$emit('close')"
       />
     </header>
+    <section v-if="daily && daily.status !== 'not_run'" class="daily-status" aria-label="每日任务">
+      <div>每日任务 · {{ daily.target_date }} <span role="status">{{ dailyLabels[daily.status] }}</span></div>
+      <details v-if="daily.error"><summary>失败原因</summary><p role="alert">{{ daily.error }}</p></details>
+      <template v-for="(item, stockCode) in daily.targets" :key="stockCode">
+        <el-button v-if="item.run_id" text size="small" :aria-label="`查看 ${stockCode} 每日分析`" @click="selectRun(item.run_id!)">{{ item.name || stockCode }} · 查看分析</el-button>
+      </template>
+    </section>
     <div class="agent-controls">
       <el-select
         v-model="task"
@@ -451,6 +469,9 @@ onBeforeUnmount(() => {
   </aside>
 </template>
 <style scoped>
+.daily-status { margin: 12px 20px 0; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 12px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.daily-status span { color: var(--text-accent); margin-left: 6px; }
+.daily-status summary { cursor: pointer; color: #b34a40; }
 .model-help{font-size:13px;line-height:1.8}.model-help p + p{margin-top:12px}.model-help pre{margin:14px 0;padding:12px;background:#f4f6fa;border-radius:8px;overflow:auto;font-size:11px;line-height:1.6}
 
 .mode-help{font-size:11px;line-height:1.6;color:var(--text-secondary);margin:6px 20px}.workflow-links{display:flex;padding:0 16px}.report-context{font-size:11px;line-height:1.7;color:var(--text-secondary);margin:0 0 12px}.report-context strong{font-weight:500;color:#9b641a}.source-link{border:0;background:none;color:var(--text-accent);font:inherit;cursor:pointer;overflow-wrap:anywhere}.report-links{display:flex;flex-wrap:wrap;margin:12px 0}.report-links .el-button{margin:0}

@@ -5,7 +5,7 @@ import { strategyLabel } from '@/utils/strategyLabels'
 import { useRouter } from 'vue-router'
 import { getStrategyCacheStatus, getStrategyResults, getStockList, getInitStatus } from '@/api'
 import { ElMessage } from 'element-plus'
-import { RefreshRight } from '@element-plus/icons-vue'
+import { RefreshRight, Search } from '@element-plus/icons-vue'
 import StockTable from '@/components/StockTable.vue'
 import KlineChart from '@/components/KlineChart.vue'
 import { useUpdateJobStore } from '@/stores/updateJob'
@@ -26,14 +26,50 @@ const todayTotal = ref(0)
 const stockContext = useStockStore()
 const focusCode = ref(stockContext.currentCode)
 const focusPeriod = ref('daily')
-const focusOptions = computed(() => Array.from(new Map(todayResults.value.map(item => [item.code, item])).values()))
-const focusedStock = computed(() => todayResults.value.find(item => item.code === focusCode.value) || todayResults.value[0])
+const showShortTermTrend = ref(true)
+const showBullBearLine = ref(true)
+const focusSearchResults = ref<any[]>([])
+const focusSearchLoading = ref(false)
+const focusQuery = ref('')
+const selectedFocusStock = ref<any>(null)
+const focusOptions = computed(() => Array.from(new Map([
+  ...(focusQuery.value ? focusSearchResults.value : [...todayResults.value, ...focusSearchResults.value,
+    ...(selectedFocusStock.value ? [selectedFocusStock.value] : [])]),
+].map(item => [item.code, item])).values()))
+const focusIndex = computed(() => focusOptions.value.findIndex(item => item.code === focusCode.value))
+const focusedStock = computed(() => todayResults.value.find(item => item.code === focusCode.value)
+  || focusOptions.value.find(item => item.code === focusCode.value)
+  || (selectedFocusStock.value?.code === focusCode.value ? selectedFocusStock.value : undefined)
+  || (focusCode.value ? { code: focusCode.value, name: '' } : undefined))
 
-watch(() => focusedStock.value?.code, code => {
+watch(focusCode, code => {
   if (!code) return
-  focusCode.value = code
+  selectedFocusStock.value = focusOptions.value.find(item => item.code === code) || { code, name: '' }
   stockContext.currentCode = code
 }, { immediate: true })
+
+async function searchFocusStocks(query: string) {
+  focusQuery.value = query.trim()
+  const controller = requestManager.start('home:focus-search')
+  focusSearchLoading.value = true
+  try {
+    const response = await getStockList({ page: 1, per_page: 30, search: focusQuery.value, sort_by: 'code', sort_order: 'asc' }, { signal: controller.signal })
+    if (!requestManager.isCurrent('home:focus-search', controller)) return
+    focusSearchResults.value = response.data.data || []
+    const selected = focusSearchResults.value.find(item => item.code === focusCode.value)
+    if (selected) selectedFocusStock.value = selected
+  } catch (error) {
+    if (!isAbortError(error)) ElMessage.error('股票搜索失败，请重试')
+  } finally {
+    if (requestManager.isCurrent('home:focus-search', controller)) focusSearchLoading.value = false
+    requestManager.clear('home:focus-search', controller)
+  }
+}
+
+function stepFocusStock(direction: number) {
+  const next = focusOptions.value[focusIndex.value + direction]
+  if (next) focusCode.value = next.code
+}
 
 // 股票列表
 const tableData = ref<any[]>([])
@@ -76,6 +112,7 @@ onMounted(async () => {
   loadCacheStatus()
   loadTodayHighlights()
   loadStockList()
+  if (focusCode.value) void searchFocusStocks(focusCode.value)
 })
 
 onBeforeUnmount(() => {
@@ -201,6 +238,7 @@ async function loadTodayHighlights() {
     const data = res.data.data || {}
     todayResults.value = (data.results || []).slice(0, 10)
     todayTotal.value = data.total || 0
+    if (!focusCode.value && todayResults.value[0]) focusCode.value = todayResults.value[0].code
   } catch (e) {
     if (!isAbortError(e)) console.error(e)
   } finally {
@@ -222,6 +260,10 @@ async function loadStockList() {
     if (!requestManager.isCurrent('home:stock-list', controller)) return
     tableData.value = res.data.data || []
     total.value = res.data.total || 0
+    if (!focusCode.value && tableData.value[0]) {
+      selectedFocusStock.value = tableData.value[0]
+      focusCode.value = tableData.value[0].code
+    }
   } catch (e) {
     if (!isAbortError(e)) console.error(e)
   } finally {
@@ -388,15 +430,22 @@ function goToRebuild() {
     </section>
 
     <!-- 今日命中摘要 -->
-    <section v-if="focusedStock" class="focus-stock">
+    <section class="focus-stock">
       <div class="section-head">
-        <el-select v-model="focusCode" :placeholder="`${focusedStock.name} ${focusedStock.code}`" aria-label="图表股票" class="focus-select">
-          <el-option v-for="item in focusOptions" :key="item.code" :label="`${item.name} ${item.code}`" :value="item.code" />
-        </el-select>
-        <div class="focus-tools"><el-segmented v-model="focusPeriod" :options="[{label:'日 K',value:'daily'},{label:'周 K',value:'weekly'}]" aria-label="K 线周期" /><el-button text @click="goToStock(focusedStock.code)">详情 ↗</el-button></div>
+        <div class="focus-picker">
+          <el-select v-model="focusCode" filterable remote :remote-method="searchFocusStocks" :loading="focusSearchLoading" default-first-option :reserve-keyword="false" placeholder="搜索名称 / 代码" aria-label="搜索并切换图表股票" class="focus-select">
+            <template #prefix><el-icon aria-hidden="true"><Search /></el-icon></template>
+            <el-option v-for="item in focusOptions" :key="item.code" :label="`${item.name} ${item.code}`" :value="item.code" />
+          </el-select>
+          <el-button-group>
+            <el-button :disabled="focusIndex <= 0" aria-label="上一只股票" @click="stepFocusStock(-1)">上一只</el-button>
+            <el-button :disabled="focusIndex < 0 || focusIndex >= focusOptions.length - 1" aria-label="下一只股票" @click="stepFocusStock(1)">下一只</el-button>
+          </el-button-group>
+        </div>
+        <div class="focus-tools"><el-checkbox v-model="showShortTermTrend">短期趋势线</el-checkbox><el-checkbox v-model="showBullBearLine">知行多空线</el-checkbox><el-segmented v-model="focusPeriod" :options="[{label:'日 K',value:'daily'},{label:'周 K',value:'weekly'}]" aria-label="K 线周期" /><el-button v-if="focusedStock" text @click="goToStock(focusedStock.code)">详情 ↗</el-button></div>
       </div>
-      <div class="focus-identity"><strong>{{ focusedStock.name }}</strong><span>{{ focusedStock.code }}</span><el-tag size="small">{{ strategyLabel(focusedStock.strategy_name) }}</el-tag><span v-if="focusedStock.date">信号 {{ focusedStock.date }}</span></div>
-      <div class="focus-chart"><KlineChart :code="focusedStock.code" :period="focusPeriod" compact :show-adj-volume="false" :show-short-term-trend="false" :show-bull-bear-line="false" /></div>
+      <div v-if="focusedStock" class="focus-identity"><strong>{{ focusedStock.name }}</strong><span>{{ focusedStock.code }}</span><el-tag v-if="focusedStock.strategy_name" size="small">{{ strategyLabel(focusedStock.strategy_name) }}</el-tag><span v-if="focusedStock.date">信号 {{ focusedStock.date }}</span></div>
+      <div v-if="focusedStock" class="focus-chart"><KlineChart :code="focusedStock.code" :period="focusPeriod" compact :show-adj-volume="false" :show-short-term-trend="showShortTermTrend" :show-bull-bear-line="showBullBearLine" /></div>
     </section>
     <div class="today-highlights" v-if="todayResults.length">
       <div class="section-head">
@@ -477,12 +526,13 @@ function goToRebuild() {
   background: white;
 }
 .focus-chart { height: 500px; min-width: 0; }
-.focus-select { width: 220px; max-width: 55%; }
+.focus-picker { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.focus-select { width: 260px; max-width: 100%; }
 .focus-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .focus-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 18px 0 10px; font-size: 12px; color: var(--text-secondary); }
 .focus-identity strong { font-size: 20px; letter-spacing: -.5px; color: var(--text-primary); }
 .candidate-count { font-size: 12px; background: #edf3fb; padding: 3px 8px; border-radius: 6px; color: #687b99; }
-.section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 12px; }
+.section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 12px; flex-wrap: wrap; }
 .section-head h3 { font-size: 16px; margin: 0; }
 .search-input { width: 280px; max-width: 60%; }
 @media(max-width:1100px) { .home-view { padding: 20px; } }

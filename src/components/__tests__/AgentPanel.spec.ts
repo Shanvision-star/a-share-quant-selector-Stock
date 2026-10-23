@@ -8,6 +8,7 @@ import AgentPanel from '../AgentPanel.vue'
 const api = vi.hoisted(() => ({
   getAgentCapabilities: vi.fn(), listAgentRuns: vi.fn(), getAgentRun: vi.fn(),
   startAgentRun: vi.fn(), cancelAgentRun: vi.fn(), saveAgentReview: vi.fn(),
+  getDailyAgentStatus: vi.fn(),
 }))
 vi.mock('@/api/agent', () => api)
 const navigation = vi.hoisted(() => ({push: vi.fn()}))
@@ -22,7 +23,25 @@ const run = (id: string, question: string) => ({
 })
 
 describe('Agent panel request ownership', () => {
-  beforeEach(() => { vi.resetAllMocks(); localStorage.clear(); setActivePinia(createPinia()); useStockStore().currentCode = '000001' })
+  beforeEach(() => { vi.resetAllMocks(); api.getDailyAgentStatus.mockResolvedValue({data:{status:'not_run',targets:{}}}); localStorage.clear(); setActivePinia(createPinia()); useStockStore().currentCode = '000001' })
+
+  it('opens the daily report for its own stock and exposes failure details', async () => {
+    const dailyRun = {...run('daily', '日线研究'), input:{...run('daily','').input, task:'market', code:'000717', trade_date:'2026-10-23'}}
+    api.getAgentCapabilities.mockResolvedValue({data:{model_ready:true}})
+    api.listAgentRuns.mockResolvedValue({data:{items:[]}})
+    api.getAgentRun.mockResolvedValue({data:dailyRun})
+    api.getDailyAgentStatus.mockResolvedValue({data:{status:'failed',target_date:'2026-10-23',error:'观察刷新暂不可达',targets:{'000717':{name:'中南股份',run_id:'daily'}}}})
+    const wrapper = shallowMount(AgentPanel, {global:{plugins:[ElementPlus],renderStubDefaultSlot:true}})
+    await flushPromises()
+    expect(wrapper.get('[aria-label="每日任务"]').text()).toContain('未完成')
+    expect(wrapper.get('.daily-status [role="alert"]').text()).toContain('观察刷新暂不可达')
+    await wrapper.get('[aria-label="查看 000717 每日分析"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.attributes('data-run-id')).toBe('daily')
+    expect(wrapper.get('.report-context').text()).toContain('000717')
+    expect(api.startAgentRun).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 
   it('keeps a newly submitted run when initial history finishes later', async () => {
     const older = run('old', '旧任务')

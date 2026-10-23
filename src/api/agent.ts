@@ -1,5 +1,12 @@
 import api from './index'
-export type AgentTask = 'candidates' | 'tracking' | 'reviews'
+export type AgentTask = 'candidates' | 'tracking' | 'reviews' | 'market'
+export interface DailyAgentStatus {
+  status: 'not_run' | 'pending' | 'running' | 'failed' | 'completed'
+  target_date: string | null
+  error?: string | null
+  targets: Record<string, { name?: string; run_id?: string; status?: string }>
+}
+export const getDailyAgentStatus = () => api.get<DailyAgentStatus>('/agent/daily')
 export interface AgentInput {
   question: string
   task: AgentTask

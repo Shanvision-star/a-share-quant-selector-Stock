@@ -63,7 +63,7 @@ def claim_request(kind, request_id, payload):
                 raise ValueError("request_id 已绑定不同请求")
             result = json.loads(row[1])
             if not result or result.get("request_state"):
-                result = request_state(kind, request_id, result, persist=False)
+                result = recovered_request_state(kind, request_id, result)
                 conn.execute("UPDATE workspace_agent_requests SET payload=? WHERE kind=? AND request_id=?", (json.dumps(result, ensure_ascii=False), kind, request_id))
                 conn.commit()
                 raise ValueError(f"request_id={request_id} 状态={result['request_state']}；查询 /api/agent/requests/{kind}/{request_id}，不会重放")
@@ -76,22 +76,36 @@ def claim_request(kind, request_id, payload):
         raise
 
 
-def request_state(kind, request_id, result=None, persist=True):
+def recovered_request_state(kind, request_id, result):
+    """纯状态转换；调用方负责事务，不能在占位锁内隐式提交。"""
+    if result and not result.get("request_state"):
+        return result
+    result = dict(result)
+    if not result:
+        result = {"request_state": "interrupted", "error": "旧版占位缺少拥有者，禁止自动重放"}
+    elif result["request_state"] == "processing" and not process_alive(result.get("owner_pid")):
+        result.update(request_state="interrupted", error="提交进程已退出；不会自动重放", recovered_at=now())
+    return {**result, "kind": kind, "request_id": request_id}
+
+
+def request_state(kind, request_id):
     init_requests()
-    if result is None:
-        row = get_connection().execute("SELECT payload FROM workspace_agent_requests WHERE kind=? AND request_id=?", (kind, request_id)).fetchone()
+    conn = get_connection()
+    while True:
+        row = conn.execute("SELECT payload FROM workspace_agent_requests WHERE kind=? AND request_id=?", (kind, request_id)).fetchone()
         if not row:
             raise KeyError(request_id)
-        result = json.loads(row[0])
-    if not result or result.get("request_state"):
-        if not result:
-            result = {"request_state": "interrupted", "error": "旧版占位缺少拥有者，禁止自动重放"}
-        elif result["request_state"] == "processing" and not process_alive(result.get("owner_pid")):
-            result.update(request_state="interrupted", error="提交进程已退出；不会自动重放", recovered_at=now())
-        result.update(kind=kind, request_id=request_id)
-        if persist:
-            complete_request(kind, request_id, result)
-    return result
+        original = json.loads(row[0])
+        result = recovered_request_state(kind, request_id, original)
+        # 活跃占位仅补充响应标识，不写库；恢复使用原payload比较交换，避免覆盖并发完成映射。
+        changed = not original or result.get("request_state") != original.get("request_state")
+        if not changed:
+            return result
+        updated = conn.execute("UPDATE workspace_agent_requests SET payload=? WHERE kind=? AND request_id=? AND payload=?", (json.dumps(result, ensure_ascii=False), kind, request_id, row[0]))
+        conn.commit()
+        if updated.rowcount:
+            return result
+        # 另一个线程已完成或恢复，重新读取权威结果，不重写旧占位。
 
 
 def complete_request(kind, request_id, result):

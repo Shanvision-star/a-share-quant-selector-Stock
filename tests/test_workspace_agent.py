@@ -344,3 +344,72 @@ def test_capabilities_disclose_reused_action_schemas(agent):
     assert schemas["update"]["properties"]["auto_rebuild"]["default"] is True
     assert schemas["update"]["properties"]["pipeline"]["default"] is False
     assert schemas["update"]["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("alive", [True, False])
+def test_request_state_concurrent_completion_preserves_mapping(agent, monkeypatch, alive):
+    from web.backend.services import workspace_actions as actions
+    actions.claim_request("analysis", "race-state", {"parent": "p"})
+    observed, release = threading.Event(), threading.Event()
+    result, errors = [], []
+    def check_owner(pid):
+        observed.set()
+        assert release.wait(3)
+        return alive
+    monkeypatch.setattr(actions, "process_alive", check_owner)
+    def read_state():
+        try:
+            result.append(actions.request_state("analysis", "race-state"))
+        except Exception as exc:
+            errors.append(exc)
+    thread = threading.Thread(target=read_state)
+    thread.start()
+    assert observed.wait(3)
+    completed = {"run_id": "completed-child"}
+    actions.complete_request("analysis", "race-state", completed)
+    release.set()
+    thread.join(3)
+    assert not thread.is_alive() and not errors
+    assert actions.request_state("analysis", "race-state") == completed
+    assert actions.claim_request("analysis", "race-state", {"parent": "p"}) == completed
+    if not alive:
+        assert result == [completed]
+
+
+def test_claim_recovery_holds_sqlite_transaction_until_state_write(agent, monkeypatch):
+    from web.backend.services import workspace_actions as actions
+    actions.claim_request("analysis", "race-claim", {"parent": "p"})
+    locked, release, completing, completed = (threading.Event() for _ in range(4))
+    errors = []
+    def check_owner(pid):
+        assert db.get_connection().in_transaction
+        locked.set()
+        assert release.wait(3)
+        return False
+    monkeypatch.setattr(actions, "process_alive", check_owner)
+    def retry():
+        try:
+            actions.claim_request("analysis", "race-claim", {"parent": "p"})
+        except ValueError as exc:
+            assert "interrupted" in str(exc)
+        except Exception as exc:
+            errors.append(exc)
+    def finish_request():
+        try:
+            completing.set()
+            actions.complete_request("analysis", "race-claim", {"run_id": "final-child"})
+            completed.set()
+        except Exception as exc:
+            errors.append(exc)
+    retry_thread = threading.Thread(target=retry)
+    retry_thread.start()
+    assert locked.wait(3)
+    finish_thread = threading.Thread(target=finish_request)
+    finish_thread.start()
+    assert completing.wait(3)
+    assert not completed.wait(.05)
+    release.set()
+    retry_thread.join(3)
+    finish_thread.join(3)
+    assert not errors and completed.is_set()
+    assert actions.request_state("analysis", "race-claim") == {"run_id": "final-child"}

@@ -5,7 +5,10 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from quant_tools import request, run_endpoint
+try:
+    from quant_tools import request, run_endpoint
+except ModuleNotFoundError:
+    from scripts.quant_tools import request, run_endpoint
 
 mcp = FastMCP("A-share Quant", instructions="先读取真实来源和日期再分析。研究运行会持久化，模型模式会调用配置的供应商。保存复盘仅在用户明确授权后 confirmed=true。没有交易执行权限。")
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -54,6 +57,32 @@ def quant_cancel(run_id: str) -> dict:
 def quant_save_review(run_id: str, review_date: str, confirmed: bool = False) -> dict:
     """用户明确确认后追加报告到指定日期复盘，幂等且保留原文。"""
     return request("POST", run_endpoint(run_id, "/review"), {"review_date": review_date, "confirmed": confirmed})
+
+
+@mcp.tool(annotations=WRITE)
+def quant_submit_analysis(run_id: str, request_id: str, source_hashes: dict[str, str], report: dict,
+                          model: str, prompt_version: str, author: str = "Codex", provider: str = "openai") -> dict:
+    """把基于父运行来源的 Codex 结构化报告存为独立子运行，保留原取证。"""
+    return request("POST", run_endpoint(run_id, "/analysis"), {"request_id": request_id, "source_hashes": source_hashes,
+        "report": report, "model": model, "prompt_version": prompt_version, "author": author, "provider": provider})
+
+
+@mcp.tool(annotations=WRITE)
+def quant_action(request_id: str, action: Literal["update", "backtest", "tracking"], parameters: dict, confirmed: bool = False) -> dict:
+    """显式确认后调用现有数据更新、回测或跟踪服务。queued/running 仅代表受理，用 quant_action_get 查询业务终态。"""
+    return request("POST", "agent/actions", {"request_id": request_id, "action": action, "parameters": parameters, "confirmed": confirmed})
+
+
+@mcp.tool(annotations=READ)
+def quant_action_get(action_id: str) -> dict:
+    """查询受控操作的真实业务 ID、状态和审计事件。"""
+    return request("GET", run_endpoint(action_id).replace("agent/runs/", "agent/actions/"))
+
+
+@mcp.tool(annotations=READ)
+def quant_active_tasks() -> dict:
+    """查询研究、数据更新和回测活动任务。"""
+    return request("GET", "agent/active")
 
 
 if __name__ == "__main__":

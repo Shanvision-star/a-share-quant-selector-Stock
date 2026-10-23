@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from web.backend.services.workspace_agent import AgentRequest, workspace_agent
+from web.backend.services.workspace_actions import AnalysisRequest, ActionRequest, controlled_actions
 from web.backend.services.llm_providers.llm_config import load_llm_config
 
 router = APIRouter(prefix="/api/agent", tags=["研究 Agent"])
@@ -23,7 +24,7 @@ def capabilities():
     ready = config.get("provider") == "deepseek" and bool(settings.get("api_key"))
     return {"agent_name": "quant_research", "prompt_version": "1.0.0", "model_ready": ready,
             "provider": "deepseek" if ready else None, "model": settings.get("model") if ready else None,
-            "tasks": ["candidates", "tracking", "reviews"], "write_actions": ["save_review"], "trading": False}
+            "tasks": ["candidates", "tracking", "reviews"], "write_actions": ["save_review", "submit_analysis", "update", "backtest", "tracking"], "trading": False}
 
 
 @router.get("/runs")
@@ -62,3 +63,75 @@ def save_review(run_id: str, payload: SaveReviewRequest):
         return workspace_agent.save_review(run_id, payload.review_date.isoformat())
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+@router.post("/runs/{run_id}/analysis")
+def submit_analysis(run_id: str, payload: AnalysisRequest):
+    get_run(run_id)
+    try:
+        return workspace_agent.submit_analysis(run_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/actions", status_code=202)
+def submit_action(payload: ActionRequest):
+    try:
+        return controlled_actions.submit(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/actions/{action_id}")
+def get_action(action_id: str):
+    try:
+        return controlled_actions.get(action_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="操作不存在") from exc
+
+
+@router.get("/active")
+def active_tasks():
+    from web.backend.services.sqlite_service import get_connection
+    import json
+    from web.backend.services import data_service
+    from web.backend.services.backtest_job_service import backtest_job_manager
+    items = []
+    rows = get_connection().execute("SELECT payload FROM workspace_agent_runs WHERE status IN ('queued','running')").fetchall()
+    for row in rows:
+        run = json.loads(row[0])
+        items.append({"id": run["run_id"], "kind": "research", "status": run["status"], "owner_pid": run.get("owner_pid")})
+    state = data_service._UPDATE_JOB_STATE
+    if state.get("is_running"):
+        items.append({"id": state["run_id"], "kind": "update", "status": "running"})
+    # 读取既有业务任务，覆盖从原 UI 发起的回测。
+    for task in backtest_job_manager.list_recent(200):
+        if task["status"] not in ("done", "failed", "canceled", "interrupted"):
+            items.append({"id": task["task_id"], "kind": "backtest", "status": task["status"]})
+    known = {item["id"] for item in items}
+    for action in controlled_actions.recent():
+        action = controlled_actions.get(action["action_id"])
+        if action["status"] in ("running", "queued", "cancel_requested") and action.get("business_id") not in known:
+            items.append({"id": action.get("business_id") or action["action_id"], "kind": action["kind"], "status": action["status"], "owner_pid": action.get("owner_pid")})
+    return {"total": len(items), "items": items}
+
+
+class ShutdownRequest(BaseModel):
+    confirmed: bool = False
+
+
+@router.post("/shutdown")
+def shutdown_tasks(payload: ShutdownRequest):
+    import os
+    import json
+    from web.backend.services.sqlite_service import get_connection
+    from web.backend.services.workspace_agent import now
+    if not payload.confirmed:
+        raise HTTPException(status_code=409, detail="需要确认退出")
+    interrupted = []
+    rows = get_connection().execute("SELECT payload FROM workspace_agent_runs WHERE status IN ('queued','running')").fetchall()
+    for row in rows:
+        run = json.loads(row[0])
+        if run.get("owner_pid") == os.getpid():
+            workspace_agent.store.patch(run["run_id"], active_only=True, status="interrupted", error="桌面确认退出", events=[*run["events"], {"at": now(), "type": "shutdown_confirmed"}])
+            interrupted.append(run["run_id"])
+    return {"interrupted": interrupted}

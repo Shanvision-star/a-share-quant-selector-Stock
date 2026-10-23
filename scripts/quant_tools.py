@@ -25,7 +25,7 @@ def request(method: str, endpoint: str, payload: dict | None = None) -> dict:
     runtime = {}
     base = os.getenv("QUANT_API_URL")
     if not base:
-        runtime_path = ROOT / "data" / "desktop-runtime.json"
+        runtime_path = Path(os.getenv("QUANT_RUNTIME_FILE", str(ROOT / "data" / "desktop-runtime.json")))
         if runtime_path.exists():
             runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
         base = runtime.get("base_url", "http://127.0.0.1:8001")
@@ -44,7 +44,7 @@ def request(method: str, endpoint: str, payload: dict | None = None) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="量化工作台 JSON 工具")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("status", "capabilities", "runs"):
+    for name in ("status", "capabilities", "runs", "active"):
         commands.add_parser(name)
     run = commands.add_parser("run")
     run.add_argument("question")
@@ -59,10 +59,22 @@ def main():
     save.add_argument("run_id")
     save.add_argument("date")
     save.add_argument("--confirm", action="store_true")
+    analysis = commands.add_parser("submit-analysis")
+    analysis.add_argument("run_id")
+    analysis.add_argument("payload", help="结构化分析 JSON 文件")
+    action = commands.add_parser("action")
+    action.add_argument("payload", help="白名单操作 JSON 文件，必须显式 confirmed")
+    commands.add_parser("action-get").add_argument("action_id")
     args = parser.parse_args()
     try:
-        if args.command in ("status", "capabilities", "runs"):
-            result = request("GET", {"status": "system/status", "capabilities": "agent/capabilities", "runs": "agent/runs"}[args.command])
+        if args.command in ("status", "capabilities", "runs", "active"):
+            result = request("GET", {"status": "system/status", "capabilities": "agent/capabilities", "runs": "agent/runs", "active": "agent/active"}[args.command])
+        elif args.command in ("submit-analysis", "action"):
+            payload = json.loads(Path(args.payload).read_text(encoding="utf-8"))
+            endpoint = run_endpoint(args.run_id, "/analysis") if args.command == "submit-analysis" else "agent/actions"
+            result = request("POST", endpoint, payload)
+        elif args.command == "action-get":
+            result = request("GET", run_endpoint(args.action_id).replace("agent/runs/", "agent/actions/"))
         elif args.command == "run":
             result = request("POST", "agent/runs", {"question": args.question, "task": args.task, "mode": args.mode, "code": args.code, "trade_date": args.date, "limit": args.limit})
         elif args.command == "save-review":

@@ -90,7 +90,7 @@ def test_second_backend_preserves_live_owner(agent):
 def test_confirm_required_and_review_append_is_idempotent(agent):
     repository = ReviewRepository(module.ROOT / "data" / "review_library")
     from dataclasses import replace
-    repository.create_if_absent(replace(ReviewDocument.new("2026-10-23"), body="# 原有复盘\n\n保留这段内容。"))
+    repository.create_if_absent(replace(ReviewDocument.new("2026-10-23"), body="# 原有复盘\n\n保留这段内容。", tags=("人工标签",)))
     run = finish(agent, agent.submit(module.AgentRequest(question="整理", task="tracking")))
     app = FastAPI()
     app.include_router(routes.router)
@@ -102,6 +102,7 @@ def test_confirm_required_and_review_append_is_idempotent(agent):
         second = client.post(endpoint, json={"review_date": "2026-10-23", "confirmed": True})
         assert first.status_code == second.status_code == 200
         assert second.json()["already_saved"]
+        assert repository.load("2026-10-23").tags == ("人工标签",)
         body = repository.load("2026-10-23").body
         assert "保留这段内容" in body and body.count(f"<!-- agent-run:{run['run_id']} -->") == 1
 
@@ -133,3 +134,111 @@ def test_cli_rejects_path_escape():
     from scripts.quant_tools import run_endpoint
     with pytest.raises(ValueError):
         run_endpoint("../../tracking/anything")
+
+
+def test_local_checks_stale_missing_and_truncation():
+    report = module.local_report([{"source_id": "S1", "tool": "tracking_snapshot", "arguments": {"trade_date": "2026-10-23"}, "data": {"total": 4, "items": [{"code": "000001", "last_eval_date": "2026-10-20"}, {"code": "000002", "last_eval_date": None}], "budget_truncated": True}}])
+    text = json.dumps(report, ensure_ascii=False)
+    assert "早于参考日期 1 条" in text
+    assert "缺少评估/记录日期 1 条" in text
+    assert "条数截断 True" in text and "预算截断 True" in text
+    assert "不回答开放式" in text
+
+
+def test_external_analysis_save_stock_search_and_integrity(agent):
+    from web.backend.services.workspace_actions import AnalysisRequest
+    from web.backend.services.review_service import ReviewService
+    parent = finish(agent, agent.submit(module.AgentRequest(question="取证", task="tracking", code="000001")))
+    payload = AnalysisRequest(request_id="analysis-one", source_hashes={s["source_id"]: s["sha256"] for s in parent["sources"]},
+        report={"summary": "Codex 分析", "findings": [{"text": "取证为空", "source_ids": ["S1"]}], "next_steps": [], "limitations": ["样本有限"]}, model="codex-test", prompt_version="v1")
+    child = agent.submit_analysis(parent["run_id"], payload)
+    assert child["run_id"] != parent["run_id"] and child["parent_run_id"] == parent["run_id"]
+    assert child["input"]["mode"] == "external" and child["author"] == "Codex"
+    assert agent.submit_analysis(parent["run_id"], payload)["run_id"] == child["run_id"]
+    assert agent.store.get(parent["run_id"]) == parent
+    agent.save_review(child["run_id"], "2026-10-23")
+    assert agent.save_review(child["run_id"], "2026-10-23")["already_saved"]
+    result = ReviewService(ReviewRepository(module.ROOT / "data" / "review_library")).list_reviews(stock="000001")
+    assert result["total"] == 1 and "Codex 分析" in result["items"][0].body
+    with pytest.raises(ValueError, match="hash"):
+        agent.submit_analysis(parent["run_id"], payload.model_copy(update={"source_hashes": {"S1": "bad"}}))
+    bad_report = payload.report.model_copy(update={"findings": [module.Finding(text="bad", source_ids=["S404"])]})
+    with pytest.raises(ValueError, match="不存在"):
+        agent.submit_analysis(parent["run_id"], payload.model_copy(update={"report": bad_report}))
+    with pytest.raises(ValueError, match="不同请求"):
+        agent.submit_analysis(parent["run_id"], payload.model_copy(update={"model": "other"}))
+
+
+def test_action_confirmation_idempotency_and_business_contract(agent, monkeypatch):
+    from web.backend.services import workspace_actions as actions
+    from web.backend.services import tracking_service, backtest_job_service
+    service = actions.ControlledActions()
+    calls = []
+    monkeypatch.setattr(tracking_service.tracking_service, "create_item", lambda params: calls.append(params) or {"tracking_id": "real-tracking", "status": "watching"})
+    request = actions.ActionRequest(request_id="track-one", action="tracking", parameters={"code": "000001", "signal_date": "2026-10-23"})
+    with pytest.raises(ValueError, match="confirmed"):
+        service.submit(request)
+    first = service.submit(request.model_copy(update={"confirmed": True}))
+    assert first["business_id"] == "real-tracking" and first["status"] == "completed"
+    assert service.submit(request.model_copy(update={"confirmed": True}))["action_id"] == first["action_id"]
+    assert len(calls) == 1
+    monkeypatch.setattr(backtest_job_service.backtest_job_manager, "submit", lambda params: {"task_id": "real-backtest", "status": "queued"})
+    monkeypatch.setattr(backtest_job_service.backtest_job_manager, "get", lambda task_id: {"task_id": task_id, "status": "done", "result": {"summary": "ok"}})
+    backtest = service.submit(actions.ActionRequest(request_id="bt-one", action="backtest", confirmed=True, parameters={"start_date": "2026-10-01", "end_date": "2026-10-23"}))
+    assert backtest["status"] == "queued" and backtest["business_id"] == "real-backtest"
+    assert service.get(backtest["action_id"])["status"] == "done"
+    assert any(event["type"] == "confirmed" for event in first["events"])
+    service.pool.shutdown()
+
+
+def test_update_stream_real_state_and_failure(agent, monkeypatch):
+    from web.backend.services import workspace_actions as actions, data_service
+    service = actions.ControlledActions()
+    async def update(**params):
+        assert params == {"auto_rebuild": False}
+        yield {"event": "progress", "data": {"run_id": "real-update", "status": "running"}}
+        yield {"event": "error", "data": {"run_id": "real-update", "status": "partial", "message": "部分失败"}}
+    monkeypatch.setattr(data_service, "run_data_update", update)
+    item = service.submit(actions.ActionRequest(request_id="update-one", action="update", confirmed=True, parameters={"auto_rebuild": False}))
+    service.pool.shutdown(wait=True)
+    final = service.get(item["action_id"])
+    assert final["business_id"] == "real-update" and final["status"] == "failed"
+    assert final["error"] == "部分失败"
+
+
+def test_active_covers_ui_and_shutdown_owner(agent, monkeypatch):
+    from web.backend.services import data_service, backtest_job_service
+    monkeypatch.setattr(data_service, "_UPDATE_JOB_STATE", {"is_running": True, "run_id": "ui-update"})
+    monkeypatch.setattr(backtest_job_service.backtest_job_manager, "list_recent", lambda limit: [{"task_id": "ui-bt", "status": "running"}])
+    owned = agent.store.create(module.AgentRequest(question="owned"))
+    other = agent.store.create(module.AgentRequest(question="other"))
+    agent.store.patch(other["run_id"], owner_pid=-123)
+    active = routes.active_tasks()
+    assert active["total"] == 4
+    assert {item["id"] for item in active["items"]} >= {"ui-update", "ui-bt"}
+    result = routes.shutdown_tasks(routes.ShutdownRequest(confirmed=True))
+    assert result["interrupted"] == [owned["run_id"]]
+    assert agent.store.get(other["run_id"])["status"] == "queued"
+
+
+def test_update_success_uses_existing_job_complete(agent, monkeypatch):
+    from web.backend.services import workspace_actions as actions, data_service
+    service = actions.ControlledActions()
+    async def update(**params):
+        yield {"event": "update_complete", "data": {"run_id": "real-success", "status": "running"}}
+        yield {"event": "job_complete", "data": {"run_id": "real-success", "status": "done"}}
+    monkeypatch.setattr(data_service, "run_data_update", update)
+    item = service.submit(actions.ActionRequest(request_id="update-success", action="update", confirmed=True))
+    service.pool.shutdown(wait=True)
+    assert service.get(item["action_id"])["status"] == "completed"
+
+
+def test_http_external_and_action_validation(agent):
+    app = FastAPI()
+    app.include_router(routes.router)
+    with TestClient(app) as client:
+        assert client.post("/api/agent/actions", json={"request_id": "unsafe", "action": "tracking", "parameters": {}}).status_code == 409
+        assert client.post("/api/agent/actions", json={"request_id": "unsafe", "action": "shell", "confirmed": True}).status_code == 422
+        assert client.post("/api/agent/actions", json={"request_id": "unsafe", "action": "update", "confirmed": True, "parameters": {"shell": "cmd"}}).status_code == 409
+        assert client.post("/api/agent/shutdown", json={"confirmed": False}).status_code == 409
+        assert client.get("/api/agent/actions/missing").status_code == 404

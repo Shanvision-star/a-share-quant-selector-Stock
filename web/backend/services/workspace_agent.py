@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .sqlite_service import get_connection
 from .llm_providers.llm_config import load_llm_config
-from .review_repository import ReviewDocument, ReviewRepository
+from .review_repository import ReviewDocument, ReviewRepository, ReviewStock
 from .review_service import ReviewService
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -189,6 +189,16 @@ def local_report(sources: list[dict]) -> dict:
         text = " · ".join(str(row[key]) for key in ("code", "name", "trade_date", "signal_date", "strategy_name", "status", "review_date", "title") if row.get(key) is not None and row.get(key) != "")
         if text:
             findings.append({"text": text, "source_ids": ["S1"]})
+    reference = sources[0].get("arguments", {}).get("trade_date") or date.today().isoformat()
+    stale = missing = 0
+    for row in data["items"]:
+        observed = row.get("last_eval_date") if sources[0]["tool"] == "tracking_snapshot" else row.get("trade_date") or row.get("review_date") or row.get("signal_date")
+        if not observed:
+            missing += 1
+        elif str(observed)[:10] < reference:
+            stale += 1
+    findings.append({"text": f"记录日期检查：参考日期 {reference}；早于参考日期 {stale} 条；缺少评估/记录日期 {missing} 条。", "source_ids": ["S1"]})
+    findings.append({"text": f"范围检查：总计 {data['total']} 条，读取 {len(data['items'])} 条；条数截断 {data['total'] > len(data['items'])}；正文截断 {any(row.get('body_truncated') for row in data['items'])}；预算截断 {bool(data.get('budget_truncated'))}。", "source_ids": ["S1"]})
     return {"summary": f"找到 {data['total']} 条{label}，本次读取 {len(data['items'])} 条。", "findings": findings,
             "next_steps": ["核对数据日期与原始记录后，再加入复盘。"],
             "limitations": ["本地整理未调用模型，不回答开放式分析问题。", "历史记录不代表实时行情；样本受筛选条件与读取条数限制。"]}
@@ -282,6 +292,31 @@ class WorkspaceAgent:
         finally:
             self.capacity.release()
 
+    def submit_analysis(self, parent_id: str, payload) -> dict:
+        from .workspace_actions import claim_request, complete_request
+        parent = self.store.get(parent_id)
+        if parent["status"] != "completed" or not parent["sources"]:
+            raise ValueError("父运行必须已完成取证")
+        expected = {source["source_id"]: source["sha256"] for source in parent["sources"]}
+        for source in parent["sources"]:
+            actual = hashlib.sha256(json.dumps(source["data"], ensure_ascii=False, default=str).encode()).hexdigest()
+            if actual != source["sha256"]:
+                raise ValueError("父运行证据完整性校验失败")
+        if payload.source_hashes != expected:
+            raise ValueError("来源 hash 与父运行不一致")
+        if any(not set(item.source_ids) <= expected.keys() for item in payload.report.findings):
+            raise ValueError("报告引用不存在的来源")
+        prior = claim_request("analysis", payload.request_id, {"parent": parent_id, **payload.model_dump(mode="json")})
+        if prior:
+            return self.store.get(prior["run_id"])
+        child = self.store.create(AgentRequest.model_validate({**parent["input"], "mode": "local"}))
+        child = self.store.patch(child["run_id"], status="completed", input={**parent["input"], "mode": "external"},
+            parent_run_id=parent_id, request_id=payload.request_id, source_hashes=expected, sources=parent["sources"],
+            author=payload.author, provider=payload.provider, model=payload.model, prompt_version=payload.prompt_version,
+            output=payload.report.model_dump(), events=[{"at": now(), "type": "external_analysis_validated", "parent_run_id": parent_id}])
+        complete_request("analysis", payload.request_id, {"run_id": child["run_id"]})
+        return child
+
     def save_review(self, run_id: str, review_date: str) -> dict:
         run = self.store.get(run_id)
         if run["status"] != "completed" or not run["output"]:
@@ -298,7 +333,17 @@ class WorkspaceAgent:
             current = current or ReviewDocument.new(review_date)
             if marker in current.body:
                 return current, False
-            return replace(current, body=current.body.rstrip() + "\n\n" + "\n\n".join(lines) + "\n"), True
+            stocks = {stock.code: stock for stock in current.stocks}
+            code = run["input"].get("code")
+            if code:
+                stocks.setdefault(code, ReviewStock(code=code, name=""))
+            for source in run["sources"]:
+                for row in source["data"].get("items", []):
+                    if row.get("code"):
+                        stocks.setdefault(row["code"], ReviewStock(code=row["code"], name=row.get("name", "")))
+                    for stock in row.get("stocks", []):
+                        stocks.setdefault(stock["code"], ReviewStock(**stock))
+            return replace(current, stocks=tuple(stocks.values()), body=current.body.rstrip() + "\n\n" + "\n\n".join(lines) + "\n"), True
         document, changed = repository.mutate(review_date, append)
         self.store.patch(run_id, saved_review=review_date)
         return {"review_date": document.review_date, "version": document.version, "already_saved": not changed}

@@ -21,15 +21,21 @@ class SaveReviewRequest(BaseModel):
 def capabilities():
     from web.backend.routers.backtest import BacktestRequest
     from web.backend.routers.tracking import TrackingCreateRequest
-    from web.backend.services.workspace_actions import UpdateActionParameters
+    from web.backend.services.workspace_actions import UpdateActionParameters, TrackingRefreshParameters
     config = load_llm_config()
     settings = config.get("deepseek") or {}
     ready = config.get("provider") == "deepseek" and bool(settings.get("api_key"))
     return {"agent_name": "quant_research", "prompt_version": "1.0.0", "model_ready": ready,
             "provider": "deepseek" if ready else None, "model": settings.get("model") if ready else None,
-            "action_schemas": {"update": UpdateActionParameters.model_json_schema(), "backtest": BacktestRequest.model_json_schema(), "tracking": TrackingCreateRequest.model_json_schema()},
+            "action_schemas": {"update": UpdateActionParameters.model_json_schema(), "backtest": BacktestRequest.model_json_schema(), "tracking": TrackingCreateRequest.model_json_schema(), "tracking_refresh": TrackingRefreshParameters.model_json_schema()},
             "action_contract": {"confirmed_required": True, "request_id_required": True, "status_query": "/api/agent/actions/{action_id}"},
-            "tasks": ["candidates", "tracking", "reviews"], "write_actions": ["save_review", "submit_analysis", "update", "backtest", "tracking"], "trading": False}
+            "tasks": ["candidates", "tracking", "reviews", "market"], "write_actions": ["save_review", "submit_analysis", "update", "backtest", "tracking", "tracking_refresh"], "trading": False}
+
+
+@router.get('/daily')
+def daily_status():
+    from web.backend.services.daily_workflow import read_daily_status
+    return read_daily_status()
 
 
 @router.get("/runs")

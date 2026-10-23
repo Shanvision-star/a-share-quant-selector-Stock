@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "schedule": "Asia/Shanghai 18:30 daily",
+  "market_scope": "all",
+  "targets": [{"code": "000717", "name": "中南股份"}],
+  "market_timeout_seconds": 14400,
+  "agent_timeout_seconds": 240
+}

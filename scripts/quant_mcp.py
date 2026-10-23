@@ -34,7 +34,7 @@ def quant_capabilities() -> dict:
 
 
 @mcp.tool(annotations=WRITE)
-def quant_research(question: str, task: Literal["candidates", "tracking", "reviews"] = "candidates",
+def quant_research(question: str, task: Literal["candidates", "tracking", "reviews", "market"] = "candidates",
                    code: str | None = None, trade_date: str | None = None, limit: int = 20,
                    mode: Literal["local", "model"] = "local") -> dict:
     """建立可追踪研究任务。local 取证供 Codex 分析，model 调用已配置模型；返回 run_id 后用 quant_run 获取结果。"""
@@ -74,9 +74,15 @@ def quant_submit_analysis(run_id: str, request_id: str, source_hashes: dict[str,
 
 
 @mcp.tool(annotations=WRITE)
-def quant_action(request_id: str, action: Literal["update", "backtest", "tracking"], parameters: dict, confirmed: bool = False) -> dict:
+def quant_action(request_id: str, action: Literal["update", "backtest", "tracking", "tracking_refresh"], parameters: dict, confirmed: bool = False) -> dict:
     """显式确认后调用现有数据更新、回测或跟踪服务。queued/running 仅代表受理，用 quant_action_get 查询业务终态。"""
     return request("POST", "agent/actions", {"request_id": request_id, "action": action, "parameters": parameters, "confirmed": confirmed})
+
+
+@mcp.tool(annotations=READ)
+def quant_daily_status() -> dict:
+    """读取每日全市场更新、目标股研究、复盘与观察跟踪的阶段和失败记录。"""
+    return request('GET', 'agent/daily')
 
 
 @mcp.tool(annotations=READ)

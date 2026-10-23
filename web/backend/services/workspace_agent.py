@@ -15,7 +15,7 @@ from typing import Literal
 from uuid import uuid4
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .sqlite_service import get_connection
 from .llm_providers.llm_config import load_llm_config
@@ -59,11 +59,17 @@ def process_alive(pid: int | None) -> bool:
 class AgentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     question: str = Field(min_length=1, max_length=2000)
-    task: Literal["candidates", "tracking", "reviews"] = "candidates"
+    task: Literal["candidates", "tracking", "reviews", "market"] = "candidates"
     mode: Literal["local", "model"] = "local"
     code: str | None = Field(default=None, pattern=r"^\d{6}$")
     trade_date: date | None = None
     limit: int = Field(default=20, ge=1, le=50)
+
+    @model_validator(mode='after')
+    def require_market_target(self):
+        if self.task == 'market' and (not self.code or not self.trade_date):
+            raise ValueError('日线分析必须指定股票和已收盘交易日')
+        return self
 
 
 class Finding(BaseModel):
@@ -97,7 +103,7 @@ class AgentStore:
                     self.patch(run["run_id"], active_only=True, status="interrupted", error="服务已重启，请重新运行")
 
     def create(self, request: AgentRequest) -> dict:
-        run = {"run_id": uuid4().hex, "agent_name": AGENT_NAME, "prompt_version": PROMPT_VERSION,
+        run = {"run_id": uuid4().hex, "agent_name": AGENT_NAME, "prompt_version": 'daily-market-v2' if request.task == 'market' else PROMPT_VERSION,
                "schema_version": 1, "owner_pid": os.getpid(), "status": "queued", "created_at": now(), "updated_at": now(),
                "input": request.model_dump(mode="json"), "provider": None, "model": None,
                "usage": None, "cost": None, "latency_ms": None, "sources": [], "events": [],
@@ -141,7 +147,11 @@ def collect_sources(request: AgentRequest) -> list[dict]:
     """仅从本地正式记录读取，禁止通过选股接口触发全市场扫描或行情下载。"""
     conn = get_connection()
     code = request.code
-    if request.task == "candidates":
+    if request.task == "market":
+        from .daily_observation import market_snapshot
+        data = market_snapshot(ROOT, code, request.trade_date.isoformat(), request.limit)
+        source = 'market_daily'
+    elif request.task == "candidates":
         from .strategy_result_repository import query_results
         result = query_results(code=code, trade_date=str(request.trade_date) if request.trade_date else None,
                                per_page=request.limit)
@@ -182,7 +192,7 @@ def collect_sources(request: AgentRequest) -> list[dict]:
 
 def local_report(sources: list[dict]) -> dict:
     data = sources[0]["data"]
-    names = {"strategy_history": "策略结果", "tracking_snapshot": "跟踪记录", "review_library": "复盘"}
+    names = {"strategy_history": "策略结果", "tracking_snapshot": "跟踪记录", "review_library": "复盘", "market_daily": "日线行情"}
     label = names[sources[0]["tool"]]
     findings = []
     for row in data["items"][:10]:
@@ -212,6 +222,10 @@ def call_model(request: AgentRequest, sources: list[dict]) -> tuple[str, dict]:
               "不得编造行情、收益或交易执行，不建议具体下单数量。记录是历史快照，标出日期与样本限制。"
               "每条 finding 必须引用存在的 source_ids。输出符合 JSON Schema 的 JSON 对象：" + json.dumps(schema, ensure_ascii=False))
     user = json.dumps({"question": request.question, "sources": sources}, ensure_ascii=False, default=str)
+    if request.task == 'market':
+        system += (' 此任务的数字事实由程序单独生成。你只提供定性解读：summary、findings.text、next_steps、limitations 中禁止出现任何阿拉伯数字、日期、代码、价格和百分比；'
+                   '不要自行统计交易日或计算指标。直接使用来源 metrics 的窗口及 close_position_label 判断，不能把区间上部说成下部。'
+                   'summary 不超过二百字，findings 最多五条，明确模型推断和证据不足。source_ids 中仍使用 S1。')
     if provider != "deepseek":
         # Codex 通过 MCP 使用自己的模型；不隐式启动另一个拥有工作区权限的 CLI。
         raise ValueError("研究模型未配置：请在 config/llm.yaml 配置 deepseek，或使用本地整理 / Codex MCP")
@@ -274,6 +288,9 @@ class WorkspaceAgent:
             source_ids = {s["source_id"] for s in sources}
             if any(not set(f.source_ids) <= source_ids for f in report.findings):
                 raise ValueError("模型引用了不存在的证据，报告未发布")
+            if request.task == 'market' and request.mode == 'model':
+                from .daily_observation import verified_market_report
+                report = AgentReport.model_validate(verified_market_report(report.model_dump(), sources[0]))
             # 即使取消发生在供应商请求期间，也记录实际已返回的用量，但不发布报告。
             events.append({"at": now(), "type": "report_validated"})
             self.store.patch(run_id, active_only=True, status="completed", output=report.model_dump(), events=events)

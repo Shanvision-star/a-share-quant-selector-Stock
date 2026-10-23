@@ -40,9 +40,17 @@ class UpdateActionParameters(BaseModel):
 class ActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: str = Field(min_length=1, max_length=128)
-    action: Literal["update", "backtest", "tracking"]
+    action: Literal["update", "backtest", "tracking", "tracking_refresh"]
     confirmed: bool = False
     parameters: dict = Field(default_factory=dict)
+
+
+class TrackingRefreshParameters(BaseModel):
+    """只接受正式跟踪、报告与复盘标识，不接受仓位或交易字段。"""
+    model_config = ConfigDict(extra='forbid')
+    tracking_id: str = Field(pattern=r'^trk_[a-f0-9]+$')
+    run_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    review_date: date
 
 
 def init_requests():
@@ -168,6 +176,10 @@ class ControlledActions:
                 from .backtest_job_service import backtest_job_manager
                 result = backtest_job_manager.submit(params)
                 item.update(business_id=result["task_id"], status=result["status"], result=result)
+            elif request.action == "tracking_refresh":
+                from .daily_observation import refresh_observation
+                result = refresh_observation(**params)
+                item.update(business_id=result['tracking_id'], status='completed', result=result)
             elif request.action == "tracking":
                 from .tracking_service import tracking_service
                 result = tracking_service.create_item(params)
@@ -183,6 +195,8 @@ class ControlledActions:
 
     def validate(self, request):
         params = request.parameters
+        if request.action == 'tracking_refresh':
+            return TrackingRefreshParameters.model_validate(params).model_dump(mode='json')
         if request.action == "backtest":
             from web.backend.routers.backtest import BacktestRequest
             if set(params) - BacktestRequest.model_fields.keys():

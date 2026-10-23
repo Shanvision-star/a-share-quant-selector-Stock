@@ -70,7 +70,7 @@ async def get_data_status():
 
 
 @router.get("/data/init-status")
-async def get_init_status():
+def get_init_status():
     """
     首次运行检测：判断本地数据目录是否为空或严重过期。
     返回:
@@ -81,6 +81,7 @@ async def get_init_status():
       total_stocks: 本地股票CSV总数
       max_lag_days: 最旧数据与今日相差天数（粗略估算）
     """
+    # 文件枚举和 CSV 读取交给 FastAPI 线程池，避免首页检查阻塞 Agent/MCP 回读。
     logger.debug("GET /api/data/init-status 被调用")
     try:
         from web.backend.services.data_service import csv_manager

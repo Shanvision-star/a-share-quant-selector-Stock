@@ -8,9 +8,50 @@ from pathlib import Path
 import socket
 import sys
 import threading
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+
+def wait_for_parent_pipe_eof(stdin_fd: int) -> None:
+    """只监测父管道关闭，不持有Windows FILE缓冲锁，避免阻塞后续原生扩展加载。"""
+    if os.name != "nt":
+        while os.read(stdin_fd, 4096):
+            pass
+        return
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    peek = kernel.PeekNamedPipe
+    peek.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                     ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD)]
+    peek.restype = wintypes.BOOL
+    handle = wintypes.HANDLE(msvcrt.get_osfhandle(stdin_fd))
+    while True:
+        available = wintypes.DWORD()
+        if not peek(handle, None, 0, None, ctypes.byref(available), None):
+            error = ctypes.get_last_error()
+            if error in (6, 109, 232, 233):
+                return
+            raise OSError(error, "桌面父进程管道状态读取失败")
+        # 桌面协议只用EOF表达退出；只消费已到达字节，绝不发起阻塞FILE读取。
+        if available.value and not os.read(stdin_fd, min(available.value, 4096)):
+            return
+        time.sleep(0.2)
+
+
+def watch_parent(server, stdin_fd: int | None = None) -> None:
+    try:
+        wait_for_parent_pipe_eof(sys.stdin.fileno() if stdin_fd is None else stdin_fd)
+    except OSError:
+        # 管道失效表示父进程不可再控制本服务，应进入已有优雅退出流程。
+        pass
+    finally:
+        server.should_exit = True
 
 
 def main():
@@ -32,11 +73,7 @@ def main():
         runtime_path.chmod(0o600)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=5))
 
-    def parent_watch():
-        sys.stdin.buffer.read()
-        server.should_exit = True
-
-    threading.Thread(target=parent_watch, daemon=True, name="desktop-parent-watch").start()
+    threading.Thread(target=watch_parent, args=(server,), daemon=True, name="desktop-parent-watch").start()
     print(json.dumps({"port": port, "pid": os.getpid()}), flush=True)
     try:
         server.run(sockets=[listener])

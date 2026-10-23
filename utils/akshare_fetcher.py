@@ -1980,22 +1980,17 @@ class AKShareFetcher:
             return build_summary('done', message)
 
         # ── 只更新日期落后的股票（跳过已是最新的，节省时间）───────────
-        # P1: 只读第一行(nrows=1)判断日期，不读全量CSV（~100x加速）
+        # 日期检查只需要首行，避免为每只股票构造 DataFrame 和日期解析器。
         print("  检查更新状态...")
         emit_progress(1, f"开始检查 {scan_total} 只股票的数据状态...", phase='scan')
         latest_date_map: dict = {}  # code→date，供快/慢路径分拣复用
         for idx, code in enumerate(existing_stocks, start=1):
             checked_count = idx
             try:
-                _path = self.csv_manager.get_stock_path(code)
-                if not _path.exists() or _path.stat().st_size == 0:
-                    stocks_to_update.append(code)
-                    continue
-                _df1 = pd.read_csv(_path, nrows=1, usecols=['date'])
-                if _df1.empty:
+                _ld = self.csv_manager.read_latest_date(code)
+                if _ld is None:
                     stocks_to_update.append(code)
                 else:
-                    _ld = pd.to_datetime(_df1.iloc[0]['date']).date()
                     latest_date_map[code] = _ld
                     if _ld < target_date:
                         stocks_to_update.append(code)

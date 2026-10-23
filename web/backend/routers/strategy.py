@@ -74,7 +74,7 @@ async def get_available_dates(
 
 
 @router.get("/strategy/cache/status")
-async def get_strategy_cache_status(
+def get_strategy_cache_status(
     strategy: str = Query("all", pattern=_STRATEGY_FILTER_RE),
     date: str = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):

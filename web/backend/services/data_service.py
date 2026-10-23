@@ -232,12 +232,15 @@ async def _run_data_update_unlocked(
     """
     异步执行数据更新，通过 yield 返回进度消息（SSE）
     auto_rebuild=True 时，更新完成后自动执行策略缓存重建
-    pipeline=True 时，每只股票更新后立即用内存 df 执行策略扫描，命中结果通过 signal 事件实时推送
+    pipeline=True 且 auto_rebuild=False 时，每只股票更新后内联筛选；统一作业只在重建阶段筛选一次。
     strategies 为 None 或 ['all'] 时跑全部策略；否则只对所选策略增量重建缓存
     """
     from web.backend.services.strategy_service import (
         build_strategy_result_snapshot,
     )
+
+    # 自动重建会覆盖全市场并推送 signal；更新阶段再筛一次会重复计算，且可能使用不同历史窗口。
+    pipeline = pipeline and not auto_rebuild
 
     run_id = _run_id or repo.generate_run_id()
     run_type = 'update_and_rebuild' if auto_rebuild else 'update_only'

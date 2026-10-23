@@ -5,6 +5,7 @@ import csv
 from io import StringIO
 import os
 import pandas as pd
+from datetime import date
 from pathlib import Path
 
 
@@ -37,6 +38,19 @@ class CSVManager:
         subdir.mkdir(exist_ok=True)
         return subdir / f"{stock_code}.csv"
     
+    def read_latest_date(self, stock_code):
+        """只读倒序 CSV 首行日期；缺失或坏行返回 None，交给更新流程补齐。"""
+        path = self.data_dir / stock_code[:2] / f"{stock_code}.csv"
+        try:
+            with path.open(encoding='utf-8-sig', newline='') as file:
+                row = next(csv.DictReader(file), {})
+            value = row.get('date') or ''
+            if len(value) < 10 or value[4] != '-' or value[7] != '-':
+                return None
+            return date.fromisoformat(value[:10])
+        except (OSError, ValueError, UnicodeError, csv.Error):
+            return None
+
     def read_stock(self, stock_code, parse_dates=False, nrows=None, usecols=None):
         """读取股票数据。
 

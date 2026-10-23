@@ -24,14 +24,16 @@ from utils.technical import calculate_zhixing_trend
 def _tdx_sma(values: pd.Series, n: int, m: int) -> pd.Series:
     """通达信 SMA(X,N,M)，必须按时间正序递归计算。"""
     numeric = pd.to_numeric(values, errors="coerce").fillna(0.0)
-    result = pd.Series(index=numeric.index, dtype=float)
     if numeric.empty:
-        return result
+        return pd.Series(index=numeric.index, dtype=float)
 
-    result.iloc[0] = numeric.iloc[0]
+    # 数组递推保留公式和运算顺序，避免全市场扫描反复执行 Series.iloc 写入。
+    source = numeric.to_numpy(dtype=float)
+    result = np.empty(len(source), dtype=float)
+    result[0] = source[0]
     for i in range(1, len(numeric)):
-        result.iloc[i] = (numeric.iloc[i] * m + result.iloc[i - 1] * (n - m)) / n
-    return result
+        result[i] = (source[i] * m + result[i - 1] * (n - m)) / n
+    return pd.Series(result, index=numeric.index)
 
 
 def _restore_to_source_index(calc: pd.DataFrame, values: pd.Series, source_index: pd.Index) -> pd.Series:

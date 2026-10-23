@@ -161,29 +161,26 @@ def KDJ(df, n=9, m1=3, m2=3):
     low_min = df_calc['low'].rolling(window=n, min_periods=1).min()
     high_max = df_calc['high'].rolling(window=n, min_periods=1).max()
     
-    range_val = high_max - low_min
-    rsv = pd.Series(index=df_calc.index, dtype=float)
-    
-    # RSV计算，前n-1个周期不足时用50填充
-    for i in range(len(df_calc)):
-        if i < n - 1 or range_val.iloc[i] == 0:
-            rsv.iloc[i] = 50.0
-        else:
-            rsv.iloc[i] = (df_calc['close'].iloc[i] - low_min.iloc[i]) / range_val.iloc[i] * 100
+    range_val = (high_max - low_min).to_numpy(dtype=float)
+    lows = low_min.to_numpy(dtype=float)
+    closes = df_calc['close'].to_numpy(dtype=float)
+    rsv = np.full(len(df_calc), 50.0)
+    valid = (np.arange(len(df_calc)) >= n - 1) & (range_val != 0)
+    rsv[valid] = (closes[valid] - lows[valid]) / range_val[valid] * 100
     
     # SMA计算 - 通达信风格
     # K = SMA(RSV, M1, 1): K = (RSV*1 + K'*(M1-1)) / M1
-    k = pd.Series(index=df_calc.index, dtype=float)
-    d = pd.Series(index=df_calc.index, dtype=float)
+    k = np.empty(len(df_calc), dtype=float)
+    d = np.empty(len(df_calc), dtype=float)
     
     # 初始化第一日K、D值为50
-    k.iloc[0] = 50.0
-    d.iloc[0] = 50.0
+    k[0] = 50.0
+    d[0] = 50.0
     
-    # 递归计算
+    # 保持原递推顺序和 NaN 传播，只移除逐格 Pandas 索引开销，避免改变临界信号。
     for i in range(1, len(df_calc)):
-        k.iloc[i] = (rsv.iloc[i] * 1 + k.iloc[i-1] * (m1 - 1)) / m1
-        d.iloc[i] = (k.iloc[i] * 1 + d.iloc[i-1] * (m2 - 1)) / m2
+        k[i] = (rsv[i] * 1 + k[i-1] * (m1 - 1)) / m1
+        d[i] = (k[i] * 1 + d[i-1] * (m2 - 1)) / m2
     
     # 计算J值
     j = 3 * k - 2 * d

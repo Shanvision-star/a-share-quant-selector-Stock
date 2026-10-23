@@ -82,6 +82,28 @@ def test_run_data_update_uses_actual_update_target_for_rebuild(monkeypatch):
     )
 
 
+@pytest.mark.parametrize('auto_rebuild', [True, False])
+def test_pipeline_does_not_duplicate_automatic_rebuild(monkeypatch, auto_rebuild):
+    """统一作业只筛一次；显式仅更新的内联预览仍可使用。"""
+    calls = []
+    monkeypatch.setattr(data_service.csv_manager, 'list_all_stocks', lambda: ['000001'])
+    monkeypatch.setattr(strategy_service, 'get_resolved_strategy_items', lambda: ({}, []))
+    def update(**kwargs):
+        calls.append(('update', kwargs['on_stock_ready'] is not None))
+        return {'status': 'done', 'target_date': '2026-10-23', 'cache_hit': True}
+    def rebuild(**kwargs):
+        calls.append(('rebuild', True))
+        return {'trade_date': '2026-10-23', 'total': 0, 'groups': {}}
+    monkeypatch.setattr(data_service.fetcher, 'daily_update', update)
+    monkeypatch.setattr(strategy_service, 'build_strategy_result_snapshot', rebuild)
+    async def collect():
+        return [event async for event in data_service.run_data_update(
+            target_date='2026-10-23', pipeline=True, auto_rebuild=auto_rebuild)]
+    events = asyncio.run(collect())
+    assert calls == ([('update', False), ('rebuild', True)] if auto_rebuild else [('update', True)])
+    assert events[-1]['event'] == 'job_complete'
+
+
 def test_run_data_update_preopen_intraday_fast_uses_latest_completed_trade_date(monkeypatch):
     """开盘前勾选盘中快路径时，统一作业仍应使用最近已完成交易日。"""
     class FakeDateTime(real_datetime):

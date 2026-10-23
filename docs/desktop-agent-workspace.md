@@ -83,6 +83,8 @@ DeepSeek 复用 `config/llm.yaml` 的 `provider` 与 `deepseek` 字段。研究 
 
 受控操作先发现 `capabilities.action_schemas` 再构造参数，必须显式确认；每分钟最多12条新操作，同类在途任务互斥。`request_id` 与 payload 绑定；重试相同请求返回原任务，换 payload 拒绝。`queued/running` 只表示受理，必须查询终态；更新遇到 partial 即失败，后续 done 不能覆盖。退出后保留 request/业务记录，不能把中断请求直接重放成重复操作。
 
+重启后读取受控操作或活动任务时，确认拥有进程已退出的未完成回测会同时恢复业务记录与操作记录为 `failed`，错误说明任务中断，并留下 `owner_interrupted` 事件。已完成结果及其他仍活跃实例保持不变；再次执行必须使用新的 `request_id`。Zettaranc 原有回测入口及历史扩展脚本的依赖也包含在独立发行包中。
+
 ## Codex 调用
 
 桌面菜单“复制 Codex MCP 配置”生成当前工作区与内置解释器的绝对路径，粘贴到 Codex MCP 配置后启用即可。无需为 MCP 另装 Python。桌面必须运行，工具通过发现文件连接当前实例；配置本身不包含令牌。更换工作区、安装目录或升级便携版后重新复制配置。

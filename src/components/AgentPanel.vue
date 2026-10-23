@@ -38,6 +38,15 @@ const sending = ref(false)
 const saving = ref(false)
 const history = ref(false)
 const saveOpen = ref(false)
+const modelHelpOpen = ref(false)
+const modelConfigExample = `provider: deepseek
+deepseek:
+  api_key: "<填写你的 DeepSeek API Key>"
+  base_url: "https://api.deepseek.com/v1"
+  model: "deepseek-chat"
+  temperature: 0.2
+  timeout_seconds: 20
+  max_output_tokens: 600`
 const trackingOpen = ref(false)
 const trackingDate = ref('')
 const trackingSaving = ref(false)
@@ -127,6 +136,7 @@ async function submit(preset?: string) {
   const text = (preset || question.value).trim()
   if (!text || sending.value || active.value) return
   if (!code.value) { error.value = '请先在工作台选择股票，或打开股票详情'; return }
+  if (mode.value === 'model' && !capabilities.value?.model_ready) { error.value = '模型未配置，请查看配置方式'; return }
   generation++
   clearTimeout(timer)
   sending.value = true
@@ -257,7 +267,7 @@ onBeforeUnmount(() => {
       ><span v-if="code" class="context-stock">{{ code }}</span>
     </div>
     <p v-if="mode === 'local'" class="mode-help">固定检查参考日期、过期与截断；输入作为任务记录，不回答自由问题。</p>
-    <p v-if="mode === 'model' && !capabilities?.model_ready" class="mode-help">模型未配置。<el-button text size="small" @click="router.push('/settings')">打开设置 ↗</el-button></p>
+    <p v-if="mode === 'model' && !capabilities?.model_ready" class="mode-help">模型未配置 · <el-button text size="small" @click="modelHelpOpen = true">配置方式</el-button></p>
     <div class="workflow-links"><el-button text size="small" @click="router.push('/update')">数据更新 ↗</el-button><el-button text size="small" @click="router.push('/backtest')">回测表单 ↗</el-button></div>
     <div class="agent-content">
       <div v-if="history" class="run-history">
@@ -387,7 +397,7 @@ onBeforeUnmount(() => {
         @keydown.ctrl.enter.prevent="submit()"
       />
       <div class="composer-bottom">
-        <span v-if="mode === 'model'">{{ capabilities?.model || '模型未配置' }}</span>
+        <span v-if="mode === 'model' && capabilities?.model_ready">{{ capabilities.model }}</span>
         <el-button v-if="active" size="small" @click="cancel">停止</el-button
         ><el-button
           v-else
@@ -401,6 +411,15 @@ onBeforeUnmount(() => {
         />
       </div>
     </form>
+    <el-dialog v-model="modelHelpOpen" title="模型配置方式" width="460px" append-to-body>
+      <div class="model-help">
+        <p>桌面应用：在“工作台 → 打开数据目录”打开的文件夹中返回上级，编辑 <code>config/llm.yaml</code>。</p>
+        <p>网页版：编辑项目目录中的 <code>config/llm.yaml</code>。按以下字段填写 DeepSeek 配置，保存后重启应用。</p>
+        <pre>{{ modelConfigExample }}</pre>
+        <p>Codex：使用桌面“复制 Codex MCP 配置”接入，无需此 DeepSeek 密钥。</p>
+      </div>
+      <template #footer><el-button @click="modelHelpOpen = false">知道了</el-button></template>
+    </el-dialog>
     <el-dialog v-model="trackingOpen" title="确认加入跟踪" width="360px" append-to-body>
       <p>股票 {{ trackingTarget?.code }} · 来源 {{ trackingTarget?.runId }}</p>
       <p v-if="trackingError" class="agent-error" role="alert">{{ trackingError }}</p>
@@ -432,6 +451,8 @@ onBeforeUnmount(() => {
   </aside>
 </template>
 <style scoped>
+.model-help{font-size:13px;line-height:1.8}.model-help p + p{margin-top:12px}.model-help pre{margin:14px 0;padding:12px;background:#f4f6fa;border-radius:8px;overflow:auto;font-size:11px;line-height:1.6}
+
 .mode-help{font-size:11px;line-height:1.6;color:var(--text-secondary);margin:6px 20px}.workflow-links{display:flex;padding:0 16px}.report-context{font-size:11px;line-height:1.7;color:var(--text-secondary);margin:0 0 12px}.report-context strong{font-weight:500;color:#9b641a}.source-link{border:0;background:none;color:var(--text-accent);font:inherit;cursor:pointer;overflow-wrap:anywhere}.report-links{display:flex;flex-wrap:wrap;margin:12px 0}.report-links .el-button{margin:0}
 
 .agent-panel {

@@ -89,6 +89,15 @@ def complete_request(kind, request_id, result):
     conn.commit()
 
 
+def audit_attempt(kind, request_id, event, *, parent_id=None, author=None, stage=None, error_type=None):
+    """只保存有界标识和失败分类，不保存原参数、模型正文或异常原文中的凭证。"""
+    conn = get_connection()
+    conn.execute("CREATE TABLE IF NOT EXISTS workspace_action_audit (event_id TEXT PRIMARY KEY, created_at TEXT, request_id TEXT, event TEXT, payload TEXT)")
+    payload = {"kind": kind, "parent_id": (parent_id or "")[:128], "author": (author or "")[:100], "stage": stage, "error_type": error_type}
+    conn.execute("INSERT INTO workspace_action_audit VALUES (?,?,?,?,?)", (uuid4().hex, now(), request_id[:128], event, json.dumps(payload, ensure_ascii=False)))
+    conn.commit()
+
+
 class ControlledActions:
     def __init__(self):
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="controlled-update")
@@ -100,21 +109,25 @@ class ControlledActions:
 
     def submit(self, request):
         with self.lock:
-            return self._submit(request)
+            audit_attempt("action", request.request_id, "requested", stage="confirmation")
+            try:
+                return self._submit(request)
+            except Exception as exc:
+                audit_attempt("action", request.request_id, "rejected", stage=getattr(self, "stage", "validation"), error_type=type(exc).__name__)
+                raise ValueError("操作被拒绝，请核对confirmed、参数、频率和request_id；失败审计已保存") from exc
 
     def _submit(self, request):
-        init_requests()
-        conn = get_connection()
-        conn.execute("CREATE TABLE IF NOT EXISTS workspace_action_audit (event_id TEXT PRIMARY KEY, created_at TEXT, request_id TEXT, event TEXT, payload TEXT)")
-        conn.execute("INSERT INTO workspace_action_audit VALUES (?,?,?,?,?)", (uuid4().hex, now(), request.request_id, "requested" if request.confirmed else "confirmation_rejected", json.dumps(request.model_dump(mode="json"), ensure_ascii=False)))
-        conn.commit()
+        self.stage = "confirmation"
         if not request.confirmed:
             raise ValueError("需要明确 confirmed 才可执行业务写操作")
+        self.stage = "validation"
         params = self.validate(request)
+        self.stage = "rate_limit"
         if len([x for x in self.recent() if x["created_at"][:16] == now()[:16]]) >= 12:
             existing = next((x for x in self.recent() if x["request_id"] == request.request_id), None)
             if not existing:
                 raise ValueError("操作频率过高，请稍后重试")
+        self.stage = "idempotency"
         prior = claim_request("action", request.request_id, request.model_dump(mode="json"))
         if prior:
             return self.get(prior["action_id"])
@@ -183,13 +196,14 @@ class ControlledActions:
                 item["business_id"] = data.get("run_id") or item["business_id"]
                 item["result"] = data
                 status = data.get("status")
-                if message["event"] == "error" or status in ("error", "partial", "busy"):
-                    item.update(status="failed", error=data.get("message", status))
+                if message["event"] == "error" or status in ("error", "partial", "busy") or data.get("update_status") in ("partial", "error"):
+                    item.update(status="failed", error=data.get("message", status), update_failure=dict(data), update_status=data.get("update_status") or status)
                     terminal = True
                 elif message["event"] == "job_complete" and status == "done":
-                    item["status"] = "completed"
+                    if not item.get("update_failure"):
+                        item["status"] = "completed"
                     terminal = True
-                item["events"].append({"at": now(), "type": message["event"], "status": status})
+                item["events"].append({"at": now(), "type": message["event"], "status": status, "update_status": data.get("update_status"), "failed": data.get("failed"), "message": str(data.get("message", ""))[:300]})
                 self.save(item)
             if not terminal:
                 raise ValueError("更新流结束但未返回业务终态")
@@ -206,9 +220,14 @@ class ControlledActions:
         items = [json.loads(row[0]) for row in rows if json.loads(row[0]).get("action_id")]
         for item in items:
             if item["kind"] == "update" and item["status"] in ("running", "queued") and not process_alive(item.get("owner_pid")):
-                from .strategy_result_repository import get_run
+                from .strategy_result_repository import get_run, get_run_events
                 business = get_run(item["business_id"]) if item.get("business_id") else None
                 status = {"done": "completed", "error": "failed", "interrupted": "interrupted"}.get((business or {}).get("status"), "interrupted")
+                history = get_run_events(item["business_id"]) if business else []
+                partial = item.get("update_failure") or (business or {}).get("update_status") in ("partial", "error") or any(event["event_type"] in ("warning", "update_warning") for event in history)
+                if partial:
+                    status = "failed"
+                    item["update_status"] = "partial"
                 item.update(status=status, result=business, error=None if status == "completed" else (business or {}).get("message") or "拥有更新任务的后端进程已退出，请核对业务历史")
                 item["events"].append({"at": now(), "type": "owner_interrupted"})
                 self.save(item)

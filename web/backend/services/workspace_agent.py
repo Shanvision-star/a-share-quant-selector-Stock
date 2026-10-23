@@ -293,6 +293,17 @@ class WorkspaceAgent:
             self.capacity.release()
 
     def submit_analysis(self, parent_id: str, payload) -> dict:
+        from .workspace_actions import audit_attempt
+        audit_attempt("analysis", payload.request_id, "requested", parent_id=parent_id, author=payload.author, stage="parent_evidence_idempotency")
+        try:
+            return self._submit_analysis(parent_id, payload)
+        except Exception as exc:
+            message = str(exc)
+            stage = "parent_state" if isinstance(exc, KeyError) or "父运行必须" in message else "source_hash" if "hash" in message or "完整性" in message else "source_reference" if "引用" in message else "idempotency"
+            audit_attempt("analysis", payload.request_id, "rejected", parent_id=parent_id, author=payload.author, stage=stage, error_type=type(exc).__name__)
+            raise
+
+    def _submit_analysis(self, parent_id: str, payload) -> dict:
         from .workspace_actions import claim_request, complete_request
         parent = self.store.get(parent_id)
         if parent["status"] != "completed" or not parent["sources"]:
@@ -318,6 +329,14 @@ class WorkspaceAgent:
         return child
 
     def save_review(self, run_id: str, review_date: str) -> dict:
+        from .workspace_actions import audit_attempt
+        try:
+            return self._save_review(run_id, review_date)
+        except Exception as exc:
+            audit_attempt("review", run_id, "failed", parent_id=run_id, stage="append_review", error_type=type(exc).__name__)
+            raise
+
+    def _save_review(self, run_id: str, review_date: str) -> dict:
         run = self.store.get(run_id)
         if run["status"] != "completed" or not run["output"]:
             raise ValueError("只有已完成的报告可以保存")

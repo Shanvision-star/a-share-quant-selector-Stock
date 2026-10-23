@@ -278,3 +278,58 @@ def test_analysis_interrupted_claim_is_visible_and_never_replayed(agent):
     with pytest.raises(ValueError, match="状态=interrupted"):
         actions.claim_request("analysis", "interrupted-analysis", payload)
     assert actions.request_state("analysis", "interrupted-analysis")["request_state"] == "interrupted"
+
+
+def test_partial_warning_cannot_be_overwritten_by_done(agent, monkeypatch):
+    from web.backend.services import workspace_actions as actions, data_service
+    service = actions.ControlledActions()
+    async def update(**params):
+        yield {"event": "update_warning", "data": {"run_id": "partial-real", "status": "running", "update_status": "partial", "failed": 3, "message": "三只失败"}}
+        yield {"event": "update_complete", "data": {"run_id": "partial-real", "status": "running"}}
+        yield {"event": "job_complete", "data": {"run_id": "partial-real", "status": "done"}}
+    monkeypatch.setattr(data_service, "run_data_update", update)
+    item = service.submit(actions.ActionRequest(request_id="partial-real", action="update", confirmed=True))
+    service.pool.shutdown(wait=True)
+    final = service.get(item["action_id"])
+    assert final["status"] == "failed" and final["update_status"] == "partial"
+    assert final["update_failure"]["failed"] == 3 and final["error"] == "三只失败"
+    assert final["events"][2]["update_status"] == "partial"
+
+
+def test_dead_owner_done_with_warning_recovers_failed(agent):
+    from web.backend.services import workspace_actions as actions, strategy_result_repository as repo
+    service = actions.ControlledActions()
+    repo.create_run("partial-dead", "update", "2026-10-23", "all")
+    repo.insert_event("partial-dead", "warning", message="局部失败")
+    repo.finish_run("partial-dead", "done")
+    actions.claim_request("action", "partial-dead", {})
+    service.save({"action_id": "partial-dead", "request_id": "partial-dead", "kind": "update", "status": "running", "owner_pid": -1, "business_id": "partial-dead", "events": [], "created_at": module.now()})
+    assert service.get("partial-dead")["status"] == "failed"
+    service.pool.shutdown()
+
+
+def test_rejections_and_review_failures_persist_safe_audit(agent, monkeypatch):
+    from web.backend.services import workspace_actions as actions
+    service = actions.ControlledActions()
+    secret = "secret-must-never-be-audited"
+    with pytest.raises(ValueError):
+        service.submit(actions.ActionRequest(request_id="invalid-params", action="update", confirmed=True, parameters={"unknown": secret}))
+    monkeypatch.setattr(service, "recent", lambda: [{"created_at": module.now(), "request_id": str(i)} for i in range(12)])
+    with pytest.raises(ValueError):
+        service.submit(actions.ActionRequest(request_id="rate-limited", action="update", confirmed=True))
+    monkeypatch.setattr(service, "recent", lambda: [])
+    actions.claim_request("action", "conflicting-id", {"old": True})
+    with pytest.raises(ValueError):
+        service.submit(actions.ActionRequest(request_id="conflicting-id", action="update", confirmed=True))
+    parent = finish(agent, agent.submit(module.AgentRequest(question="取证", task="tracking")))
+    payload = actions.AnalysisRequest(request_id="invalid-hash", source_hashes={"S1": "wrong"}, report={"summary": secret, "findings": [], "next_steps": [], "limitations": []}, model="test", prompt_version="test")
+    with pytest.raises(ValueError):
+        agent.submit_analysis(parent["run_id"], payload)
+    with pytest.raises(ValueError):
+        agent.save_review(agent.store.create(module.AgentRequest(question="未完成"))["run_id"], "2026-10-23")
+    rows = db.get_connection().execute("SELECT request_id,event,payload FROM workspace_action_audit").fetchall()
+    rejected = {row[0]: json.loads(row[2])["stage"] for row in rows if row[1] == "rejected"}
+    assert rejected == {"invalid-params": "validation", "rate-limited": "rate_limit", "conflicting-id": "idempotency", "invalid-hash": "source_hash"}
+    assert any(row[1] == "failed" and json.loads(row[2])["stage"] == "append_review" for row in rows)
+    assert secret not in json.dumps([tuple(row) for row in rows])
+    service.pool.shutdown()

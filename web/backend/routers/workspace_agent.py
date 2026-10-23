@@ -66,9 +66,10 @@ def save_review(run_id: str, payload: SaveReviewRequest):
 
 @router.post("/runs/{run_id}/analysis")
 def submit_analysis(run_id: str, payload: AnalysisRequest):
-    get_run(run_id)
     try:
         return workspace_agent.submit_analysis(run_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="父运行不存在") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

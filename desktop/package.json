@@ -1,17 +1,17 @@
 {
   "name": "a-share-quant-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A-share Quant desktop workspace",
   "main": "main.cjs",
   "author": "A-share Quant",
   "scripts": {
     "start": "electron .",
-    "check": "node --check main.cjs",
+    "check": "node --check main.cjs && node --check workspace.cjs && node --test test/*.test.cjs",
     "prepack": "install-electron",
     "predist": "install-electron",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder --win portable"
+    "dist": "electron-builder --win nsis portable"
   },
   "build": {
     "appId": "local.ashare.quant",
@@ -22,11 +22,27 @@
     },
     "files": [
       "main.cjs",
+      "workspace.cjs",
+      "assets/icon.png",
       "package.json"
     ],
+    "extraResources": [
+      { "from": "build/python", "to": "python" },
+      { "from": "build/app", "to": "app-source" },
+      { "from": "build/defaults", "to": "defaults" }
+    ],
     "win": {
-      "target": "portable",
-      "signAndEditExecutable": false
+      "target": ["nsis", "portable"],
+      "icon": "assets/icon.ico",
+      "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "A-share-Quant-Setup-${version}.exe",
+      "shortcutName": "A-share Quant"
     },
     "portable": {
       "artifactName": "A-share-Quant-${version}.exe"

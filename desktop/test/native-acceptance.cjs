@@ -25,9 +25,10 @@ async function launch() {
   await instance.evaluate(({ dialog }) => {
     globalThis.acceptanceDialogs = []
     globalThis.acceptanceDiscard = false
+    globalThis.acceptanceStopTasks = false
     dialog.showMessageBox = async (_window, options) => {
       globalThis.acceptanceDialogs.push(options.message)
-      return { response: 0 }
+      return { response: globalThis.acceptanceStopTasks ? 1 : 0 }
     }
     dialog.showMessageBoxSync = (_window, options) => {
       globalThis.acceptanceDialogs.push(options.title)
@@ -72,8 +73,22 @@ async function main() {
   check('active task quit asks before shutdown', (await instance.evaluate(() => globalThis.acceptanceDialogs)).some(text => text.includes('任务正在运行')))
   check('cancel active quit keeps backend healthy', (await api('health')).ok)
   await fetch(`${runtime.base_url}/api/agent/runs/${runId}/cancel`, { method: 'POST', headers })
+  // 用当前后端 PID 的持久化运行夹具验证真实退出/重启后的恢复，不冒充耗时回测已执行。
+  const backtestFixture = `import sys, json
+sys.path.insert(0, sys.argv[1])
+from web.backend.services.backtest_job_service import BacktestTaskRepository
+from web.backend.services.workspace_actions import claim_request, complete_request
+from web.backend.services.workspace_agent import now
+task_id='bt_native_exit_fixture'
+BacktestTaskRepository().create({'task_id':task_id,'status':'running','params':{},'message':'native exit fixture'})
+claim_request('action','native-exit-backtest',{'fixture':True})
+complete_request('action','native-exit-backtest',{'action_id':'native-exit-action','request_id':'native-exit-backtest','kind':'backtest','status':'running','business_id':task_id,'owner_pid':int(sys.argv[2]),'created_at':now(),'parameters':{},'events':[]})
+`
+  const backtestSeeded = spawnSync(python, ['-c', backtestFixture, workspace, String(runtime.pid)], { env, encoding: 'utf8', windowsHide: true })
+  assert.equal(backtestSeeded.status, 0, backtestSeeded.stderr)
+  check('live-owner backtest fixture remains active', (await (await api('agent/active')).json()).items.some(item => item.id === 'bt_native_exit_fixture'))
   await page.locator('.body-editor textarea').fill('桌面验收：放弃这次修改')
-  await instance.evaluate(() => { globalThis.acceptanceDiscard = true })
+  await instance.evaluate(() => { globalThis.acceptanceDiscard = true; globalThis.acceptanceStopTasks = true })
   await page.screenshot({ path: path.join(output, 'review-unsaved.png') })
   const closed = instance.waitForEvent('close', { timeout: 20000 })
   await instance.evaluate(({ app }) => { app.quit() }).catch(() => {})
@@ -84,6 +99,10 @@ async function main() {
 
   const reopened = await launch()
   const nextRuntime = JSON.parse(fs.readFileSync(runtimeFile, 'utf8'))
+  const nextApi = async endpoint => fetch(`${nextRuntime.base_url}/api/${endpoint}`, { headers: { 'X-Quant-Token': nextRuntime.token } })
+  check('dead-owner backtest absent from first active query', (await (await nextApi('agent/active')).json()).total === 0)
+  const interrupted = await (await nextApi('agent/actions/native-exit-action')).json()
+  check('interrupted backtest has audited terminal status', ['failed', 'interrupted'].includes(interrupted.status) && interrupted.events.some(event => event.type === 'owner_interrupted'))
   await reopened.goto(`${nextRuntime.base_url}/review-library`)
   await reopened.locator('.body-editor textarea').waitFor()
   const restoredBody = await reopened.locator('.body-editor textarea').inputValue()

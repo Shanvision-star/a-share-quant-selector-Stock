@@ -85,7 +85,7 @@ DeepSeek 复用 `config/llm.yaml` 的 `provider` 与 `deepseek` 字段。研究 
 
 ## Codex 调用
 
-桌面菜单“复制 Codex MCP 配置”生成当前工作区与内置解释器的绝对路径，粘贴到 Codex MCP 配置后启用即可。无需为 MCP 另装 Python。桌面必须运行，工具通过发现文件连接当前实例；配置本身不包含令牌。更换工作区或移动便携路径后重新复制配置。
+桌面菜单“复制 Codex MCP 配置”生成当前工作区与内置解释器的绝对路径，粘贴到 Codex MCP 配置后启用即可。无需为 MCP 另装 Python。桌面必须运行，工具通过发现文件连接当前实例；配置本身不包含令牌。更换工作区、安装目录或升级便携版后重新复制配置。
 
 JSON CLI 默认发现运行中的桌面实例，否则连接 `http://127.0.0.1:8001`。可用 `QUANT_RUNTIME_FILE` 指向其他工作区的发现文件，或通过 `QUANT_API_URL` 与 `QUANT_API_TOKEN` 指定实例；只接受回环 HTTP 地址。以下是源码开发环境示例，打包用户可用菜单配置中的 Python 和 scripts 绝对路径：
 

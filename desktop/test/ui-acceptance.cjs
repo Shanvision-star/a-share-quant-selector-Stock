@@ -78,7 +78,8 @@ async function main() {
 
   await go('/stocks/000001')
   await page.locator('canvas').first().waitFor({ timeout: 90000 })
-  for (const width of [1366, 768, 390]) {
+  if (await page.locator('.agent-panel').isVisible()) await page.getByRole('button', { name: '关闭 Agent', exact: true }).click()
+  for (const width of [1366, 900, 768, 390]) {
     await page.setViewportSize({ width, height: 900 })
     await page.waitForTimeout(400)
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
@@ -90,8 +91,8 @@ async function main() {
   await page.setViewportSize({ width: 1512, height: 960 })
   for (const route of ['/strategy-results', '/manual-pool', '/tracking', '/backtest', '/review-library', '/zettaranc', '/strategy-docs', '/update', '/status', '/settings']) {
     await go(route)
-    await page.locator('h1').waitFor()
-    check(`original route reachable ${route}`, new URL(page.url()).pathname === route && await page.locator('h1').innerText())
+    await page.locator('h1').first().waitFor()
+    check(`original route reachable ${route}`, new URL(page.url()).pathname === route && await page.locator('h1').first().innerText())
   }
   await page.locator('.el-loading-mask').first().waitFor({ state: 'hidden', timeout: 90000 }).catch(() => {})
   await shot('06-settings.png')

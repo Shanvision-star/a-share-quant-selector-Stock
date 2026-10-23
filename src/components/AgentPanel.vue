@@ -31,7 +31,9 @@ const route = useRoute()
 const router = useRouter()
 const question = ref('')
 const task = ref<AgentTask>('candidates')
-const mode = ref<'local' | 'model'>('local')
+const savedMode = localStorage.getItem('quant-agent-mode')
+const mode = ref<'local' | 'model' | 'codex'>(savedMode === 'codex' || savedMode === 'model' ? savedMode : 'local')
+watch(mode, value => localStorage.setItem('quant-agent-mode', value))
 const capabilities = ref<AgentCapabilities | null>(null)
 const runs = ref<AgentRun[]>([])
 const current = ref<AgentRun | null>(null)
@@ -146,6 +148,7 @@ async function submit(preset?: string) {
   if (!text || sending.value || active.value) return
   if (!code.value) { error.value = '请先在工作台选择股票，或打开股票详情'; return }
   if (mode.value === 'model' && !capabilities.value?.model_ready) { error.value = '模型未配置，请查看配置方式'; return }
+  if (mode.value === 'codex' && !capabilities.value?.codex_available) { error.value = '未找到 Codex CLI，请安装并登录 Codex 后重试'; return }
   generation++
   clearTimeout(timer)
   sending.value = true
@@ -244,12 +247,11 @@ onBeforeUnmount(() => {
       <h2>Agent</h2>
       <el-button
         :icon="Clock"
-        circle
         text
         aria-label="运行历史"
         :aria-expanded="history"
         @click="history = !history"
-      /><el-button
+      >历史</el-button><el-button
         :icon="Close"
         circle
         text
@@ -281,11 +283,12 @@ onBeforeUnmount(() => {
         ><el-option value="local" label="记录检查" /><el-option
           value="model"
           label="模型研究"
-           /></el-select
+           /><el-option value="codex" label="Codex 分析" /></el-select
       ><span v-if="code" class="context-stock">{{ code }}</span>
     </div>
     <p v-if="mode === 'local'" class="mode-help">固定检查参考日期、过期与截断；输入作为任务记录，不回答自由问题。</p>
     <p v-if="mode === 'model' && !capabilities?.model_ready" class="mode-help">模型未配置 · <el-button text size="small" @click="modelHelpOpen = true">配置方式</el-button></p>
+    <p v-if="mode === 'codex' && !capabilities?.codex_available" class="mode-help" role="alert">安装并登录本机 Codex 后重试</p>
     <div class="workflow-links"><el-button text size="small" @click="router.push('/update')">数据更新 ↗</el-button><el-button text size="small" @click="router.push('/backtest')">回测表单 ↗</el-button></div>
     <div class="agent-content">
       <div v-if="history" class="run-history">
@@ -320,13 +323,18 @@ onBeforeUnmount(() => {
           }}<span class="run-mode">{{
             current.input.mode === 'local'
               ? '记录检查'
-              : current.input.mode === 'external' ? `Codex · ${current.model || '外部分析'}` : current.model || '模型研究'
+              : ['external', 'codex'].includes(current.input.mode) ? `Codex · ${current.model || '分析'}` : current.model || '模型研究'
           }}</span>
         </div>
         <p v-if="current.error" class="agent-error" role="alert">
           {{ current.error }}
         </p>
         <article v-if="current.output" class="agent-report">
+          <div class="report-actions">
+            <el-button :icon="DocumentAdd" size="small" @click="saveOpen = true">{{ current.saved_review ? '已存复盘' : '保存复盘' }}</el-button>
+            <el-button :icon="Download" size="small" aria-label="导出运行 JSON" @click="download">JSON</el-button>
+            <el-button v-if="current.saved_review" text size="small" @click="router.push({path:'/review-library', query:{ date: current.saved_review }})">查看复盘 · {{ current.saved_review }}</el-button>
+          </div>
           <p class="report-summary">{{ displayStrategyText(current.output.summary) }}</p>
           <ul class="findings">
             <li v-for="(item, index) in current.output.findings" :key="index">
@@ -369,27 +377,6 @@ onBeforeUnmount(() => {
             <el-button text size="small" @click="router.push({path:'/tracking',query:{code:current.input.code}})">按股跟踪 ↗</el-button>
             <el-button text size="small" @click="trackingOpen = true">加入跟踪…</el-button>
           </div>
-          <div class="report-actions">
-            <el-button
-              :icon="DocumentAdd"
-              size="small"
-              @click="saveOpen = true"
-              >{{ current.saved_review ? '追加到复盘' : '保存复盘' }}</el-button
-            ><el-button
-              :icon="Download"
-              size="small"
-              aria-label="导出运行 JSON"
-              @click="download"
-              >JSON</el-button
-            >
-          </div>
-          <el-button
-            v-if="current.saved_review"
-            text
-            size="small"
-            @click="router.push({path:'/review-library', query:{ date: current.saved_review }})"
-            >查看复盘 · {{ current.saved_review }}</el-button
-          >
         </article>
       </template>
       <div v-if="!current && !history" class="agent-empty">
@@ -416,17 +403,18 @@ onBeforeUnmount(() => {
       />
       <div class="composer-bottom">
         <span v-if="mode === 'model' && capabilities?.model_ready">{{ capabilities.model }}</span>
+        <span v-if="mode === 'codex' && capabilities?.codex_available">Codex · {{ capabilities.codex_model || '默认模型' }}</span>
         <el-button v-if="active" size="small" @click="cancel">停止</el-button
         ><el-button
           v-else
           type="primary"
           :icon="Promotion"
-          circle
-          aria-label="运行 Agent"
-          :disabled="!question.trim() || !code || (mode === 'model' && !capabilities?.model_ready)"
+          :circle="mode !== 'codex'"
+          :aria-label="mode === 'codex' ? 'Codex 分析' : '运行 Agent'"
+          :disabled="!question.trim() || !code || (mode === 'model' && !capabilities?.model_ready) || (mode === 'codex' && !capabilities?.codex_available)"
           :loading="sending"
           native-type="submit"
-        />
+        >{{ mode === 'codex' ? 'Codex 分析' : '' }}</el-button>
       </div>
     </form>
     <el-dialog v-model="modelHelpOpen" title="模型配置方式" width="460px" append-to-body>
@@ -605,7 +593,15 @@ onBeforeUnmount(() => {
 }
 .report-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 0;
+  margin-bottom: 8px;
+  background: #f8faffed;
+  backdrop-filter: blur(12px);
 }
 .report-actions .el-button {
   margin: 0;

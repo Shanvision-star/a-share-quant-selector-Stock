@@ -10,7 +10,7 @@ export const getDailyAgentStatus = () => api.get<DailyAgentStatus>('/agent/daily
 export interface AgentInput {
   question: string
   task: AgentTask
-  mode: 'local' | 'model'
+  mode: 'local' | 'model' | 'codex'
   code?: string
   trade_date?: string
   limit?: number
@@ -20,7 +20,7 @@ export interface AgentRun {
   status:
     'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
   created_at: string
-  input: Omit<AgentInput, 'mode'> & { mode: 'local' | 'model' | 'external' }
+  input: Omit<AgentInput, 'mode'> & { mode: AgentInput['mode'] | 'external' }
   parent_run_id?: string
   author?: string
   prompt_version?: string
@@ -50,6 +50,8 @@ export interface AgentCapabilities {
   action_schemas?: Record<'update' | 'backtest' | 'tracking', Record<string, unknown>>
   action_contract?: Record<string, unknown>
   model_ready: boolean
+  codex_available?: boolean
+  codex_model?: string | null
   provider: string | null
   model: string | null
 }

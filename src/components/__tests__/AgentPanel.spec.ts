@@ -25,6 +25,50 @@ const run = (id: string, question: string) => ({
 describe('Agent panel request ownership', () => {
   beforeEach(() => { vi.resetAllMocks(); api.getDailyAgentStatus.mockResolvedValue({data:{status:'not_run',targets:{}}}); localStorage.clear(); setActivePinia(createPinia()); useStockStore().currentCode = '000001' })
 
+  it('submits Codex explicitly for the selected stock and shows the real provider mode', async () => {
+    const report = {...run('codex', '解释策略'), model:'configured-codex', input:{...run('x','').input,mode:'codex'}}
+    api.getAgentCapabilities.mockResolvedValue({data:{model_ready:false,codex_available:true,codex_model:'configured-codex'}})
+    api.listAgentRuns.mockResolvedValue({data:{items:[]}})
+    api.startAgentRun.mockResolvedValue({data:report})
+    const wrapper = shallowMount(AgentPanel, {global:{plugins:[ElementPlus],renderStubDefaultSlot:true}})
+    await flushPromises()
+    wrapper.findAllComponents({name:'ElSelect'})[1]!.vm.$emit('update:modelValue', 'codex')
+    await wrapper.get('textarea').setValue('解释策略')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(api.startAgentRun).toHaveBeenCalledWith(expect.objectContaining({code:'000001',mode:'codex'}))
+    expect(wrapper.get('.run-mode').text()).toContain('Codex · configured-codex')
+    expect(wrapper.get('[aria-label="运行历史"]').text()).toBe('历史')
+    expect(localStorage.getItem('quant-agent-mode')).toBe('codex')
+    wrapper.unmount()
+  })
+
+  it('restores an explicit Codex mode without starting a paid call', async () => {
+    localStorage.setItem('quant-agent-mode','codex')
+    api.getAgentCapabilities.mockResolvedValue({data:{model_ready:false,codex_available:true}})
+    api.listAgentRuns.mockResolvedValue({data:{items:[]}})
+    const wrapper = shallowMount(AgentPanel, {global:{plugins:[ElementPlus],renderStubDefaultSlot:true}})
+    await flushPromises()
+    expect(wrapper.findAllComponents({name:'ElSelect'})[1]!.props('modelValue')).toBe('codex')
+    expect(api.startAgentRun).not.toHaveBeenCalled()
+    expect(wrapper.get('[aria-label="Codex 分析"]').text()).toBe('Codex 分析')
+    wrapper.unmount()
+  })
+
+  it('blocks unavailable Codex with visible feedback', async () => {
+    api.getAgentCapabilities.mockResolvedValue({data:{model_ready:true,codex_available:false}})
+    api.listAgentRuns.mockResolvedValue({data:{items:[]}})
+    const wrapper = shallowMount(AgentPanel, {global:{plugins:[ElementPlus],renderStubDefaultSlot:true}})
+    await flushPromises()
+    wrapper.findAllComponents({name:'ElSelect'})[1]!.vm.$emit('update:modelValue', 'codex')
+    await wrapper.get('textarea').setValue('解释策略')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(api.startAgentRun).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('安装并登录')
+    wrapper.unmount()
+  })
+
   it('opens the daily report for its own stock and exposes failure details', async () => {
     const dailyRun = {...run('daily', '日线研究'), input:{...run('daily','').input, task:'market', code:'000717', trade_date:'2026-10-23'}}
     api.getAgentCapabilities.mockResolvedValue({data:{model_ready:true}})

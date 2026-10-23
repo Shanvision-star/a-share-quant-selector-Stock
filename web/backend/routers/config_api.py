@@ -1,5 +1,6 @@
 """配置管理接口"""
 from fastapi import APIRouter, HTTPException
+from starlette.concurrency import run_in_threadpool
 from web.backend.models.schemas import ConfigUpdateRequest
 
 router = APIRouter(prefix="/api", tags=["配置管理"])
@@ -31,8 +32,11 @@ def _assert_safe_config_update(req: ConfigUpdateRequest) -> None:
 @router.get("/config")
 async def get_config():
     """获取所有策略配置（含参数元数据用于旋钮渲染）"""
-    from web.backend.services.strategy_service import get_strategies_config
-    return get_strategies_config()
+    def read_config():
+        # 首次导入策略依赖也可能较慢，导入与读取整体移出事件循环。
+        from web.backend.services.strategy_service import get_strategies_config
+        return get_strategies_config()
+    return await run_in_threadpool(read_config)
 
 
 @router.post("/config")

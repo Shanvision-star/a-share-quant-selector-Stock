@@ -1,4 +1,8 @@
+"""配置版本接口回归，配置、派生缓存和注册器均隔离于临时目录。"""
+
 import unittest
+import tempfile
+from pathlib import Path
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -6,8 +10,13 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from web.backend.main import app
-from web.backend.services.config_service import CONFIG_FILE
+from fastapi import FastAPI
+from web.backend.routers.config_api import router
+from web.backend.services import config_service
+from strategy import strategy_registry
+
+app = FastAPI()
+app.include_router(router)
 from web.backend.services import strategy_service
 from web.backend.services.strategy_service import ConfigRefreshError, update_strategy_config
 from strategy.strategy_registry import get_registry
@@ -15,14 +24,27 @@ from strategy.strategy_registry import get_registry
 
 class ConfigRevisionApiTest(unittest.TestCase):
     def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        config = root / "strategy_params.yaml"
+        config.write_text(config_service.CONFIG_FILE.read_text(encoding="utf-8"), encoding="utf-8")
+        for target, value in (("web.backend.services.config_service.CONFIG_FILE", config),
+                              ("web.backend.services.strategy_service.WEB_STRATEGY_RESULTS_FILE", root / "web_strategy_results.json"),
+                              ("strategy.strategy_registry._registry", strategy_registry.StrategyRegistry(config))):
+            patcher = patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.client = TestClient(app)
-        self._original_config_text = CONFIG_FILE.read_text(encoding="utf-8")
+        self._original_strategy_cache = deepcopy(strategy_service._STRATEGY_CACHE)
         self._original_resolved_items_cache = deepcopy(strategy_service._RESOLVED_ITEMS_CACHE)
         self._original_resolved_items_cache_version = strategy_service._RESOLVED_ITEMS_CACHE_VERSION
+        strategy_service._clear_resolved_items_cache()
+        strategy_service._clear_strategy_cache()
 
     def tearDown(self):
-        CONFIG_FILE.write_text(self._original_config_text, encoding="utf-8")
-        get_registry("config/strategy_params.yaml").reload_params()
+        strategy_service._STRATEGY_CACHE.clear()
+        strategy_service._STRATEGY_CACHE.update(self._original_strategy_cache)
         strategy_service._RESOLVED_ITEMS_CACHE.clear()
         strategy_service._RESOLVED_ITEMS_CACHE.update(deepcopy(self._original_resolved_items_cache))
         strategy_service._RESOLVED_ITEMS_CACHE_VERSION = self._original_resolved_items_cache_version
@@ -244,3 +266,27 @@ class ConfigRevisionApiTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_config_get_cold_read_does_not_block_event_loop():
+    """慢导入/读取留在线程，事件循环仍能响应其它请求。"""
+    import asyncio
+    from web.backend.routers.config_api import get_config
+    entered, release = threading.Event(), threading.Event()
+    def slow_read():
+        entered.set()
+        assert release.wait(3)
+        return {"configs": [], "revision": "fixture", "updated_at": "fixture"}
+    async def exercise():
+        with patch("web.backend.services.strategy_service.get_strategies_config", slow_read):
+            task = asyncio.create_task(get_config())
+            try:
+                for _ in range(100):
+                    if entered.is_set():
+                        break
+                    await asyncio.sleep(.01)
+                assert entered.is_set() and not task.done()
+            finally:
+                release.set()
+            assert (await task)["revision"] == "fixture"
+    asyncio.run(exercise())

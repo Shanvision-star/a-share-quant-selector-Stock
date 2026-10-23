@@ -90,7 +90,8 @@ def _pick_price(row, field: str) -> float:
 
 
 def _is_st_stock(candidate: SignalCandidate) -> bool:
-    text = f"{candidate.name}{candidate.strategy_name}".upper()
+    # 策略类名含Strategy的ST片段不是股票风险标识，只检查证券名称。
+    text = candidate.name.upper()
     return "ST" in text or "退" in text
 
 

@@ -1,5 +1,8 @@
 """验证回测异步任务服务的提交、完成、失败和持久化记录。"""
 
+import threading
+import pytest
+
 from copy import deepcopy
 import json
 import sqlite3
@@ -7,6 +10,15 @@ import time
 from threading import Event
 
 from web.backend.services.backtest_job_service import BacktestJobManager, BacktestTaskRepository
+
+
+@pytest.fixture(autouse=True)
+def isolated_default_repository(tmp_path, monkeypatch):
+    """覆盖未显式传repository的管理器，禁止测试写入用户SQLite。"""
+    from web.backend.services import sqlite_service
+    monkeypatch.setattr(sqlite_service, "DB_PATH", tmp_path / "jobs.db")
+    monkeypatch.setattr(sqlite_service, "_local", threading.local())
+    sqlite_service.init_database()
 
 
 def _memory_connection():

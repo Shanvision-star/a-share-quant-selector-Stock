@@ -1,8 +1,22 @@
 import asyncio
+import pytest
+import threading
 from datetime import datetime as real_datetime
 
 from web.backend.services import data_service
 from web.backend.services import strategy_service
+
+
+@pytest.fixture(autouse=True)
+def isolated_update_side_effects(tmp_path, monkeypatch):
+    """即使已有stub漏掉新分支，也不写用户库或启动真实指标预热。"""
+    from web.backend.services import sqlite_service
+    from web.backend.routers import stock
+    monkeypatch.setattr(sqlite_service, "DB_PATH", tmp_path / "updates.db")
+    monkeypatch.setattr(sqlite_service, "_local", threading.local())
+    sqlite_service.init_database()
+    monkeypatch.setattr(stock, "trigger_metric_snapshot_prewarm", lambda: None)
+    monkeypatch.setattr(stock, "invalidate_stock_list_cache", lambda: None)
 
 
 def test_run_data_update_uses_actual_update_target_for_rebuild(monkeypatch):

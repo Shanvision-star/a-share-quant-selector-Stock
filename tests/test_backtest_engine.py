@@ -1062,3 +1062,17 @@ def test_daily_engine_returns_capital_summary_and_portfolio_events():
     assert result["portfolio_events"][0]["event_type"] == "buy"
     assert result["portfolio_events"][-1]["event_type"] == "sell"
     assert "equity" in result["equity_curve"][0]
+
+
+def test_strategy_names_do_not_classify_normal_stock_as_st():
+    """B1/B2类名中的Strategy片段不能把普通证券误判成ST。"""
+    from dataclasses import replace
+    candidate = SignalCandidate(code="000001", name="平安银行", strategy_name="B2Strategy", trade_date="2026-04-24", signal_date="2026-04-24", source="strategy")
+    frame = pd.DataFrame([
+        {"date": pd.Timestamp(day), "open": price, "high": price + .1, "low": price - .1, "close": price, "volume": 1000}
+        for day, price in (("2026-04-24", 10.0), ("2026-04-27", 10.1), ("2026-04-28", 10.2))
+    ])
+    for name, strategy, allow_st, expected in (("平安银行", "B2Strategy", False, 1), ("平安银行", "B1Strategy", False, 1), ("*ST示例", "B2Strategy", False, 0), ("ST示例", "B2Strategy", False, 0), ("*ST示例", "B2Strategy", True, 1)):
+        engine = BacktestEngine(signal_source=StaticSignalSource([replace(candidate, name=name, strategy_name=strategy)]), daily_portal=InMemoryDailyDataPortal({"000001": frame}))
+        result = engine.run_daily(_default_params(allow_st_buy=allow_st))
+        assert result["summary"]["trade_count"] == expected, (name, strategy, allow_st)

@@ -82,6 +82,12 @@ async function main() {
   for (const width of [1366, 900, 768, 390]) {
     await page.setViewportSize({ width, height: 900 })
     await page.waitForTimeout(400)
+    if (width <= 900) {
+      const information = page.getByRole('button', { name: '切换股票信息', exact: true })
+      if (await information.getAttribute('aria-expanded') === 'true') await information.click()
+      if (width === 900) check('narrow desktop information panel can be closed', await information.getAttribute('aria-expanded') === 'false')
+      await page.waitForTimeout(350)
+    }
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
     check(`no document overflow at ${width}`, !overflow)
     await shot(`05-stock-${width}.png`)

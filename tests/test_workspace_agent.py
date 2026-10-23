@@ -242,3 +242,39 @@ def test_http_external_and_action_validation(agent):
         assert client.post("/api/agent/actions", json={"request_id": "unsafe", "action": "update", "confirmed": True, "parameters": {"shell": "cmd"}}).status_code == 409
         assert client.post("/api/agent/shutdown", json={"confirmed": False}).status_code == 409
         assert client.get("/api/agent/actions/missing").status_code == 404
+
+
+def test_dead_update_owner_recovers_business_terminal_and_active(agent, monkeypatch):
+    from web.backend.services import workspace_actions as actions, strategy_result_repository as repo, data_service, backtest_job_service
+    service = actions.ControlledActions()
+    for suffix, business_status, expected in (("done", "done", "completed"), ("failed", "error", "failed"), ("open", "running", "interrupted")):
+        run_id = f"business-{suffix}"
+        repo.create_run(run_id, "update", "2026-10-23", "all")
+        if business_status != "running":
+            repo.finish_run(run_id, business_status, "业务终态")
+        req = f"dead-{suffix}"
+        actions.claim_request("action", req, {"case": suffix})
+        service.save({"action_id": req, "request_id": req, "kind": "update", "status": "running", "owner_pid": -1, "business_id": run_id, "events": [], "created_at": module.now()})
+        item = service.get(req)
+        assert item["status"] == expected
+        assert item["events"][-1]["type"] == "owner_interrupted"
+    monkeypatch.setattr(routes, "controlled_actions", service)
+    monkeypatch.setattr(data_service, "_UPDATE_JOB_STATE", {})
+    monkeypatch.setattr(backtest_job_service.backtest_job_manager, "list_recent", lambda _: [])
+    assert routes.active_tasks() == {"total": 0, "items": []}
+    service.pool.shutdown()
+
+
+def test_analysis_interrupted_claim_is_visible_and_never_replayed(agent):
+    from web.backend.services import workspace_actions as actions
+    payload = {"parent": "evidence", "report": "pending"}
+    actions.claim_request("analysis", "interrupted-analysis", payload)
+    state = actions.request_state("analysis", "interrupted-analysis")
+    assert state["request_state"] == "processing" and state["request"] == payload
+    state["owner_pid"] = -1
+    actions.complete_request("analysis", "interrupted-analysis", state)
+    result = routes.get_request_state("analysis", "interrupted-analysis")
+    assert result["request_state"] == "interrupted" and result["request_id"] == "interrupted-analysis"
+    with pytest.raises(ValueError, match="状态=interrupted"):
+        actions.claim_request("analysis", "interrupted-analysis", payload)
+    assert actions.request_state("analysis", "interrupted-analysis")["request_state"] == "interrupted"

@@ -135,3 +135,14 @@ def shutdown_tasks(payload: ShutdownRequest):
             workspace_agent.store.patch(run["run_id"], active_only=True, status="interrupted", error="桌面确认退出", events=[*run["events"], {"at": now(), "type": "shutdown_confirmed"}])
             interrupted.append(run["run_id"])
     return {"interrupted": interrupted}
+
+
+@router.get("/requests/{kind}/{request_id}")
+def get_request_state(kind: str, request_id: str):
+    from web.backend.services.workspace_actions import request_state
+    if kind not in ("analysis", "action"):
+        raise HTTPException(status_code=404, detail="请求类别不存在")
+    try:
+        return request_state(kind, request_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="请求不存在") from exc

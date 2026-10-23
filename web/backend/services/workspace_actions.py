@@ -51,15 +51,36 @@ def claim_request(kind, request_id, payload):
             if row[0] != fingerprint:
                 raise ValueError("request_id 已绑定不同请求")
             result = json.loads(row[1])
-            if not result:
-                raise ValueError("相同请求正在处理或已中断，请查询状态，不要重复执行")
+            if not result or result.get("request_state"):
+                result = request_state(kind, request_id, result, persist=False)
+                conn.execute("UPDATE workspace_agent_requests SET payload=? WHERE kind=? AND request_id=?", (json.dumps(result, ensure_ascii=False), kind, request_id))
+                conn.commit()
+                raise ValueError(f"request_id={request_id} 状态={result['request_state']}；查询 /api/agent/requests/{kind}/{request_id}，不会重放")
             conn.rollback()
             return result
-        conn.execute("INSERT INTO workspace_agent_requests VALUES (?,?,?,?)", (kind, request_id, fingerprint, "{}"))
+        conn.execute("INSERT INTO workspace_agent_requests VALUES (?,?,?,?)", (kind, request_id, fingerprint, json.dumps({"request_state": "processing", "owner_pid": os.getpid(), "created_at": now(), "request": payload}, ensure_ascii=False)))
         conn.commit()
     except Exception:
         conn.rollback()
         raise
+
+
+def request_state(kind, request_id, result=None, persist=True):
+    init_requests()
+    if result is None:
+        row = get_connection().execute("SELECT payload FROM workspace_agent_requests WHERE kind=? AND request_id=?", (kind, request_id)).fetchone()
+        if not row:
+            raise KeyError(request_id)
+        result = json.loads(row[0])
+    if not result or result.get("request_state"):
+        if not result:
+            result = {"request_state": "interrupted", "error": "旧版占位缺少拥有者，禁止自动重放"}
+        elif result["request_state"] == "processing" and not process_alive(result.get("owner_pid")):
+            result.update(request_state="interrupted", error="提交进程已退出；不会自动重放", recovered_at=now())
+        result.update(kind=kind, request_id=request_id)
+        if persist:
+            complete_request(kind, request_id, result)
+    return result
 
 
 def complete_request(kind, request_id, result):
@@ -182,10 +203,13 @@ class ControlledActions:
     def recent(self):
         init_requests()
         rows = get_connection().execute("SELECT payload FROM workspace_agent_requests WHERE kind='action'").fetchall()
-        items = [json.loads(row[0]) for row in rows if json.loads(row[0])]
+        items = [json.loads(row[0]) for row in rows if json.loads(row[0]).get("action_id")]
         for item in items:
             if item["kind"] == "update" and item["status"] in ("running", "queued") and not process_alive(item.get("owner_pid")):
-                item.update(status="interrupted", error="拥有更新任务的后端进程已退出，请核对业务历史")
+                from .strategy_result_repository import get_run
+                business = get_run(item["business_id"]) if item.get("business_id") else None
+                status = {"done": "completed", "error": "failed", "interrupted": "interrupted"}.get((business or {}).get("status"), "interrupted")
+                item.update(status=status, result=business, error=None if status == "completed" else (business or {}).get("message") or "拥有更新任务的后端进程已退出，请核对业务历史")
                 item["events"].append({"at": now(), "type": "owner_interrupted"})
                 self.save(item)
         return items

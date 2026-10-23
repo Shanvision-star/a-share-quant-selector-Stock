@@ -85,5 +85,12 @@ def quant_active_tasks() -> dict:
     return request("GET", "agent/active")
 
 
+@mcp.tool(annotations=READ)
+def quant_request_state(kind: Literal["analysis", "action"], request_id: str) -> dict:
+    """查询幂等提交状态，区分processing与interrupted；中断不自动重放。"""
+    from urllib.parse import quote
+    return request("GET", f"agent/requests/{kind}/{quote(request_id, safe='')}")
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")

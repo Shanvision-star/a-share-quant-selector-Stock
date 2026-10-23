@@ -65,10 +65,16 @@ def main():
     action = commands.add_parser("action")
     action.add_argument("payload", help="白名单操作 JSON 文件，必须显式 confirmed")
     commands.add_parser("action-get").add_argument("action_id")
+    state = commands.add_parser("request-state")
+    state.add_argument("kind", choices=["analysis", "action"])
+    state.add_argument("request_id")
     args = parser.parse_args()
     try:
         if args.command in ("status", "capabilities", "runs", "active"):
             result = request("GET", {"status": "system/status", "capabilities": "agent/capabilities", "runs": "agent/runs", "active": "agent/active"}[args.command])
+        elif args.command == "request-state":
+            from urllib.parse import quote
+            result = request("GET", f"agent/requests/{args.kind}/{quote(args.request_id, safe='')}")
         elif args.command in ("submit-analysis", "action"):
             payload = json.loads(Path(args.payload).read_text(encoding="utf-8"))
             endpoint = run_endpoint(args.run_id, "/analysis") if args.command == "submit-analysis" else "agent/actions"

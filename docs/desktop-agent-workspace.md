@@ -12,13 +12,13 @@
 | 研究 Agent | 从真实策略、跟踪、复盘取证；结构化输入输出，持久化运行身份、版本、来源、失败和用量；明确离线整理与模型模式 |
 | 数据整理 | 人工确认后追加复盘，幂等且不覆盖原文；导出可审计 JSON；历史可恢复 |
 | Codex 接入 | HTTP、JSON CLI、stdio MCP 共用同一后端契约；不提供任意 shell、文件路径或自动交易工具 |
-| 桌面运行 | Electron 启动现有工作区 Python 服务、随机回环端口、实例认证与退出清理；保留浏览器入口 |
+| 桌面运行 | Electron 内置 Python、独立可写工作区、随机回环端口、实例认证与退出保护；保留浏览器和原项目入口 |
 
 ## 技术决定
 
-桌面使用 Electron；当前环境具备 Node/Python，没有 Rust。此版本是现有工作区的桌面客户端，需选择包含 .venv 与已构建前端的项目目录，不把数据和 Python 环境复制到安装包。Python 独立分发、macOS 签名、公网多用户部署属于后续交付范围。
+桌面使用 Electron，0.2.0 内置 CPython 3.14.9 x64 与生产依赖。安装后创建 Electron userData 下的 `workspace`，仅安装经过 SHA256 清单校验的应用代码和缺失的干净默认配置；保留已有配置与 data。打包白名单不含用户行情、SQLite、复盘或密钥。“连接现有项目”保留原数据目录；打包版仍使用内置解释器。macOS/Linux、签名与公网多用户部署不在本期范围。
 
-研究工作流先按任务收集有界证据，再交给配置中的模型形成结构化报告。它不接管交易规则、确认订单、更新全市场数据或执行代码。保留现有跟踪 LLM 接口。未配置模型时只能明确选择本地整理，不伪装模型结果。运行结果不做持仓或收益承诺。
+研究工作流先收集有界证据，再交给已配置模型或 Codex 形成结构化报告。记录检查只做日期、缺失字段与截断范围检查，不回答自由分析问题。Codex 分析以独立子运行存储，不覆盖父证据。更新、回测与跟踪使用另一个经确认的白名单操作入口；不接管交易规则、确认订单或执行任意代码。保留原跟踪 LLM 接口。
 
 运行记录保存在现有 SQLite 新增的 Agent 表中，证据保存为运行时快照以便追溯。取消阻止后续步骤和报告发布；已发送的模型请求可能仍消耗 token。服务重启将遗留任务标记中断。
 
@@ -30,20 +30,29 @@
 - https://github.com/modelcontextprotocol/python-sdk
 - https://www.electronjs.org/docs/latest/tutorial/security
 - https://v2.tauri.app/develop/sidecar （评估项，本期未使用）
+- https://docs.python.org/3.14/using/windows.html#the-embeddable-package
+- https://www.python.org/downloads/release/python-3149/
+- https://www.electronjs.org/docs/latest/api/app#appquit
 
 ## 启动与打包
 
-在项目根目录：
+最终用户打开安装包或便携版即可；以下仅供开发者从源码重新构建，需 Windows x64、CPython 3.14 与 Node：
 
 ```powershell
 .venv/Scripts/python.exe -m pip install -r requirements.txt
+.venv/Scripts/python.exe -m pip install -r requirements-agent.txt
 npm --prefix web/frontend ci
 npm --prefix web/frontend run build
 npm --prefix desktop ci
-npm --prefix desktop start
+.venv/Scripts/python.exe scripts/build_desktop_runtime.py
+npm --prefix desktop run dist
 ```
 
-`Open-Desktop.cmd` 优先使用 `desktop/release/A-share-Quant-0.1.0.exe`，缺少打包文件时使用开发入口。`npm --prefix desktop run dist` 生成 Windows 便携客户端。首次在其他路径启动便携包时选择现有项目根目录。`QUANT_WORKSPACE`、`QUANT_PYTHON` 可显式指定工作区和解释器。关闭桌面会结束其本地服务；长任务应在退出前完成。现有浏览器入口仍为 `python scripts/run_web_backend.py --host 127.0.0.1 --port 8001`。
+生产依赖版本锁位于 `desktop/requirements-runtime.lock`；构建脚本校验官方 Python 压缩包与 certifi wheel 的固定 SHA256，生成运行时清单。已有构建环境可用 `--app-only` 只刷新应用，或 `--python-only` 只刷新解释器；更换依赖时才用 `--lock` 重建锁文件并审核变更。
+
+输出为 `desktop/release/A-share-Quant-Setup-0.2.0.exe`（安装版）和 `A-share-Quant-0.2.0.exe`（便携版）。`Open-Desktop.cmd` 优先使用便携版；开发模式仍可执行 `npm --prefix desktop start`。`QUANT_WORKSPACE` 指定项目目录，`QUANT_PYTHON` 只影响开发模式。现有浏览器入口仍为 `python scripts/run_web_backend.py --host 127.0.0.1 --port 8001`。
+
+关闭窗口或菜单退出均经过页面未保存保护；若有活动任务，默认继续工作。确认退出会记录本实例研究中断并关闭其后端。远端已发送模型请求可能继续计费用量；不声称远端任务被撤回。安装包未签名，Windows 可能提示未知发布者。卸载配置不主动删除用户工作区。
 
 桌面服务绑定随机的 `127.0.0.1` 端口。Electron 主进程为同源请求附加实例令牌，页面没有 Node / shell 权限。`data/desktop-runtime.json` 保存本机工具发现信息和凭证，位于被 Git 忽略的数据目录，退出时移除；Windows 文件访问继承项目目录的 ACL。不要复制该文件到工单或对外分享。`data/desktop-backend.log` 保存启动日志。
 
@@ -61,12 +70,24 @@ npm --prefix desktop start
 | GET `/api/agent/runs/{run_id}` | 输入、报告、完整来源、事件与用量 |
 | POST `/api/agent/runs/{run_id}/cancel` | 取消未完成运行 |
 | POST `/api/agent/runs/{run_id}/review` | `{review_date,confirmed:true}`，在文档锁内幂等追加；未确认409 |
+| POST `/api/agent/runs/{run_id}/analysis` | `request_id,source_hashes,report,author,provider,model,prompt_version`；校验父来源后建立子运行 |
+| POST `/api/agent/actions` | `request_id,action,parameters,confirmed:true`；action 只允许 update / backtest / tracking |
+| GET `/api/agent/actions/{action_id}` | 查询真实业务 ID、状态和事件 |
+| GET `/api/agent/requests/{kind}/{request_id}` | 查询幂等提交状态；中断不自动重放 |
+| GET `/api/agent/active` | 当前研究、数据更新和回测活动任务 |
+| POST `/api/agent/shutdown` | `{confirmed:true}`，标记本进程未完成研究中断，供桌面收尾 |
 
 DeepSeek 复用 `config/llm.yaml` 的 `provider` 与 `deepseek` 字段。研究 Agent 固定最多2400输出 tokens、最多120秒超时和2个并发、8个在途任务；不提供任意工具执行。原有 Tracking LLM 的 mock / deepseek / codex_cli 配置继续有效；新研究 Agent 不隐式启动 Codex CLI，Codex 从 MCP 获取证据后可用自身模型处理。
 
+`external` 是已存结果的 mode，不是研究创建参数。外部 author/provider/model 是提交方声明，不能当作身份认证或真实模型调用证明；不伪造 tokens、latency 或金额。结构化报告保存时合并股票索引与原复盘正文，重复保存不重复追加。外部分析要求完整 source ID→SHA256 映射；内容或引用不符拒绝并记录原因。
+
+受控操作先发现 `capabilities.action_schemas` 再构造参数，必须显式确认；每分钟最多12条新操作，同类在途任务互斥。`request_id` 与 payload 绑定；重试相同请求返回原任务，换 payload 拒绝。`queued/running` 只表示受理，必须查询终态；更新遇到 partial 即失败，后续 done 不能覆盖。退出后保留 request/业务记录，不能把中断请求直接重放成重复操作。
+
 ## Codex 调用
 
-JSON CLI 默认发现运行中的桌面实例，否则连接 `http://127.0.0.1:8001`。可通过 `QUANT_API_URL` 与 `QUANT_API_TOKEN` 指定实例；只接受回环 HTTP 地址。
+桌面菜单“复制 Codex MCP 配置”生成当前工作区与内置解释器的绝对路径，粘贴到 Codex MCP 配置后启用即可。无需为 MCP 另装 Python。桌面必须运行，工具通过发现文件连接当前实例；配置本身不包含令牌。更换工作区或移动便携路径后重新复制配置。
+
+JSON CLI 默认发现运行中的桌面实例，否则连接 `http://127.0.0.1:8001`。可用 `QUANT_RUNTIME_FILE` 指向其他工作区的发现文件，或通过 `QUANT_API_URL` 与 `QUANT_API_TOKEN` 指定实例；只接受回环 HTTP 地址。以下是源码开发环境示例，打包用户可用菜单配置中的 Python 和 scripts 绝对路径：
 
 ```powershell
 .venv/Scripts/python.exe scripts/quant_tools.py capabilities
@@ -76,19 +97,29 @@ JSON CLI 默认发现运行中的桌面实例，否则连接 `http://127.0.0.1:8
 .venv/Scripts/python.exe scripts/quant_tools.py get <run_id>
 .venv/Scripts/python.exe scripts/quant_tools.py cancel <run_id>
 .venv/Scripts/python.exe scripts/quant_tools.py save-review <run_id> 2026-10-23 --confirm
+.venv/Scripts/python.exe scripts/quant_tools.py submit-analysis <run_id> analysis.json
+.venv/Scripts/python.exe scripts/quant_tools.py action action.json
+.venv/Scripts/python.exe scripts/quant_tools.py action-get <action_id>
+.venv/Scripts/python.exe scripts/quant_tools.py active
+.venv/Scripts/python.exe scripts/quant_tools.py request-state action <request_id>
 ```
 
-安装 MCP：`.venv/Scripts/python.exe -m pip install -r requirements-agent.txt`。Codex MCP 配置示例（将路径替换为实际绝对路径；未修改全局 Codex 配置）：
+源码 MCP 配置示例（打包用户直接复制桌面菜单中的配置；本项目不自动改全局 Codex 配置）：
 
 ```toml
 [mcp_servers.ashare_quant]
 command = 'D:\your-project\.venv\Scripts\python.exe'
 args = ['D:\your-project\scripts\quant_mcp.py']
+
+[mcp_servers.ashare_quant.env]
+QUANT_RUNTIME_FILE = 'D:\your-project\data\desktop-runtime.json'
 ```
 
-提供 `quant_status`、`quant_capabilities`、`quant_research`、`quant_runs`、`quant_run`、`quant_cancel`、`quant_save_review`。读操作附带 readOnlyHint，保存工具必须明确传入 confirmed；stdio stdout 仅用于协议。调用会创建可追溯任务，复盘正文只在确认保存时改变。当前只有运行创建、取消、复盘追加这三类写操作，不暴露交易、删除或任意文件写入。
+共12个工具：原有 `quant_status`、`quant_capabilities`、`quant_research`、`quant_runs`、`quant_run`、`quant_cancel`、`quant_save_review`，新增 `quant_submit_analysis`、`quant_action`、`quant_action_get`、`quant_active_tasks`、`quant_request_state`。闭环顺序：读取能力 → 按股取证 → 查询完成报告与来源 → Codex 分析回写 → 明确确认后保存复盘/加入跟踪 → 查询业务终态 → 后续按股检查跟踪与复盘。stdio stdout 仅用于协议，不暴露交易、删除或任意文件写入。
 
-## 验证记录（2026-10-23）
+## 0.1 历史验证记录（2026-10-23，范围以当时版本为准）
+
+以下是旧版本证据，不是 0.2.0 独立发行的验收记录；其中“完整 Python 打包未做”等限制仅描述旧版本。
 
 - 前端 vue-tsc + Vite 构建、原有105项 Vitest 回归与新增2项 Agent 竞态/失败反馈回归通过；后端87项检查覆盖研究状态、取消竞争、引用失败、复盘幂等、认证、SPA路径边界及原有复盘/跟踪契约。
 - MCP：真实 stdio 握手、7个工具发现、本地研究创建与结果读取通过。

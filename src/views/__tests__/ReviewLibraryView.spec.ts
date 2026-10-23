@@ -1,20 +1,24 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ElMessageBox } from 'element-plus'
 import type { ReviewListItem, ReviewListWarning } from '@/api/reviews'
 import ReviewLibraryView from '@/views/ReviewLibraryView.vue'
 
 const listReviews = vi.hoisted(() => vi.fn())
 const routerReplace = vi.hoisted(() => vi.fn())
+const routeUpdate = vi.hoisted(() => vi.fn())
+const getReview = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/reviews', () => ({
   createReview: vi.fn(),
   generateReviewTitle: vi.fn(),
-  getReview: vi.fn(),
+  getReview,
   listReviews,
   updateReview: vi.fn(),
 }))
 vi.mock('vue-router', () => ({
   onBeforeRouteLeave: vi.fn(),
+  onBeforeRouteUpdate: routeUpdate,
   useRoute: () => ({ query: {} }),
   useRouter: () => ({ replace: routerReplace }),
 }))
@@ -98,6 +102,8 @@ describe('ReviewLibraryView list lifecycle', () => {
   afterEach(() => {
     listReviews.mockReset()
     routerReplace.mockReset()
+    routeUpdate.mockReset()
+    getReview.mockReset()
   })
 
   it('lets only the latest filter request update list data, loading, and errors', async () => {
@@ -186,4 +192,22 @@ describe('ReviewLibraryView list lifecycle', () => {
     expect(alert.text()).toContain('备份')
     expect(alert.text()).not.toContain('D:\\')
   })
+  it('opens an Agent review link on the same route and honors unsaved cancellation', async () => {
+    listReviews.mockReturnValue(response([]))
+    getReview.mockImplementation((date: string) => Promise.resolve({data:{data:{
+      review_date:date,title:'报告复盘',status:'draft',title_source:'manual',tags:[],stocks:[],body:'原文',created_at:date,updated_at:date,version:'v1',
+    }}}))
+    const wrapper = mountView()
+    await flushPromises()
+    const guard = routeUpdate.mock.calls[0]![0]
+    expect(await guard({query:{date:'2026-10-20'}})).toBe(true)
+    await flushPromises()
+    expect(getReview).toHaveBeenCalledWith('2026-10-20')
+    await wrapper.get('.body-editor').setValue('未保存编辑')
+    vi.mocked(ElMessageBox.confirm).mockRejectedValueOnce('cancel')
+    expect(await guard({query:{date:'2026-10-21'}})).toBe(false)
+    expect(getReview).not.toHaveBeenCalledWith('2026-10-21')
+    expect(wrapper.get('.body-editor').element).toHaveProperty('value','未保存编辑')
+  })
+
 })

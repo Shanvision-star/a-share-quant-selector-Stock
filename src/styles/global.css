@@ -179,3 +179,11 @@ summary {
     scroll-behavior: auto !important;
   }
 }
+
+button:active { filter: brightness(.97); }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .workspace-header, .agent-panel, .sidebar { background: #fff !important; backdrop-filter: none !important; }
+}
+@media (prefers-contrast: more) {
+  .workspace-header, .agent-panel, .sidebar { border-color: #78869b !important; }
+}

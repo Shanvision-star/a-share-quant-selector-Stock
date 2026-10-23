@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { strategyLabel } from '@/utils/strategyLabels'
+import { useStockStore } from '@/stores/stock'
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -78,8 +80,10 @@ const showBBI = computed(() => mainOverlays.value.includes('bbi'))
 const showBoll = computed(() => mainOverlays.value.includes('boll'))
 
 // ─── 面板折叠与宽度 ────────────────────────────────────────────────────
-const leftCollapsed = ref(false)
-const rightCollapsed = ref(false)
+const leftCollapsed = ref(window.innerWidth < 1100)
+const rightCollapsed = ref(window.innerWidth < 1700)
+const stockContext = useStockStore()
+watch(() => props.code, code => { stockContext.currentCode = code }, {immediate:true})
 const leftWidth = ref(220)
 const rightWidth = ref(220)
 const MIN_PANEL = 140
@@ -543,6 +547,8 @@ function formatListSimilarity(score: unknown): string {
       <div class="detail-header">
         <h2>{{ displayStockName || '加载中' }} {{ code }}</h2>
         <div class="detail-actions">
+          <button class="compact-panel-toggle" :aria-expanded="!rightCollapsed" aria-label="切换策略选股列表" @click="rightCollapsed = !rightCollapsed">选股列表</button>
+          <button class="compact-panel-toggle" :aria-expanded="!leftCollapsed" aria-label="切换股票信息" @click="leftCollapsed = !leftCollapsed">股票信息</button>
           <span v-if="isSwitchingStock" class="switching-hint">切换中 {{ code }}</span>
           <AddToTodayReviewButton :code="code" :name="displayStockName" />
           <el-checkbox v-model="showShortTermTrend">短期趋势线</el-checkbox>
@@ -636,7 +642,7 @@ function formatListSimilarity(score: unknown): string {
       <div class="strategy-card" v-if="safeStrategyCard" :style="{ height: strategyCardHeight + 'px' }">
         <el-card shadow="never">
           <template #header>策略匹配详情</template>
-          <p><strong>策略:</strong> {{ safeStrategyCard.strategy_name }}</p>
+          <p><strong>策略:</strong> {{ strategyLabel(safeStrategyCard.strategy_name) }}</p>
           <p><strong>分类:</strong> {{ safeStrategyCard.category }}</p>
           <p><strong>匹配日期:</strong> {{ safeStrategyCard.signal_date || safeStrategyCard.trade_date }}</p>
           <p v-if="safeStrategyCard.reason"><strong>原因:</strong> {{ safeStrategyCard.reason }}</p>
@@ -684,9 +690,11 @@ function formatListSimilarity(score: unknown): string {
     <div class="panel-edge panel-edge-right">
       <button
         class="collapse-btn"
-        :title="rightCollapsed ? '展开右侧面板' : '收起右侧面板'"
+        :title="rightCollapsed ? '展开策略选股列表' : '收起策略选股列表'"
+        :aria-label="rightCollapsed ? '展开策略选股列表' : '收起策略选股列表'"
+        :aria-expanded="!rightCollapsed"
         @click="rightCollapsed = !rightCollapsed"
-      >{{ rightCollapsed ? '◀' : '▶' }}</button>
+      >{{ rightCollapsed ? '选股' : '▶' }}</button>
       <div
         v-show="!rightCollapsed"
         class="resize-handle"
@@ -761,8 +769,12 @@ function formatListSimilarity(score: unknown): string {
 </template>
 
 <style scoped>
+.compact-panel-toggle{display:none;border:1px solid var(--border-color);background:white;border-radius:7px;padding:6px;font:inherit;color:var(--text-secondary)}
+@media(prefers-reduced-motion:reduce){.panel-aside,.panel-aside.panel-collapsed{transition:none}}
+
 /* ─── 整体布局 ─────────────────────────────────────────────────────── */
 .stock-detail {
+  position: relative;
   display: flex;
   height: 100%;
   overflow: hidden;
@@ -778,6 +790,7 @@ function formatListSimilarity(score: unknown): string {
   transition: width 0.18s ease;
 }
 .panel-aside.panel-collapsed {
+  visibility: hidden;
   width: 0 !important;
   transition: width 0.18s ease;
 }
@@ -839,6 +852,8 @@ function formatListSimilarity(score: unknown): string {
   border-radius: 0 4px 4px 0;
 }
 .panel-edge-right .collapse-btn {
+  writing-mode: vertical-rl;
+  min-height: 52px;
   border-radius: 4px 0 0 4px;
 }
 .collapse-btn:hover {
@@ -1084,9 +1099,10 @@ function formatListSimilarity(score: unknown): string {
   .panel-edge {
     display: none;
   }
-  .panel-aside {
-    display: none !important;
-  }
+  .panel-aside {position:absolute;top:85px;bottom:0;z-index:30;box-shadow:0 8px 35px #20304822;max-width:75vw}
+  .panel-left{left:0}.panel-right{right:0}
+  .panel-aside.panel-collapsed{visibility:hidden}
+  .compact-panel-toggle{display:inline-block}
   .stock-detail {
     overflow: auto;
   }

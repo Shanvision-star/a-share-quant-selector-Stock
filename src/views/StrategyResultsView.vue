@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { strategyLabel as displayStrategyLabel } from '@/utils/strategyLabels'
 import { ref, onMounted, onBeforeUnmount, computed, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -628,7 +629,7 @@ function formatDuration(start: string, end?: string) {
           </template>
         </el-table-column>
         <el-table-column prop="name" label="名称" width="100" />
-        <el-table-column prop="strategy_name" label="策略" width="140" />
+        <el-table-column prop="strategy_name" label="策略" width="140"><template #default="{ row }">{{ displayStrategyLabel(row.strategy_name) }}</template></el-table-column>
         <el-table-column prop="category" label="分类" width="100" />
         <el-table-column prop="signal_date" label="信号日期" width="110" />
         <el-table-column prop="trigger_price" label="触发价" width="90">
@@ -735,7 +736,7 @@ function formatDuration(start: string, end?: string) {
           </template>
         </el-table-column>
         <el-table-column prop="name" label="名称" width="100" />
-        <el-table-column prop="strategy_name" label="策略" width="140" sortable="custom" />
+        <el-table-column prop="strategy_name" label="策略" width="140" sortable="custom"><template #default="{ row }">{{ displayStrategyLabel(row.strategy_name) }}</template></el-table-column>
         <el-table-column prop="category" label="分类" width="100" />
         <el-table-column prop="signal_date" label="信号日期" width="110" sortable="custom" />
         <el-table-column prop="trigger_price" label="触发价" width="90" sortable="custom">

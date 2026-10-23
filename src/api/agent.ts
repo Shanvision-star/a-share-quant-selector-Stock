@@ -13,7 +13,11 @@ export interface AgentRun {
   status:
     'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
   created_at: string
-  input: AgentInput
+  input: Omit<AgentInput, 'mode'> & { mode: 'local' | 'model' | 'external' }
+  parent_run_id?: string
+  author?: string
+  prompt_version?: string
+  source_hashes?: Record<string, string>
   provider: string | null
   model: string | null
   latency_ms: number | null
@@ -36,6 +40,8 @@ export interface AgentRun {
   } | null
 }
 export interface AgentCapabilities {
+  action_schemas?: Record<'update' | 'backtest' | 'tracking', Record<string, unknown>>
+  action_contract?: Record<string, unknown>
   model_ready: boolean
   provider: string | null
   model: string | null

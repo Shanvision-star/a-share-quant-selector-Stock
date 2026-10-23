@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Collection, MagicStick, Menu, Refresh, Search } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
@@ -363,6 +363,13 @@ function insertMarkdown(
     textarea?.setSelectionRange(insertion.cursor, insertion.cursor)
   })
 }
+
+onBeforeRouteUpdate(async to => {
+  const target = typeof to.query.date === 'string' ? to.query.date : ''
+  if (!target || target === activeDate.value) return true
+  if (!(await confirmDiscard())) return false
+  return loadDocument(target)
+})
 
 onBeforeRouteLeave(() => {
   if (uploadPending.value) {

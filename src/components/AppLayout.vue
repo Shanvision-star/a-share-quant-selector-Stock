@@ -197,10 +197,3 @@ async function closeAgent() {
   }
 }
 </style>
-
-<style scoped>
-@media (min-width:1251px) and (max-width:1700px) {
-  .agent-expanded .app-main :deep(.stock-detail .panel-right),
-  .agent-expanded .app-main :deep(.stock-detail .panel-edge-right) { display:none }
-}
-</style>

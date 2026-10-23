@@ -2,8 +2,8 @@
 // 单股跟踪运营面板：列表 + 规则批量评估 + 告警 + LLM 建议 + OrderIntent 确认/否决
 // + 批量导入（TXT/粘贴） + 勾选批量删除（满足前端运营批量化诉求）
 // 后端入口：tracking.py / tracking_alert.py / tracking_evaluation.py / tracking_llm.py / tracking_intent.py
-import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshRight, VideoPlay } from '@element-plus/icons-vue'
 import AddToTodayReviewButton from '@/components/AddToTodayReviewButton.vue'
@@ -39,7 +39,12 @@ import {
 const items = ref<TrackingItem[]>([])
 const loading = ref(false)
 const statusFilter = ref<string>('all')
-const codeFilter = ref<string>('')
+const route = useRoute()
+const codeFilter = ref<string>(/^\d{6}$/.test(String(route.query.code || '')) ? String(route.query.code) : '')
+watch(() => route.query.code, value => {
+  codeFilter.value = /^\d{6}$/.test(String(value || '')) ? String(value) : ''
+  void refreshItems()
+})
 const batchLoading = ref(false)
 
 // 路由实例：用于代码/名称点击跳转 K 线详情页（路由名 StockDetail，参数 code）

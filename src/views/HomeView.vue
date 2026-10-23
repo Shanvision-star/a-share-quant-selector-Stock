@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
+import { useStockStore } from '@/stores/stock'
+import { strategyLabel } from '@/utils/strategyLabels'
 import { useRouter } from 'vue-router'
 import { getStrategyCacheStatus, getStrategyResults, getStockList, getInitStatus } from '@/api'
 import { ElMessage } from 'element-plus'
@@ -21,9 +23,13 @@ const cacheStatus = ref<any>(null)
 const cacheLoading = ref(false)
 const todayResults = ref<any[]>([])
 const todayTotal = ref(0)
-const focusCode = ref('')
+const stockContext = useStockStore()
+const focusCode = ref(stockContext.currentCode)
 const focusPeriod = ref('daily')
+const focusOptions = computed(() => Array.from(new Map(todayResults.value.map(item => [item.code, item])).values()))
 const focusedStock = computed(() => todayResults.value.find(item => item.code === focusCode.value) || todayResults.value[0])
+
+watch(() => focusedStock.value?.code, code => { if (code) stockContext.currentCode = code }, { immediate: true })
 
 // 股票列表
 const tableData = ref<any[]>([])
@@ -364,131 +370,43 @@ function goToRebuild() {
       </template>
     </el-alert>
 
-    <!-- 缓存日期与状态保留，用于区分旧缓存和目标交易日。 -->
-    <div class="overview-cards">
-      <el-card shadow="hover" class="overview-card cache-status-card" v-loading="cacheLoading">
-        <div class="card-title-row">
-          <span class="card-title">缓存状态</span>
-          <el-button
-            :icon="RefreshRight"
-            circle
-            size="small"
-            text
-            :loading="cacheLoading"
-            title="刷新状态"
-            aria-label="刷新缓存状态"
-            @click.stop="refreshCacheStatus"
-          />
-        </div>
-        <div class="card-body">
-          <!-- 状态标签 -->
-          <el-tag :type="getStatusType(cacheStatus?.status)" size="large" style="font-size:13px">
-            {{ getStatusLabel(cacheStatus?.status) }}
-          </el-tag>
-
-          <!-- 重建进度条 -->
-          <el-progress
-            v-if="cacheStatus?.status === 'running'"
-            :percentage="cacheStatus?.rebuild?.progress || 0"
-            :stroke-width="8"
-            style="margin-top:6px"
-          />
-
-          <!-- 数据摘要 -->
-          <div class="card-detail" v-if="cacheStatus">
-            <div>目标日期：<strong>{{ cacheStatus.requested_date || '-' }}</strong></div>
-            <div>缓存日期：<strong>{{ cacheStatus.trade_date || '-' }}</strong></div>
-            <div v-if="cacheStatus.generated_at" style="font-size:11px;color:var(--el-text-color-placeholder)">
-              生成于 {{ cacheStatus.generated_at?.slice(0, 16) || '-' }}
-            </div>
-          </div>
-
-          <!-- 缺失分组提示 -->
-          <div
-            v-if="cacheStatus?.missing_groups?.length"
-            style="font-size:12px;color:var(--el-color-warning)"
-          >
-            缺失: {{ cacheStatus.missing_groups.join(', ') }}
-          </div>
-
-          <!-- 操作按钮 -->
-          <div class="cache-actions" v-if="cacheStatus">
-            <el-button
-              v-if="['stale','missing','not_found','partial'].includes(cacheStatus.status)"
-              type="primary"
-              size="small"
-              @click="goToRebuild"
-            >
-              立即重建
-            </el-button>
-            <el-button
-              v-if="cacheStatus.status === 'running'"
-              type="info"
-              size="small"
-              @click="goToRebuild"
-            >
-              查看进度
-            </el-button>
-            <el-button
-              v-if="cacheStatus.status === 'ready'"
-              size="small"
-              @click="goToResults"
-            >
-              查看结果
-            </el-button>
-            <el-button
-              size="small"
-              @click="goToSystemStatus"
-            >
-              系统状态
-            </el-button>
-          </div>
-        </div>
-      </el-card>
-
-      <el-card shadow="hover" class="overview-card">
-        <div class="card-title">缓存命中</div>
-        <div class="card-body">
-          <div class="hit-count">{{ todayTotal }}</div>
-          <div class="card-detail">
-            <div v-for="(count, group) in (cacheStatus?.group_totals || {})" :key="group as string">
-              {{ group }}: {{ count }} 条
-            </div>
-          </div>
-        </div>
-      </el-card>
-
-      <div class="quick-actions">
-        <el-button @click="goToResults">策略结果 ↗</el-button>
-        <el-button @click="goToTxtLibrary">下载 TXT ↗</el-button>
-        <el-button type="primary" plain @click="goToUpdate">{{ updateJobStore.isRunning ? '查看更新进度' : '更新数据' }}</el-button>
-        <el-progress v-if="updateJobStore.isRunning" :percentage="updateJobStore.progress" :stroke-width="5" />
-      </div>
-    </div>
+    <section class="cache-strip" aria-label="缓存状态" v-loading="cacheLoading">
+      <el-tag :type="getStatusType(cacheStatus?.status)">{{ getStatusLabel(cacheStatus?.status) }}</el-tag>
+      <span>目标 {{ cacheStatus?.requested_date || '—' }} · 缓存 {{ cacheStatus?.trade_date || '—' }}</span>
+      <span>策略命中 <strong>{{ todayTotal }}</strong></span>
+      <span v-if="cacheStatus?.missing_groups?.length" class="cache-warning">缺失：{{ cacheStatus.missing_groups.map(strategyLabel).join('、') }}</span>
+      <el-button v-if="cacheStatus?.status === 'running'" text size="small" @click="goToRebuild">重建 {{ cacheStatus?.rebuild?.progress || 0 }}% · 查看进度</el-button>
+      <el-button text :icon="RefreshRight" aria-label="刷新缓存状态" @click="refreshCacheStatus" />
+      <el-button v-if="['stale','missing','not_found','partial'].includes(cacheStatus?.status)" size="small" @click="goToRebuild">更新 / 重建</el-button>
+      <el-button text size="small" @click="goToResults">策略结果 ↗</el-button>
+      <el-button text size="small" @click="goToTxtLibrary">下载 TXT ↗</el-button>
+      <el-button text size="small" @click="goToSystemStatus">系统状态 ↗</el-button>
+    </section>
 
     <!-- 今日命中摘要 -->
     <section v-if="focusedStock" class="focus-stock">
       <div class="section-head">
         <el-select v-model="focusCode" :placeholder="`${focusedStock.name} ${focusedStock.code}`" aria-label="图表股票" class="focus-select">
-          <el-option v-for="item in todayResults" :key="item.code" :label="`${item.name} ${item.code}`" :value="item.code" />
+          <el-option v-for="item in focusOptions" :key="item.code" :label="`${item.name} ${item.code}`" :value="item.code" />
         </el-select>
         <div class="focus-tools"><el-segmented v-model="focusPeriod" :options="[{label:'日 K',value:'daily'},{label:'周 K',value:'weekly'}]" aria-label="K 线周期" /><el-button text @click="goToStock(focusedStock.code)">详情 ↗</el-button></div>
       </div>
+      <div class="focus-identity"><strong>{{ focusedStock.name }}</strong><span>{{ focusedStock.code }}</span><el-tag size="small">{{ strategyLabel(focusedStock.strategy_name) }}</el-tag><span v-if="focusedStock.date">信号 {{ focusedStock.date }}</span></div>
       <div class="focus-chart"><KlineChart :code="focusedStock.code" :period="focusPeriod" compact :show-adj-volume="false" :show-short-term-trend="false" :show-bull-bear-line="false" /></div>
     </section>
     <div class="today-highlights" v-if="todayResults.length">
       <div class="section-head">
-        <h3>策略命中</h3>
+        <h3>策略候选 <span class="candidate-count">{{ todayTotal }}</span></h3>
         <el-button type="primary" text @click="goToResults">查看全部 →</el-button>
       </div>
-      <el-table :data="todayResults" stripe size="small" max-height="300" @row-click="(row: any) => goToStock(row.code)">
+      <el-table :data="todayResults" stripe size="small" max-height="300" @row-click="(row: any) => focusCode = row.code">
         <el-table-column prop="code" label="代码" width="90">
           <template #default="{ row }">
             <el-link type="primary">{{ row.code }}</el-link>
           </template>
         </el-table-column>
         <el-table-column prop="name" label="名称" width="100" />
-        <el-table-column prop="strategy_name" label="策略" width="140" />
+        <el-table-column prop="strategy_name" label="策略" width="140"><template #default="{ row }">{{ strategyLabel(row.strategy_name) }}</template></el-table-column>
         <el-table-column prop="category" label="分类" width="100" />
         <el-table-column prop="date" label="信号日期" width="110" />
         <el-table-column prop="j_value" label="J值" width="70">
@@ -531,121 +449,44 @@ function goToRebuild() {
 </template>
 
 <style scoped>
-.home-view {
-  padding: 26px 30px;
-}
-.focus-stock{padding:20px;margin-bottom:24px;border:1px solid var(--border-color);border-radius:16px;background:white}
-.focus-chart{height:500px;min-width:0}.focus-select{width:220px;max-width:55%}.focus-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-
-.overview-cards {
-  display: grid;
-  grid-template-columns: minmax(260px, 1.7fr) minmax(140px, .8fr) minmax(130px, .7fr);
-  gap: 16px;
-  margin-bottom: 24px;
-}
-
-.overview-card {
-  cursor: default;
-}
-
-.action-card {
-  cursor: pointer;
-  transition: transform 0.2s;
-}
-.action-card:hover {
-  transform: translateY(-2px);
-}
-.card-running {
-  border-color: var(--el-color-primary) !important;
-  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.25) !important;
-}
-
-.card-title-row {
+.home-view { padding: 26px 30px; }
+.cache-strip {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
-}
-.card-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--el-text-color-secondary);
-}
-.cache-message {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: default;
-}
-.group-totals {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  margin-top: 2px;
-}
-.cache-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 6px;
-  flex-wrap: wrap;
-}
-
-.card-body {
-  display: flex;
-  flex-direction: column;
   gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  background: #fff;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
-
-.card-detail {
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.8;
-}
-
-.hit-count {
-  font-size: 36px;
-  font-weight: 700;
-  color: var(--el-color-primary);
-}
-
-.action-icon {
-  font-size: 32px;
-}
-
-.action-label {
-  font-size: 14px;
-  color: var(--el-color-primary);
-  font-weight: 600;
-}
-
-.section-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.section-head h3 {
-  font-size: 16px;
-  margin: 0;
-}
-
-.today-highlights {
+.cache-strip .el-button { margin: 0; }
+.cache-warning { color: #9b641a; }
+.focus-stock, .today-highlights, .stock-list-section {
+  padding: 20px;
   margin-bottom: 24px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: white;
 }
-
-.stock-list-section {
-  margin-bottom: 24px;
+.focus-chart { height: 500px; min-width: 0; }
+.focus-select { width: 220px; max-width: 55%; }
+.focus-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.focus-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 18px 0 10px; font-size: 12px; color: var(--text-secondary); }
+.focus-identity strong { font-size: 20px; letter-spacing: -.5px; color: var(--text-primary); }
+.candidate-count { font-size: 12px; background: #edf3fb; padding: 3px 8px; border-radius: 6px; color: #687b99; }
+.section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 12px; }
+.section-head h3 { font-size: 16px; margin: 0; }
+.search-input { width: 280px; max-width: 60%; }
+@media(max-width:1100px) { .home-view { padding: 20px; } }
+@media(max-width:600px) {
+  .home-view { padding: 14px; }
+  .focus-stock, .today-highlights, .stock-list-section { padding: 12px; }
+  .section-head h3 { font-size: 14px; }
+  .section-head { flex-wrap: wrap; }
+  .focus-select { max-width: 100%; }
 }
-
-.search-input {
-  width: 280px;
-}
-.quick-actions{display:flex;flex-direction:column;gap:12px;justify-content:center}.quick-actions .el-button{margin:0;height:40px}
-.overview-card:deep(.el-card__body){height:100%}.hit-count{font-size:46px;font-weight:600;letter-spacing:-2px}.today-highlights,.stock-list-section{padding:20px;background:white;border:1px solid var(--border-color);border-radius:16px}.section-head{gap:12px}.search-input{max-width:60%}
-@media(max-width:1100px){.overview-cards{grid-template-columns:minmax(220px,1.7fr) minmax(120px,1fr)}.quick-actions{grid-column:1/-1;flex-direction:row}.quick-actions .el-button{flex:1}.home-view{padding:20px}}
-@media(max-width:600px){.overview-cards{grid-template-columns:1fr}.quick-actions{flex-wrap:wrap}.home-view{padding:14px}.today-highlights,.stock-list-section{padding:12px}.section-head h3{font-size:14px}}
 </style>

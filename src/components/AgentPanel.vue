@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { displayStrategyText } from '@/utils/strategyLabels'
+import { useStockStore } from '@/stores/stock'
+import { createTrackingItem } from '@/api'
 import { ElMessage } from 'element-plus'
 import {
   Close,
@@ -35,15 +38,37 @@ const sending = ref(false)
 const saving = ref(false)
 const history = ref(false)
 const saveOpen = ref(false)
+const trackingOpen = ref(false)
+const trackingDate = ref('')
+const trackingSaving = ref(false)
+const trackingError = ref('')
+const trackingTarget = ref<{code:string; runId:string} | null>(null)
+async function addTracking() {
+  const reportCode = trackingTarget.value?.code
+  if (!reportCode || !trackingDate.value || trackingSaving.value) return
+  trackingSaving.value = true
+  try {
+    await createTrackingItem({code:reportCode, signal_date:trackingDate.value, source:'agent', note:`Agent ${trackingTarget.value?.runId}`})
+    trackingOpen.value = false
+    ElMessage.success('已加入跟踪')
+    await router.push({path:'/tracking', query:{code:reportCode}})
+  } catch (exc) { trackingError.value = failure(exc) }
+  finally { trackingSaving.value = false }
+}
+watch(trackingOpen, open => { if (open) {
+  trackingError.value = ''
+  trackingTarget.value = current.value?.input.code ? {code:current.value.input.code, runId:current.value.run_id} : null
+  trackingDate.value = current.value?.input.trade_date || current.value?.created_at.slice(0,10) || ''
+} })
 const today = new Date()
 const saveDate = ref(
   `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`,
 )
-const code = computed(() =>
-  /^\d{6}$/.test(String(route.params.code || ''))
-    ? String(route.params.code)
-    : undefined,
-)
+const stockContext = useStockStore()
+const code = computed(() => {
+  const selected = String(route.params.code ?? stockContext.currentCode)
+  return /^\d{6}$/.test(selected) ? selected : undefined
+})
 const active = computed(
   () => !!current.value && ['queued', 'running'].includes(current.value.status),
 )
@@ -62,10 +87,10 @@ const tasks = [
 ]
 const prompts = computed(() =>
   task.value === 'candidates'
-    ? ['整理最近的策略命中', '检查信号日期与数据缺口']
+    ? ['检查策略记录日期与范围', '检查参考日期与截断范围']
     : task.value === 'tracking'
-      ? ['检查跟踪记录的评估日期', '整理需要复查的跟踪项']
-      : ['整理最近复盘的待办', '归纳反复出现的问题'],
+      ? ['检查跟踪记录的评估日期', '检查跟踪记录是否过期']
+      : ['检查复盘日期与记录范围', '检查复盘记录是否截断'],
 )
 let timer: ReturnType<typeof setTimeout> | undefined
 let generation = 0
@@ -101,6 +126,7 @@ async function selectRun(id: string) {
 async function submit(preset?: string) {
   const text = (preset || question.value).trim()
   if (!text || sending.value || active.value) return
+  if (!code.value) { error.value = '请先在工作台选择股票，或打开股票详情'; return }
   generation++
   clearTimeout(timer)
   sending.value = true
@@ -224,12 +250,15 @@ onBeforeUnmount(() => {
         v-model="mode"
         aria-label="运行模式"
         :disabled="active || sending"
-        ><el-option value="local" label="本地整理" /><el-option
+        ><el-option value="local" label="记录检查" /><el-option
           value="model"
           label="模型研究"
-          :disabled="!capabilities?.model_ready" /></el-select
+           /></el-select
       ><span v-if="code" class="context-stock">{{ code }}</span>
     </div>
+    <p v-if="mode === 'local'" class="mode-help">固定检查参考日期、过期与截断；输入作为任务记录，不回答自由问题。</p>
+    <p v-if="mode === 'model' && !capabilities?.model_ready" class="mode-help">模型未配置。<el-button text size="small" @click="router.push('/settings')">打开设置 ↗</el-button></p>
+    <div class="workflow-links"><el-button text size="small" @click="router.push('/update')">数据更新 ↗</el-button><el-button text size="small" @click="router.push('/backtest')">回测表单 ↗</el-button></div>
     <div class="agent-content">
       <div v-if="history" class="run-history">
         <button
@@ -237,7 +266,7 @@ onBeforeUnmount(() => {
           :key="run.run_id"
           @click="selectRun(run.run_id)"
         >
-          <strong>{{ run.input.question }}</strong
+          <strong>{{ run.input.code || '全局' }} · {{ run.input.question }}</strong
           ><span
             >{{ new Date(run.created_at).toLocaleString('zh-CN') }} ·
             {{ labels[run.status] }}</span
@@ -256,23 +285,24 @@ onBeforeUnmount(() => {
         >
       </div>
       <template v-if="current && !history">
+        <p class="report-context">报告对象：{{ current.input.code || '全局记录' }} · 运行 {{ current.created_at.slice(0, 10) }}<span v-if="current.input.trade_date"> · 参考 {{ current.input.trade_date }}</span><strong v-if="current.input.code !== code"> · 历史对象，与当前选择不同</strong></p>
         <div class="user-question">{{ current.input.question }}</div>
         <div class="run-status" role="status">
           <span :class="{ 'status-pulse': active }" />{{ labels[current.status]
           }}<span class="run-mode">{{
             current.input.mode === 'local'
-              ? '本地整理'
-              : current.model || '模型研究'
+              ? '记录检查'
+              : current.input.mode === 'external' ? `Codex · ${current.model || '外部分析'}` : current.model || '模型研究'
           }}</span>
         </div>
         <p v-if="current.error" class="agent-error" role="alert">
           {{ current.error }}
         </p>
         <article v-if="current.output" class="agent-report">
-          <p class="report-summary">{{ current.output.summary }}</p>
+          <p class="report-summary">{{ displayStrategyText(current.output.summary) }}</p>
           <ul class="findings">
             <li v-for="(item, index) in current.output.findings" :key="index">
-              {{ item.text
+              {{ displayStrategyText(item.text)
               }}<span class="source-ref">{{
                 item.source_ids.join(' · ')
               }}</span>
@@ -294,6 +324,9 @@ onBeforeUnmount(() => {
             <p v-for="item in current.output.limitations" :key="item">
               {{ item }}
             </p>
+            <p v-if="current.parent_run_id">父运行：<button class="source-link" @click="selectRun(current.parent_run_id)">{{ current.parent_run_id }}</button></p>
+            <p v-if="current.author">提交作者：{{ current.author }} · {{ current.provider }}（提交方声明）</p>
+            <p v-if="current.prompt_version">版本：{{ current.prompt_version }}</p>
             <p>{{ current.run_id }}</p>
             <p v-if="current.latency_ms">
               {{ (current.latency_ms / 1000).toFixed(1) }}s<span
@@ -303,6 +336,11 @@ onBeforeUnmount(() => {
               >
             </p>
           </details>
+          <div v-if="current.input.code" class="report-links">
+            <el-button text size="small" @click="router.push('/stocks/' + current.input.code)">查看报告股票 ↗</el-button>
+            <el-button text size="small" @click="router.push({path:'/tracking',query:{code:current.input.code}})">按股跟踪 ↗</el-button>
+            <el-button text size="small" @click="trackingOpen = true">加入跟踪…</el-button>
+          </div>
           <div class="report-actions">
             <el-button
               :icon="DocumentAdd"
@@ -321,7 +359,7 @@ onBeforeUnmount(() => {
             v-if="current.saved_review"
             text
             size="small"
-            @click="router.push('/review-library')"
+            @click="router.push({path:'/review-library', query:{ date: current.saved_review }})"
             >查看复盘 · {{ current.saved_review }}</el-button
           >
         </article>
@@ -342,7 +380,7 @@ onBeforeUnmount(() => {
       <textarea
         v-model="question"
         aria-label="Agent 任务"
-        placeholder="输入研究任务…"
+        :placeholder="mode === 'local' ? '记录检查任务…' : '输入研究任务…'"
         rows="3"
         maxlength="2000"
         :disabled="sending || active"
@@ -357,12 +395,18 @@ onBeforeUnmount(() => {
           :icon="Promotion"
           circle
           aria-label="运行 Agent"
-          :disabled="!question.trim()"
+          :disabled="!question.trim() || !code || (mode === 'model' && !capabilities?.model_ready)"
           :loading="sending"
           native-type="submit"
         />
       </div>
     </form>
+    <el-dialog v-model="trackingOpen" title="确认加入跟踪" width="360px" append-to-body>
+      <p>股票 {{ trackingTarget?.code }} · 来源 {{ trackingTarget?.runId }}</p>
+      <p v-if="trackingError" class="agent-error" role="alert">{{ trackingError }}</p>
+      <label for="agent-signal-date">信号日期</label><input id="agent-signal-date" v-model="trackingDate" type="date" class="date-input" />
+      <template #footer><el-button @click="trackingOpen=false">取消</el-button><el-button type="primary" :loading="trackingSaving" :disabled="!trackingDate" @click="addTracking">确认加入</el-button></template>
+    </el-dialog>
     <el-dialog
       v-model="saveOpen"
       title="追加到复盘"
@@ -388,6 +432,8 @@ onBeforeUnmount(() => {
   </aside>
 </template>
 <style scoped>
+.mode-help{font-size:11px;line-height:1.6;color:var(--text-secondary);margin:6px 20px}.workflow-links{display:flex;padding:0 16px}.report-context{font-size:11px;line-height:1.7;color:var(--text-secondary);margin:0 0 12px}.report-context strong{font-weight:500;color:#9b641a}.source-link{border:0;background:none;color:var(--text-accent);font:inherit;cursor:pointer;overflow-wrap:anywhere}.report-links{display:flex;flex-wrap:wrap;margin:12px 0}.report-links .el-button{margin:0}
+
 .agent-panel {
   width: 336px;
   flex: none;

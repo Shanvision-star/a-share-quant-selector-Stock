@@ -66,7 +66,7 @@ def test_call_codex_cli_uses_read_only_exec_and_parses_json(monkeypatch, tmp_pat
     assert args[:2] == ["codex", "exec"]
     assert "--ephemeral" in args
     assert "--ignore-user-config" in args
-    assert "--ignore-rules" in args
+    assert "--ignore-rules" not in args
     assert args[args.index("--sandbox") + 1] == "read-only"
     assert args[args.index("--model") + 1] == "gpt-test"
     assert args[args.index("--cd") + 1] == str(tmp_path)
@@ -90,3 +90,24 @@ def test_call_codex_cli_nonzero_raises_sanitized_error(monkeypatch) -> None:
 
     with pytest.raises(CodexCLIError, match="退出码 7"):
         call_codex_cli(command="codex", prompt="只输出 JSON", timeout_seconds=1)
+
+
+def test_research_is_sealed_and_keeps_usage_for_invalid_report(monkeypatch):
+    """研究隔离 Shell 与项目目录；输出无效也保留计量供运行审计。"""
+    from web.backend.services.llm_providers.codex_cli_provider import call_codex_cli
+    schema = {'type': 'object', 'properties': {'summary': {'type': 'string'}}, 'required': ['summary'], 'additionalProperties': False}
+    def fake_run(args, **kwargs):
+        assert '--json' in args and '--skip-git-repo-check' in args
+        assert args[args.index('--disable') + 1] == 'shell_tool'
+        assert {'plugins', 'apps', 'multi_agent'} <= set(args)
+        assert args[args.index('--cd') + 1] != 'real-workspace'
+        assert 'web_search="disabled"' in args and 'approval_policy="never"' in args
+        assert '--ignore-rules' not in args
+        assert json.loads(Path(args[args.index('--output-schema') + 1]).read_text()) == schema
+        Path(args[args.index('--output-last-message') + 1]).write_text('invalid report')
+        return SimpleNamespace(returncode=0, stdout=json.dumps({'type': 'turn.completed', 'usage': {'input_tokens': 100, 'cached_input_tokens': 20, 'output_tokens': 15}}))
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+    result = call_codex_cli(command='codex', prompt='evidence', cwd='real-workspace', research_only=True, output_schema=schema)
+    assert result['content'] == 'invalid report'
+    assert result['usage']['total_tokens'] == 115
+    assert result['tool_calls'] == []

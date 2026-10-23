@@ -16,6 +16,8 @@ Windows 用户安装 `desktop/release/A-share-Quant-Setup-0.2.0.exe`，或打开
 
 白色玻璃工作台保留策略、K 线、选股池、回测、更新、跟踪和复盘；Agent 区分记录检查、配置模型研究与 Codex 分析。报告保留对象、日期、来源和父运行，可经确认加入跟踪、追加复盘并按股票检索。退出时先检查活动任务和未保存编辑。
 
+Agent 的“运行模式 → Codex 分析”可直接使用已登录的本机 Codex，按当前股票的策略记录、指标和策略实现快照生成报告。每次运行自动留档，面板“历史”可重新打开；“保存复盘”追加到复盘库，JSON 导出完整来源。此入口与 DeepSeek 模型研究独立，接入方式与验证边界见 [桌面 Codex 策略分析](docs/desktop-codex-strategy.md)。
+
 “工作台 → 复制 Codex MCP 配置”提供使用内置 Python 的配置。Codex 可取证、回存结构化分析，并在明确确认后调用更新、回测和跟踪；查询真实业务终态，不提供自动交易。开发构建、接口与验收记录见 [桌面与 Agent 使用说明](docs/desktop-agent-workspace.md)。
 
 0.2.0 的发行文件校验、整改结果、实机截图与验证边界见 [Windows 桌面验收记录](docs/desktop-agent-v2-acceptance.md)。

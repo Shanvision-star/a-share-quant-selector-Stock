@@ -1,8 +1,8 @@
 """Codex CLI Provider。
 
-本 provider 只负责把 Tracking LLM prompt 交给本机或服务器上的 `codex exec`，
-并要求 CLI 输出严格 JSON。它用于受控 smoke，不写文件、不读取真实交易通道，
-失败时由上层回退到 mock。
+复用本机或服务器上的 `codex exec`，支持原 Tracking LLM 与桌面研究 JSON 协议。
+研究模式使用临时工作目录，关闭 Shell、插件、应用与多 Agent 工具，保留真实用量。
+失败统一抛异常；桌面研究记录失败，原 Tracking LLM 继续按自身边界处理回退。
 """
 
 from __future__ import annotations
@@ -116,6 +116,8 @@ def call_codex_cli(
     model: str | None = None,
     cwd: str | None = None,
     timeout_seconds: float = 60.0,
+    output_schema: dict[str, Any] | None = None,
+    research_only: bool = False,
 ) -> dict[str, Any]:
     """调用 `codex exec` 并返回解析后的 JSON 字典。
 
@@ -129,17 +131,22 @@ def call_codex_cli(
         temp_dir = Path(tmp)
         schema_path = temp_dir / "tracking_advice.schema.json"
         output_path = temp_dir / "tracking_advice.json"
-        schema_path.write_text(json.dumps(_ADVICE_SCHEMA, ensure_ascii=False), encoding="utf-8")
+        schema_path.write_text(json.dumps(output_schema or _ADVICE_SCHEMA, ensure_ascii=False), encoding="utf-8")
 
         args = [
             *_split_command(command),
             "exec",
             "--ephemeral",
             "--ignore-user-config",
-            "--ignore-rules",
             "--sandbox",
             "read-only",
         ]
+        if research_only:
+            # 研究只接收证据包，不给模型工作区、Shell、联网搜索或全局 MCP 工具。
+            args.extend(["--json", "--skip-git-repo-check", "--disable", "shell_tool",
+                         "--disable", "plugins", "--disable", "apps", "--disable", "multi_agent",
+                         "-c", 'web_search="disabled"', "-c", 'approval_policy="never"'])
+            cwd = str(temp_dir)
         if model:
             args.extend(["--model", str(model)])
         if cwd:
@@ -162,6 +169,7 @@ def call_codex_cli(
                 text=True,
                 encoding="utf-8",
                 timeout=timeout_seconds,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except FileNotFoundError as exc:
             raise CodexCLIError("Codex CLI 命令未找到") from exc
@@ -177,4 +185,21 @@ def call_codex_cli(
             content = output_path.read_text(encoding="utf-8")
         else:
             content = completed.stdout
+        if research_only:
+            usage = None
+            tool_calls = []
+            for line in completed.stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") == "turn.completed" and isinstance(event.get("usage"), dict):
+                    usage = event["usage"]
+                item_type = (event.get('item') or {}).get('type')
+                if event.get('type') == 'item.completed' and item_type in ('command_execution', 'mcp_tool_call', 'web_search', 'file_change', 'dynamic_tool_call'):
+                    tool_calls.append(item_type)
+            if usage:
+                usage["total_tokens"] = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+            # 把原始正文交给上层校验，格式错误时仍可记录已发生的模型用量。
+            return {"content": content, "usage": usage, "tool_calls": tool_calls}
         return _parse_json_object(content)

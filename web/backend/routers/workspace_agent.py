@@ -25,7 +25,10 @@ def capabilities():
     config = load_llm_config()
     settings = config.get("deepseek") or {}
     ready = config.get("provider") == "deepseek" and bool(settings.get("api_key"))
+    from web.backend.services.codex_research import codex_settings
+    codex = codex_settings()
     return {"agent_name": "quant_research", "prompt_version": "1.0.0", "model_ready": ready,
+            "codex_available": codex['available'], "codex_model": codex['model'],
             "provider": "deepseek" if ready else None, "model": settings.get("model") if ready else None,
             "action_schemas": {"update": UpdateActionParameters.model_json_schema(), "backtest": BacktestRequest.model_json_schema(), "tracking": TrackingCreateRequest.model_json_schema(), "tracking_refresh": TrackingRefreshParameters.model_json_schema()},
             "action_contract": {"confirmed_required": True, "request_id_required": True, "status_query": "/api/agent/actions/{action_id}"},

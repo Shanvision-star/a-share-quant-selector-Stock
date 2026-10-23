@@ -57,14 +57,69 @@ def test_model_bad_source_fails_but_keeps_usage(agent, monkeypatch):
     assert "不存在" in run["error"]
 
 
-def test_cancel_wins_over_late_model_completion(agent, monkeypatch):
+def test_codex_analysis_preserves_sources_usage_and_saved_review(agent, monkeypatch):
+    from web.backend.services import codex_research
+    monkeypatch.setattr(codex_research, 'codex_settings', lambda: {'model': 'configured-codex', 'available': True})
+    monkeypatch.setattr(codex_research, 'strategy_implementation_snapshot', lambda *_: {'total': 1, 'items': [{'strategy_name': 'BrickPatternStrategy', 'implementation': 'rule evidence'}]})
+    seen = {}
+    def provider(system, user, schema):
+        seen.update(json.loads(user))
+        return json.dumps({'summary': '策略证据分析', 'findings': [{'text': '当前实现与历史记录需要区分', 'source_ids': ['S1', 'S2']}], 'next_steps': [], 'limitations': ['未重新扫描']}), {'provider': 'codex_cli', 'model': 'configured-codex', 'usage': {'total_tokens': 50}, 'cost': None}
+    monkeypatch.setattr(codex_research, 'call_codex_research', provider)
+    result = finish(agent, agent.submit(module.AgentRequest(question='按策略解释', code='688613', mode='codex')))
+    assert result['status'] == 'completed' and result['provider'] == 'codex_cli'
+    assert result['prompt_version'] == 'codex-strategy-v1'
+    assert len(seen['sources']) == 2 and result['usage']['total_tokens'] == 50
+    import hashlib
+    for source in result['sources']:
+        assert source['sha256'] == hashlib.sha256(json.dumps(source['data'], ensure_ascii=False, default=str).encode()).hexdigest()
+    first = agent.save_review(result['run_id'], '2026-10-23')
+    again = agent.save_review(result['run_id'], '2026-10-23')
+    assert not first['already_saved'] and again['already_saved']
+
+
+def test_missing_codex_fails_without_model_fallback(agent, monkeypatch):
+    from web.backend.services import codex_research
+    monkeypatch.setattr(codex_research, 'codex_settings', lambda: {'model': None, 'available': False})
+    result = finish(agent, agent.submit(module.AgentRequest(question='分析跟踪', task='tracking', mode='codex')))
+    assert result['status'] == 'failed' and result['output'] is None
+    assert result['provider'] == 'codex_cli' and result['usage'] is None
+    assert '未找到 Codex CLI' in result['error']
+
+
+def test_strategy_snapshot_uses_registered_tuple_contract(monkeypatch):
+    from pathlib import Path
+    from strategy.brick_pattern import BrickPatternStrategy
+    from web.backend.services import codex_research, strategy_service
+    strategy = BrickPatternStrategy({'upper_shadow_max': 0.2})
+    monkeypatch.setattr(strategy_service, 'get_resolved_strategy_items', lambda: ({}, [('brick', 'BrickPatternStrategy', strategy)]))
+    data = codex_research.strategy_implementation_snapshot(Path(__file__).resolve().parents[1], [{'strategy_name': 'BrickPatternStrategy'}])
+    item = data['items'][0]
+    assert item['current_params']['upper_shadow_max'] == 0.2
+    assert 'brick_rebound_strength_ok' in item['implementation']
+    assert item['module'] == 'strategy/brick_pattern.py' and not item['code_truncated']
+
+
+def test_codex_prefers_current_app_binary_over_old_path_launcher(tmp_path, monkeypatch):
+    from web.backend.services import codex_research
+    binary = tmp_path / 'current-codex.exe'
+    binary.touch()
+    monkeypatch.setenv('CODEX_CLI_PATH', str(binary))
+    monkeypatch.setattr(codex_research, 'load_llm_config', lambda: {})
+    monkeypatch.setattr(codex_research.shutil, 'which', lambda _: 'old-launcher.exe')
+    settings = codex_research.codex_settings()
+    assert settings['available'] and settings['command'] == str(binary)
+
+
+@pytest.mark.parametrize('mode', ['model', 'codex'])
+def test_cancel_wins_over_late_model_completion(agent, monkeypatch, mode):
     entered, release = threading.Event(), threading.Event()
     def provider(*_):
         entered.set()
         release.wait(3)
         return {"summary": "稍后返回", "findings": [], "next_steps": [], "limitations": []}, {"provider": "test", "usage": {"total_tokens": 8}}
     monkeypatch.setattr(module, "call_model", provider)
-    run = agent.submit(module.AgentRequest(question="检查", task="tracking", mode="model"))
+    run = agent.submit(module.AgentRequest(question="检查", task="tracking", mode=mode))
     assert entered.wait(3)
     agent.store.patch(run["run_id"], active_only=True, status="cancelled")
     release.set()

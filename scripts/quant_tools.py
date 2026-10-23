@@ -49,7 +49,7 @@ def main():
     run = commands.add_parser("run")
     run.add_argument("question")
     run.add_argument("--task", choices=["candidates", "tracking", "reviews", "market"], default="candidates")
-    run.add_argument("--mode", choices=["local", "model"], default="local")
+    run.add_argument("--mode", choices=["local", "model", "codex"], default="local")
     run.add_argument("--code")
     run.add_argument("--date")
     run.add_argument("--limit", type=int, default=20)

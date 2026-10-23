@@ -18,7 +18,7 @@
 
 桌面使用 Electron，0.2.0 内置 CPython 3.14.9 x64 与生产依赖。安装后创建 Electron userData 下的 `workspace`，仅安装经过 SHA256 清单校验的应用代码和缺失的干净默认配置；保留已有配置与 data。打包白名单不含用户行情、SQLite、复盘或密钥。“连接现有项目”保留原数据目录；打包版仍使用内置解释器。macOS/Linux、签名与公网多用户部署不在本期范围。
 
-研究工作流先收集有界证据，再交给已配置模型或 Codex 形成结构化报告。记录检查只做日期、缺失字段与截断范围检查，不回答自由分析问题。Codex 分析以独立子运行存储，不覆盖父证据。更新、回测与跟踪使用另一个经确认的白名单操作入口；不接管交易规则、确认订单或执行任意代码。保留原跟踪 LLM 接口。
+研究工作流先收集有界证据，再交给已配置模型或 Codex 形成结构化报告。记录检查只做日期、缺失字段与截断范围检查，不回答自由分析问题。经 MCP 回写的 Codex 分析以独立子运行存储，不覆盖父证据；桌面直接选择“Codex 分析”则建立独立研究运行。更新、回测与跟踪使用另一个经确认的白名单操作入口；不接管交易规则、确认订单或执行任意代码。保留原跟踪 LLM 接口。
 
 运行记录保存在现有 SQLite 新增的 Agent 表中，证据保存为运行时快照以便追溯。取消阻止后续步骤和报告发布；已发送的模型请求可能仍消耗 token。服务重启将遗留任务标记中断。
 
@@ -66,7 +66,7 @@ npm --prefix desktop run dist
 
 ## Agent 契约
 
-输入 schema：`question`（1–2000 字符）、`task`（candidates / tracking / reviews）、`mode`（local / model）、可选六位 `code`、ISO `trade_date`、`limit`（1–50，默认20）。日期分别匹配策略交易日、跟踪信号日、复盘日期。证据正文每篇最多4000字符，总快照最多48000字节，截断有标记；这是有界研究，不是全量组合审计。
+输入 schema：`question`（1–2000 字符）、`task`（candidates / tracking / reviews / market）、`mode`（local / model / codex）、可选六位 `code`、ISO `trade_date`、`limit`（1–50，默认20）。日期分别匹配策略交易日、跟踪信号日、复盘日期；market 必须提供代码与交易日。记录证据正文每篇最多4000字符、快照最多48000字节。Codex 策略研究另附最多5个当前策略的参数与源码，单文件最多16000字符、源码总共最多32000字符，截断有标记；这是有界研究，不是全量组合审计。
 
 输出 schema：`summary`、`findings[{text,source_ids}]`、`next_steps`、`limitations`。校验 JSON 格式及引用标识；引用校验不等同于逐条事实验证。记录 `agent_name=quant_research`、`prompt_version=1.0.0`、输入、时间、状态、来源快照与 SHA256、工具事件、provider/model、tokens、latency_ms。模型 API 不返回金额，`cost=null`；本地整理 `cost=0`。取消后不发布结果，已发生的模型用量在返回时仍记账。失败不会降级成虚假的模型成功。
 
@@ -85,7 +85,15 @@ npm --prefix desktop run dist
 | GET `/api/agent/active` | 当前研究、数据更新和回测活动任务 |
 | POST `/api/agent/shutdown` | `{confirmed:true}`，标记本进程未完成研究中断，供桌面收尾 |
 
-DeepSeek 复用 `config/llm.yaml` 的 `provider` 与 `deepseek` 字段。研究 Agent 固定最多2400输出 tokens、最多120秒超时和2个并发、8个在途任务；不提供任意工具执行。原有 Tracking LLM 的 mock / deepseek / codex_cli 配置继续有效；新研究 Agent 不隐式启动 Codex CLI，Codex 从 MCP 获取证据后可用自身模型处理。
+DeepSeek 复用 `config/llm.yaml` 的 `provider` 与 `deepseek` 字段，最多2400输出 tokens、最多120秒超时。研究 Agent 共用2个并发、8个在途任务。原有 Tracking LLM 的 mock / deepseek / codex_cli 配置继续有效。
+
+2026-10-23 Codex 桌面入口变更：
+
+- Original：研究 Agent 仅由 Codex 经 MCP 取证和回写，不在桌面内发起 Codex。
+- Revised：用户明确选择 `mode=codex` 后，可通过已登录的本机 `codex exec` 运行封闭证据分析；超时180秒、只读沙箱、禁用 Shell 和联网搜索，不载入全局 MCP 配置。不改动 DeepSeek 配置和每日任务的模型选择。
+- Reason / Impact：用户要求桌面直接点击“Codex 分析”。报告仍保留输入、证据 hash、模型、用量、失败状态与复盘关联；源码快照不等于历史参数还原或实际重新扫描。`codex_available` 只证明可找到 CLI，登录、额度和模型可用性以真实运行结果为准。
+
+研究任务的策略分析版本为 `codex-strategy-v1`（market 仍为 `daily-market-v2`）。MCP 原有 `local → quant_submit_analysis` 路径继续有效，也可显式选择 `quant_research(mode="codex")`。使用和验收见 [桌面 Codex 策略分析](desktop-codex-strategy.md)。
 
 `external` 是已存结果的 mode，不是研究创建参数。外部 author/provider/model 是提交方声明，不能当作身份认证或真实模型调用证明；不伪造 tokens、latency 或金额。结构化报告保存时合并股票索引与原复盘正文，重复保存不重复追加。外部分析要求完整 source ID→SHA256 映射；内容或引用不符拒绝并记录原因。
 

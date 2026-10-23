@@ -36,8 +36,8 @@ def quant_capabilities() -> dict:
 @mcp.tool(annotations=WRITE)
 def quant_research(question: str, task: Literal["candidates", "tracking", "reviews", "market"] = "candidates",
                    code: str | None = None, trade_date: str | None = None, limit: int = 20,
-                   mode: Literal["local", "model"] = "local") -> dict:
-    """建立可追踪研究任务。local 取证供 Codex 分析，model 调用已配置模型；返回 run_id 后用 quant_run 获取结果。"""
+                   mode: Literal["local", "model", "codex"] = "local") -> dict:
+    """建立研究任务。local 取证；model 调用配置的供应商；codex 显式调用本机 Codex 并附策略实现。返回 run_id 后用 quant_run 查终态。"""
     return request("POST", "agent/runs", {"question": question, "task": task, "code": code, "trade_date": trade_date, "limit": limit, "mode": mode})
 
 

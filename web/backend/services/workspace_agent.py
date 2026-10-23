@@ -60,7 +60,7 @@ class AgentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     question: str = Field(min_length=1, max_length=2000)
     task: Literal["candidates", "tracking", "reviews", "market"] = "candidates"
-    mode: Literal["local", "model"] = "local"
+    mode: Literal["local", "model", "codex"] = "local"
     code: str | None = Field(default=None, pattern=r"^\d{6}$")
     trade_date: date | None = None
     limit: int = Field(default=20, ge=1, le=50)
@@ -103,7 +103,7 @@ class AgentStore:
                     self.patch(run["run_id"], active_only=True, status="interrupted", error="服务已重启，请重新运行")
 
     def create(self, request: AgentRequest) -> dict:
-        run = {"run_id": uuid4().hex, "agent_name": AGENT_NAME, "prompt_version": 'daily-market-v2' if request.task == 'market' else PROMPT_VERSION,
+        run = {"run_id": uuid4().hex, "agent_name": AGENT_NAME, "prompt_version": 'daily-market-v2' if request.task == 'market' else 'codex-strategy-v1' if request.mode == 'codex' else PROMPT_VERSION,
                "schema_version": 1, "owner_pid": os.getpid(), "status": "queued", "created_at": now(), "updated_at": now(),
                "input": request.model_dump(mode="json"), "provider": None, "model": None,
                "usage": None, "cost": None, "latency_ms": None, "sources": [], "events": [],
@@ -186,8 +186,15 @@ def collect_sources(request: AgentRequest) -> list[dict]:
         data["items"].pop()
         data["budget_truncated"] = True
         encoded = json.dumps(data, ensure_ascii=False, default=str)
-    return [{"source_id": "S1", "tool": source, "retrieved_at": now(), "sha256": hashlib.sha256(encoded.encode()).hexdigest(),
-             "arguments": request.model_dump(mode="json", exclude={"question", "mode"}), "data": data}]
+    sources = [{"source_id": "S1", "tool": source, "retrieved_at": now(), "sha256": hashlib.sha256(encoded.encode()).hexdigest(),
+                "arguments": request.model_dump(mode="json", exclude={"question", "mode"}), "data": data}]
+    if request.task == 'candidates' and request.mode == 'codex':
+        from .codex_research import strategy_implementation_snapshot
+        context = strategy_implementation_snapshot(ROOT, data['items'])
+        content = json.dumps(context, ensure_ascii=False, default=str)
+        sources.append({'source_id': 'S2', 'tool': 'strategy_implementation', 'retrieved_at': now(),
+                        'sha256': hashlib.sha256(content.encode()).hexdigest(), 'data': context})
+    return sources
 
 
 def local_report(sources: list[dict]) -> dict:
@@ -226,8 +233,11 @@ def call_model(request: AgentRequest, sources: list[dict]) -> tuple[str, dict]:
         system += (' 此任务的数字事实由程序单独生成。你只提供定性解读：summary、findings.text、next_steps、limitations 中禁止出现任何阿拉伯数字、日期、代码、价格和百分比；'
                    '不要自行统计交易日或计算指标。直接使用来源 metrics 的窗口及 close_position_label 判断，不能把区间上部说成下部。'
                    'summary 不超过二百字，findings 最多五条，明确模型推断和证据不足。source_ids 中仍使用 S1。')
+    if request.mode == 'codex':
+        from .codex_research import call_codex_research
+        return call_codex_research(system, user, schema)
     if provider != "deepseek":
-        # Codex 通过 MCP 使用自己的模型；不隐式启动另一个拥有工作区权限的 CLI。
+        # 只有显式 codex 模式启动封闭研究 CLI；模型供应商配置不隐式改变执行方式。
         raise ValueError("研究模型未配置：请在 config/llm.yaml 配置 deepseek，或使用本地整理 / Codex MCP")
     settings = config.get("deepseek") or {}
     if not settings.get("api_key"):
@@ -272,13 +282,17 @@ class WorkspaceAgent:
             if run["status"] != "running":
                 return
             sources = collect_sources(request)
-            events.append({"at": now(), "type": "tool_completed", "tool": sources[0]["tool"], "source_id": "S1"})
+            events.extend({"at": now(), "type": "tool_completed", "tool": source['tool'], "source_id": source['source_id']} for source in sources)
             run = self.store.patch(run_id, active_only=True, sources=sources, events=events)
             if run["status"] != "running":
                 return
-            if request.mode == "model":
+            if request.mode in ("model", "codex"):
                 config = load_llm_config()
-                self.store.patch(run_id, active_only=True, provider=config.get("provider"), model=(config.get("deepseek") or {}).get("model"))
+                if request.mode == 'codex':
+                    from .codex_research import codex_settings
+                    self.store.patch(run_id, active_only=True, provider='codex_cli', model=codex_settings()['model'])
+                else:
+                    self.store.patch(run_id, active_only=True, provider=config.get("provider"), model=(config.get("deepseek") or {}).get("model"))
                 output, metadata = call_model(request, sources)
             else:
                 output, metadata = local_report(sources), {"provider": "local", "model": None, "usage": None, "cost": 0}
@@ -288,7 +302,7 @@ class WorkspaceAgent:
             source_ids = {s["source_id"] for s in sources}
             if any(not set(f.source_ids) <= source_ids for f in report.findings):
                 raise ValueError("模型引用了不存在的证据，报告未发布")
-            if request.task == 'market' and request.mode == 'model':
+            if request.task == 'market' and request.mode in ('model', 'codex'):
                 from .daily_observation import verified_market_report
                 report = AgentReport.model_validate(verified_market_report(report.model_dump(), sources[0]))
             # 即使取消发生在供应商请求期间，也记录实际已返回的用量，但不发布报告。

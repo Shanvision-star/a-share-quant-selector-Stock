@@ -23,7 +23,8 @@ CERTIFI_SHA256 = "42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e
 LOCK = ROOT / "desktop" / "requirements-runtime.lock"
 DEV_PACKAGES = {"pip", "pytest", "iniconfig", "pluggy", "pygments"}
 SOURCE_DIRS = ("web/backend", "utils", "strategy", "backtest_lab")
-SOURCE_SCRIPTS = ("run_desktop_backend.py", "run_web_backend.py", "quant_mcp.py", "quant_tools.py", "extend_history_baostock.py")
+SOURCE_SCRIPTS = ("run_desktop_backend.py", "run_web_backend.py", "quant_mcp.py", "quant_tools.py",
+                  "run_zettaranc_backtest.py", "extend_history_baostock.py", "backfill_history.py")
 
 
 def digest(path: Path) -> str:

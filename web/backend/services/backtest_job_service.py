@@ -354,6 +354,26 @@ class BacktestTaskRepository:
         row = self._conn().execute(f"SELECT {columns} FROM backtest_tasks WHERE task_id = ?", (task_id,)).fetchone()
         return self._row_to_task(row, include_events=include_events) if row else None
 
+    def interrupt_if_active(self, task_id: str) -> dict | None:
+        """调用方已确认受控任务拥有者死亡；条件更新保护并发完成的业务结果。"""
+        conn = self._conn()
+        message = "拥有回测任务的后端进程已退出；任务已中断，不会自动重放"
+        timestamp = _now_text()
+        changed = conn.execute(
+            """UPDATE backtest_tasks SET status='failed', error=?, message=?, finished_at=?, updated_at=?
+               WHERE task_id=? AND status IN ('queued','running','cancel_requested')""",
+            (message, message, timestamp, timestamp, task_id),
+        )
+        if changed.rowcount:
+            conn.execute(
+                """INSERT INTO backtest_task_events
+                   (task_id, event_type, message, payload_json, created_at)
+                   VALUES (?, 'owner_interrupted', ?, ?, ?)""",
+                (task_id, message, _encode_json({"status": "failed", "reason": "owner_exited"}), timestamp),
+            )
+        conn.commit()
+        return self.get(task_id)
+
     def list_recent(self, limit: int = 20, include_result: bool = False) -> list[dict]:
         columns = BACKTEST_TASK_DETAIL_COLUMNS if include_result else BACKTEST_TASK_LIGHTWEIGHT_COLUMNS
         rows = self._conn().execute(

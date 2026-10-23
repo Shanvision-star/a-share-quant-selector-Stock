@@ -235,7 +235,14 @@ class ControlledActions:
     def recent(self):
         init_requests()
         rows = get_connection().execute("SELECT payload FROM workspace_agent_requests WHERE kind='action'").fetchall()
-        items = [json.loads(row[0]) for row in rows if json.loads(row[0]).get("action_id")]
+        items = []
+        for row in rows:
+            item = json.loads(row[0])
+            if not item.get("action_id"):
+                continue
+            if item["kind"] == "backtest" and item["status"] in ("running", "queued", "cancel_requested") and not process_alive(item.get("owner_pid")):
+                item = self.recover_backtest(item, row[0])
+            items.append(item)
         for item in items:
             if item["kind"] == "update" and item["status"] in ("running", "queued") and not process_alive(item.get("owner_pid")):
                 from .strategy_result_repository import get_run, get_run_events
@@ -250,6 +257,24 @@ class ControlledActions:
                 item["events"].append({"at": now(), "type": "owner_interrupted"})
                 self.save(item)
         return items
+
+    def recover_backtest(self, item, original_payload):
+        """仅恢复死拥有者关联的业务记录，原请求映射保留且不重新提交。"""
+        from .backtest_job_service import backtest_job_manager
+        business = backtest_job_manager.repository.interrupt_if_active(item["business_id"]) if item.get("business_id") else None
+        item.update(status=business["status"] if business else "failed", result=business,
+                    error=(business.get("error") or None) if business else "拥有回测任务的后端进程已退出；不会自动重放")
+        item["events"].append({"at": now(), "type": "owner_interrupted", "status": item["status"]})
+        conn = get_connection()
+        # 多实例同时恢复时只允许一个记录事件，避免覆盖另一个读取者已保存的终态。
+        changed = conn.execute("UPDATE workspace_agent_requests SET payload=? WHERE kind='action' AND request_id=? AND payload=?",
+            (json.dumps(item, ensure_ascii=False), item["request_id"], original_payload))
+        conn.commit()
+        if changed.rowcount:
+            audit_attempt("action", item["request_id"], "owner_interrupted", stage="backtest_recovery")
+            return item
+        current = conn.execute("SELECT payload FROM workspace_agent_requests WHERE kind='action' AND request_id=?", (item["request_id"],)).fetchone()
+        return json.loads(current[0]) if current else item
 
     def get(self, action_id):
         item = next((x for x in self.recent() if x["action_id"] == action_id), None)

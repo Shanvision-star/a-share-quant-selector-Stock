@@ -101,6 +101,8 @@ def active_tasks():
     import json
     from web.backend.services import data_service
     from web.backend.services.backtest_job_service import backtest_job_manager
+    # 先恢复受控任务关联的业务记录，保证首次活动查询就排除已死亡拥有者的任务。
+    actions = controlled_actions.recent()
     items = []
     rows = get_connection().execute("SELECT payload FROM workspace_agent_runs WHERE status IN ('queued','running')").fetchall()
     for row in rows:
@@ -114,7 +116,7 @@ def active_tasks():
         if task["status"] not in ("done", "failed", "canceled", "interrupted"):
             items.append({"id": task["task_id"], "kind": "backtest", "status": task["status"]})
     known = {item["id"] for item in items}
-    for action in controlled_actions.recent():
+    for action in actions:
         action = controlled_actions.get(action["action_id"])
         if action["status"] in ("running", "queued", "cancel_requested") and action.get("business_id") not in known:
             items.append({"id": action.get("business_id") or action["action_id"], "kind": action["kind"], "status": action["status"], "owner_pid": action.get("owner_pid")})

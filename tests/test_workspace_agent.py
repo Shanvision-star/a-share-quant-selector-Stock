@@ -265,6 +265,68 @@ def test_dead_update_owner_recovers_business_terminal_and_active(agent, monkeypa
     service.pool.shutdown()
 
 
+@pytest.mark.parametrize("status", ["queued", "running", "cancel_requested"])
+def test_dead_backtest_owner_recovers_business_active_and_idempotency(agent, monkeypatch, status):
+    from web.backend.services import workspace_actions as actions, backtest_job_service as jobs, data_service
+    repository = jobs.BacktestTaskRepository(connection_factory=db.get_connection)
+    manager = jobs.BacktestJobManager(runner=lambda _: {"summary": {"trades": 0}}, repository=repository)
+    monkeypatch.setattr(jobs, "backtest_job_manager", manager)
+    monkeypatch.setattr(data_service, "_UPDATE_JOB_STATE", {})
+    request = actions.ActionRequest(request_id="dead-backtest", action="backtest", confirmed=True,
+        parameters={"start_date": "2026-10-01", "end_date": "2026-10-23"})
+    actions.claim_request("action", request.request_id, request.model_dump(mode="json"))
+    repository.create({"task_id": "orphan-bt", "status": status, "params": request.parameters})
+    old_service = actions.ControlledActions()
+    old_service.save({"action_id": "orphan-action", "request_id": request.request_id, "kind": "backtest",
+        "status": status, "owner_pid": -1, "business_id": "orphan-bt", "events": [], "created_at": module.now()})
+    old_service.pool.shutdown()
+    service = actions.ControlledActions()
+    monkeypatch.setattr(routes, "controlled_actions", service)
+    try:
+        # 首次只读取活动列表也必须先恢复业务状态，不能多轮轮询才移除残留。
+        assert routes.active_tasks() == {"total": 0, "items": []}
+        recovered = service.get("orphan-action")
+        assert recovered["status"] == "failed" and "退出" in recovered["error"]
+        business = manager.get("orphan-bt", include_events=True)
+        assert business["status"] == "failed" and business["finished_at"]
+        assert [event["event_type"] for event in business["events"]].count("owner_interrupted") == 1
+        assert [event["type"] for event in recovered["events"]].count("owner_interrupted") == 1
+        assert service.submit(request)["action_id"] == "orphan-action"
+        assert len(manager.list_recent()) == 1
+        fresh = service.submit(request.model_copy(update={"request_id": "new-backtest"}))
+        assert fresh["business_id"] != "orphan-bt"
+        assert manager.wait(fresh["business_id"], timeout=3)["status"] == "done"
+        rows = db.get_connection().execute("SELECT event FROM workspace_action_audit WHERE request_id=?", (request.request_id,)).fetchall()
+        assert [row[0] for row in rows].count("owner_interrupted") == 1
+    finally:
+        service.pool.shutdown()
+        manager.executor.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("business_status,alive", [("running", True), ("queued", True),
+    ("done", False), ("failed", False), ("canceled", False)])
+def test_backtest_recovery_preserves_live_owner_and_business_terminal(agent, monkeypatch, business_status, alive):
+    from web.backend.services import workspace_actions as actions, backtest_job_service as jobs
+    repository = jobs.BacktestTaskRepository(connection_factory=db.get_connection)
+    manager = jobs.BacktestJobManager(repository=repository)
+    monkeypatch.setattr(jobs, "backtest_job_manager", manager)
+    # 另一个后端实例的 owner 也应保留，不能仅检查是否为当前 PID。
+    monkeypatch.setattr(actions, "process_alive", lambda pid: pid == 78910 and alive)
+    repository.create({"task_id": "protected-bt", "status": business_status,
+        "result": {"summary": {"preserved": True}} if business_status == "done" else None})
+    before = repository.get("protected-bt", include_events=True)
+    actions.claim_request("action", "protected-request", {"case": "protected"})
+    service = actions.ControlledActions()
+    service.save({"action_id": "protected-action", "request_id": "protected-request", "kind": "backtest",
+        "status": "running", "owner_pid": 78910, "business_id": "protected-bt", "events": [], "created_at": module.now()})
+    try:
+        assert service.get("protected-action")["status"] == business_status
+        assert repository.get("protected-bt", include_events=True) == before
+    finally:
+        service.pool.shutdown()
+        manager.executor.shutdown(wait=True)
+
+
 def test_analysis_interrupted_claim_is_visible_and_never_replayed(agent):
     from web.backend.services import workspace_actions as actions
     payload = {"parent": "evidence", "report": "pending"}

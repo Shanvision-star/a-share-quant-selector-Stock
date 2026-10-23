@@ -26,6 +26,17 @@ class AnalysisRequest(BaseModel):
     prompt_version: str = Field(min_length=1, max_length=100)
 
 
+class UpdateActionParameters(BaseModel):
+    """复用数据更新服务的参数默认值，供校验与能力发现共享。"""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    target_date: str | None = None
+    auto_rebuild: bool = True
+    pipeline: bool = False
+    allow_intraday_fast: bool = False
+    init_if_empty: bool = True
+    strategies: list[Literal["b1", "b2", "bowl", "brick", "zettaranc"]] | None = None
+
+
 class ActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: str = Field(min_length=1, max_length=128)
@@ -175,17 +186,10 @@ class ControlledActions:
             result = TrackingCreateRequest.model_validate(params).model_dump()
             date.fromisoformat(result["signal_date"])
             return result
-        allowed = {"target_date", "auto_rebuild", "pipeline", "allow_intraday_fast", "init_if_empty", "strategies"}
-        if set(params) - allowed:
-            raise ValueError("未知更新参数")
-        if params.get("target_date"):
-            date.fromisoformat(params["target_date"])
-        for key in allowed - {"target_date", "strategies"}:
-            if key in params and not isinstance(params[key], bool):
-                raise ValueError("更新开关必须是布尔值")
-        if params.get("strategies") is not None and (not isinstance(params["strategies"], list) or any(s not in {"b1","b2","bowl","brick","zettaranc"} for s in params["strategies"])):
-            raise ValueError("未知策略")
-        return params
+        result = UpdateActionParameters.model_validate(params).model_dump(exclude_unset=True)
+        if result.get("target_date"):
+            date.fromisoformat(result["target_date"])
+        return result
 
     def update(self, item, params):
         async def consume():

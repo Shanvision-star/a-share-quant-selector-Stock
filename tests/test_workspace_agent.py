@@ -333,3 +333,14 @@ def test_rejections_and_review_failures_persist_safe_audit(agent, monkeypatch):
     assert any(row[1] == "failed" and json.loads(row[2])["stage"] == "append_review" for row in rows)
     assert secret not in json.dumps([tuple(row) for row in rows])
     service.pool.shutdown()
+
+
+def test_capabilities_disclose_reused_action_schemas(agent):
+    from web.backend.routers.backtest import BacktestRequest
+    from web.backend.routers.tracking import TrackingCreateRequest
+    schemas = routes.capabilities()["action_schemas"]
+    assert schemas["backtest"] == BacktestRequest.model_json_schema()
+    assert schemas["tracking"] == TrackingCreateRequest.model_json_schema()
+    assert schemas["update"]["properties"]["auto_rebuild"]["default"] is True
+    assert schemas["update"]["properties"]["pipeline"]["default"] is False
+    assert schemas["update"]["additionalProperties"] is False

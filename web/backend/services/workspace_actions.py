@@ -12,7 +12,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 from .sqlite_service import get_connection
-from .workspace_agent import AgentReport, now
+from .workspace_agent import AgentReport, now, process_alive
 
 
 class AnalysisRequest(BaseModel):
@@ -182,7 +182,13 @@ class ControlledActions:
     def recent(self):
         init_requests()
         rows = get_connection().execute("SELECT payload FROM workspace_agent_requests WHERE kind='action'").fetchall()
-        return [json.loads(row[0]) for row in rows if json.loads(row[0])]
+        items = [json.loads(row[0]) for row in rows if json.loads(row[0])]
+        for item in items:
+            if item["kind"] == "update" and item["status"] in ("running", "queued") and not process_alive(item.get("owner_pid")):
+                item.update(status="interrupted", error="拥有更新任务的后端进程已退出，请核对业务历史")
+                item["events"].append({"at": now(), "type": "owner_interrupted"})
+                self.save(item)
+        return items
 
     def get(self, action_id):
         item = next((x for x in self.recent() if x["action_id"] == action_id), None)

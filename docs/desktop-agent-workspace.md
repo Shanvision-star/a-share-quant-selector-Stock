@@ -1,6 +1,6 @@
 # 桌面量化工作台与研究 Agent
 
-基线：根仓库 6786e7f / origin/web，前端独立仓库 9c89efb。两仓库均在 codex/apple-quant-workspace 隔离分支开发。
+最初桌面基线：根仓库 6786e7f / origin/web，前端独立仓库 9c89efb，最初在 codex/apple-quant-workspace 隔离分支开发。当前扫描生产化位于 `codex/strategy-scan-profile`，版本 0.2.1；打包桌面完整后端作业实测 256.86 秒，桌面与 MCP 全部 122 条信号一致，见 [正式桌面扫描验收](desktop-scan-production-acceptance.md)。
 
 ## 范围与验收
 
@@ -16,11 +16,21 @@
 
 ## 技术决定
 
-桌面使用 Electron，0.2.0 内置 CPython 3.14.9 x64 与生产依赖。安装后创建 Electron userData 下的 `workspace`，仅安装经过 SHA256 清单校验的应用代码和缺失的干净默认配置；保留已有配置与 data。打包白名单不含用户行情、SQLite、复盘或密钥。“连接现有项目”保留原数据目录；打包版仍使用内置解释器。macOS/Linux、签名与公网多用户部署不在本期范围。
+桌面使用 Electron，0.2.1 沿用 0.2.0 的内置 CPython 3.14.9 x64 与生产依赖，无需用户配置系统 Python。安装后创建 Electron userData 下的 `workspace`，仅安装经过 SHA256 清单校验的应用代码和缺失的干净默认配置；保留已有配置与 data。打包白名单不含用户行情、SQLite、复盘或密钥。“连接现有项目”直接使用原目录代码和数据；打包版仍使用内置解释器。macOS/Linux、签名与公网多用户部署不在本期范围。0.2.0 的既有结果保留在 [历史验收](desktop-agent-v2-acceptance.md)。
 
 研究工作流先收集有界证据，再交给已配置模型或 Codex 形成结构化报告。记录检查只做日期、缺失字段与截断范围检查，不回答自由分析问题。经 MCP 回写的 Codex 分析以独立子运行存储，不覆盖父证据；桌面直接选择“Codex 分析”则建立独立研究运行。更新、回测与跟踪使用另一个经确认的白名单操作入口；不接管交易规则、确认订单或执行任意代码。保留原跟踪 LLM 接口。
 
 运行记录保存在现有 SQLite 新增的 Agent 表中，证据保存为运行时快照以便追溯。取消阻止后续步骤和报告发布；已发送的模型请求可能仍消耗 token。服务重启将遗留任务标记中断。
+
+## 0.2.1 正式策略扫描
+
+本分支已将标准库 `ProcessPoolExecutor` / Windows `spawn` 接入正式更新后重建与手动重建入口，默认最多 8 个进程、每批 16 股。父进程冻结策略实例并检查输入内容指纹，子进程只读行情与计算，父进程校验完整性后发布。五策略公式、阈值、float64 精度与原有页面功能保持不变；B2 合法空 `damage_zone` 的序列化错误修复单独记录。
+
+历史扫描按目标日期截断，再补足最多 320 根；上市历史不足时仍使用原最低样本规则。每股每策略留下命中、未命中、跳过或异常终态；任意异常、漏算、重复、输入变化或取消均不发布半成品。完整快照与信号在 SQLite 同一事务中发布，桌面、系统状态与 Codex MCP 回读同一版本；JSON 作为兼容镜像，失败保留旧版本，零命中分组也会正确替换。
+
+更新与扫描共享作业租约，避免并行改写行情。Windows Job Object 约束后端与扫描子进程的共同生命周期，入口保留 main guard；环境拒绝 Job 绑定时记录告警并降级串行。`data/desktop-runtime.json` 的非敏感字段 `process_guard` 标记实际保护状态，扫描记录保留真实后端和进程数。代码与专项回归完成不等于发行实机验收完成，当前结果以 [正式验收记录](desktop-scan-production-acceptance.md) 为准。
+
+MCP `quant_strategy_results` 只读分页查询正式信号，支持 `strategy`、`trade_date`、`code`、`offset`、`limit`（1–200）。返回同次发布编号和原始信号，不创建研究或调用模型；原有连接重新连接后可发现此工具。已用实际 Codex stdio 配置分三页验证全部 122 条与桌面一致。
 
 ## 每日自动流程（2026-10-23 增补）
 
@@ -58,9 +68,9 @@ npm --prefix desktop run dist
 
 生产依赖版本锁位于 `desktop/requirements-runtime.lock`；构建脚本校验官方 Python 压缩包与 certifi wheel 的固定 SHA256，生成运行时清单。已有构建环境可用 `--app-only` 只刷新应用，或 `--python-only` 只刷新解释器；更换依赖时才用 `--lock` 重建锁文件并审核变更。
 
-输出为 `desktop/release/A-share-Quant-Setup-0.2.0.exe`（安装版）和 `A-share-Quant-0.2.0.exe`（便携版）。`Open-Desktop.cmd` 优先使用便携版；开发模式仍可执行 `npm --prefix desktop start`。`QUANT_WORKSPACE` 指定项目目录，`QUANT_PYTHON` 只影响开发模式。现有浏览器入口仍为 `python scripts/run_web_backend.py --host 127.0.0.1 --port 8001`。
+本分支构建输出为 `desktop/release/A-share-Quant-Setup-0.2.1.exe`（安装版）和 `A-share-Quant-0.2.1.exe`（便携版），是否已验收交付见正式验收记录。`Open-Desktop.cmd` 优先使用便携版；开发模式仍可执行 `npm --prefix desktop start`。`QUANT_WORKSPACE` 指定项目目录，`QUANT_PYTHON` 只影响开发模式。现有浏览器入口仍为 `python scripts/run_web_backend.py --host 127.0.0.1 --port 8001`。
 
-关闭窗口或菜单退出均经过页面未保存保护；若有活动任务，默认继续工作。确认退出会记录本实例研究中断并关闭其后端。远端已发送模型请求可能继续计费用量；不声称远端任务被撤回。安装包未签名，Windows 可能提示未知发布者。卸载配置不主动删除用户工作区。
+关闭窗口或菜单退出均经过页面未保存保护；若有研究、更新、扫描或回测活动任务，默认继续工作。确认退出会记录本实例研究中断、取消扫描并关闭其后端；后端退出也触发扫描取消。远端已发送模型请求可能继续计费用量；不声称远端任务被撤回。安装包未签名，Windows 可能提示未知发布者。卸载配置不主动删除用户工作区。
 
 桌面服务绑定随机的 `127.0.0.1` 端口。Electron 主进程为同源请求附加实例令牌，页面没有 Node / shell 权限。`data/desktop-runtime.json` 保存本机工具发现信息和凭证，位于被 Git 忽略的数据目录，退出时移除；Windows 文件访问继承项目目录的 ACL。不要复制该文件到工单或对外分享。`data/desktop-backend.log` 保存启动日志。
 
@@ -82,8 +92,8 @@ npm --prefix desktop run dist
 | POST `/api/agent/actions` | `request_id,action,parameters,confirmed:true`；action 只允许 update / backtest / tracking |
 | GET `/api/agent/actions/{action_id}` | 查询真实业务 ID、状态和事件 |
 | GET `/api/agent/requests/{kind}/{request_id}` | 查询幂等提交状态；中断不自动重放 |
-| GET `/api/agent/active` | 当前研究、数据更新和回测活动任务 |
-| POST `/api/agent/shutdown` | `{confirmed:true}`，标记本进程未完成研究中断，供桌面收尾 |
+| GET `/api/agent/active` | 当前研究、数据更新、策略扫描和回测活动任务 |
+| POST `/api/agent/shutdown` | `{confirmed:true}`，标记本进程未完成研究中断并取消扫描，供桌面收尾 |
 
 DeepSeek 复用 `config/llm.yaml` 的 `provider` 与 `deepseek` 字段，最多2400输出 tokens、最多120秒超时。研究 Agent 共用2个并发、8个在途任务。原有 Tracking LLM 的 mock / deepseek / codex_cli 配置继续有效。
 

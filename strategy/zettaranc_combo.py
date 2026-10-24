@@ -243,18 +243,15 @@ class ZettarancComboStrategy(BaseStrategy):
     # ------------------------------------------------------------------
     def _row_signal(self, row: pd.Series) -> bool:
         """单行（单个交易日）是否命中 zettaranc 全部入场条件。"""
-        try:
-            # 任何 NaN 都视为指标未就绪
-            if pd.isna(row.get("short_term_trend")) or pd.isna(row.get("bull_bear_line")):
-                return False
-            if pd.isna(row.get("J")) or pd.isna(row.get("j_prev")):
-                return False
-            if pd.isna(row.get("bbi")) or pd.isna(row.get("vol_ratio_5")):
-                return False
-            # 异常 J 值（停牌或除权数据脏）
-            if abs(float(row["J"])) > 200:
-                return False
-        except (TypeError, ValueError):
+        # NaN 仍表示未就绪；无法转换的指标由扫描层记录为计算失败。
+        if pd.isna(row.get("short_term_trend")) or pd.isna(row.get("bull_bear_line")):
+            return False
+        if pd.isna(row.get("J")) or pd.isna(row.get("j_prev")):
+            return False
+        if pd.isna(row.get("bbi")) or pd.isna(row.get("vol_ratio_5")):
+            return False
+        # 异常 J 值（停牌或除权数据脏）
+        if abs(float(row["J"])) > 200:
             return False
 
         return bool(

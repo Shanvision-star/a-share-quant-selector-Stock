@@ -227,9 +227,8 @@ def test_mark_stale_update_runs_interrupted(monkeypatch):
     assert events[0][0] == "old-update"
 
 
-def test_run_data_update_continues_rebuild_when_update_is_partial(monkeypatch):
-    """数据更新 partial（少数股票失败）时，必须继续策略重建，
-    避免单点失败阻断整条 pipeline。但应发出 update_warning 事件做提示。"""
+def test_run_data_update_retains_good_snapshot_when_update_is_partial(monkeypatch):
+    """行情未完整验证时保留上次快照，不将混合日期扫描发布为当日完成。"""
     monkeypatch.setattr(data_service.csv_manager, "list_all_stocks", lambda: ["000001", "600000"])
     monkeypatch.setattr(strategy_service, "get_latest_trade_date", lambda: "2026-05-14")
 
@@ -311,21 +310,10 @@ def test_run_data_update_continues_rebuild_when_update_is_partial(monkeypatch):
 
     events = asyncio.run(collect_events())
 
-    # 策略重建必须被调用
-    assert rebuild_called["n"] >= 1, "partial 状态下应继续进入阶段二策略重建"
-
-    # 事件流应包含 update_warning（提示局部失败）
+    assert rebuild_called["n"] == 0
     event_types = [e["event"] for e in events]
-    assert "update_warning" in event_types, f"缺少 update_warning 事件：{event_types}"
-    assert "update_complete" in event_types
-    assert "rebuild_start" in event_types
-    assert events[-1]["event"] == "job_complete"
-
-    # run 最终被标为 done 而非 error
+    assert "rebuild_start" not in event_types
+    assert events[-1]["event"] == "error"
+    assert events[-1]["data"]["update_status"] == "partial"
     assert finished[-1][0] == "run-partial"
-    assert finished[-1][1] == "done"
-    assert any(call.get("total_count") == 2 for call in update_run_calls)
-    assert any(
-        call.get("processed_count") == 2 and call.get("matched_count") == 3
-        for call in update_run_calls
-    )
+    assert finished[-1][1] == "error"

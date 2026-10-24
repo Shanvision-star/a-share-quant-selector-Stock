@@ -487,12 +487,10 @@ class B1CaseStrategy(BaseStrategy):
         revisit_band_pct = float(cfg.get('revisit_band_pct', 3.0))
 
         # --- 当前状态读取 ---
-        try:
-            current_j = self._to_scalar(window.iloc[today_idx]['J'], 'J')
-            dist_col = window.iloc[today_idx].get('distance_to_bullbear_pct', None)
-            current_dist_pct = self._to_scalar(dist_col, 'distance_to_bullbear_pct') if dist_col is not None else 999.0
-        except Exception:
-            return {**_EMPTY, 'message': 'indicator_error'}
+        # 计算异常交给扫描层记录失败，不能伪装成未命中或阶段通过。
+        current_j = self._to_scalar(window.iloc[today_idx]['J'], 'J')
+        dist_col = window.iloc[today_idx].get('distance_to_bullbear_pct', None)
+        current_dist_pct = self._to_scalar(dist_col, 'distance_to_bullbear_pct') if dist_col is not None else 999.0
 
         stage_passed = {}
 
@@ -504,15 +502,9 @@ class B1CaseStrategy(BaseStrategy):
         search_end = max(0, today_idx - 25)
 
         for i in range(search_end, -1, -1):   # 从近到远，找最近满足条件的一次
-            try:
-                j_val = self._to_scalar(window.iloc[i]['J'], 'J')
-            except Exception:
-                continue
+            j_val = self._to_scalar(window.iloc[i]['J'], 'J')
             if j_val <= anchor_kdj_max:
-                try:
-                    open_val = self._to_scalar(window.iloc[i]['open'], 'open')
-                except Exception:
-                    continue
+                open_val = self._to_scalar(window.iloc[i]['open'], 'open')
                 anchor_idx = i
                 anchor_j = j_val
                 anchor_open = open_val
@@ -534,11 +526,8 @@ class B1CaseStrategy(BaseStrategy):
         if guard_slice.empty:
             stage_passed[2] = False
         else:
-            try:
-                guard_low_min = float(guard_slice['low'].min())
-                stage_passed[2] = guard_low_min >= anchor_open
-            except Exception:
-                stage_passed[2] = False
+            guard_low_min = float(guard_slice['low'].min())
+            stage_passed[2] = guard_low_min >= anchor_open
 
         # --- Stage 3: 大阳突破 + 连涨 ---
         breakout_idx = None
@@ -548,17 +537,14 @@ class B1CaseStrategy(BaseStrategy):
             # 大阳突破必须发生在 setup窗口之前留出足够时间（至少15天前）
             search_to = max(search_from, today_idx - setup_window_days - 10)
             for i in range(search_from, search_to):
-                try:
-                    row_open = self._to_scalar(window.iloc[i]['open'], 'open')
-                    row_close = self._to_scalar(window.iloc[i]['close'], 'close')
-                    if row_open > 0:
-                        pct = (row_close - row_open) / row_open * 100
-                        if pct >= breakout_min_pct:
-                            breakout_idx = i
-                            breakout_streak = self._count_breakout_streak(window, i)
-                            break
-                except Exception:
-                    continue
+                row_open = self._to_scalar(window.iloc[i]['open'], 'open')
+                row_close = self._to_scalar(window.iloc[i]['close'], 'close')
+                if row_open > 0:
+                    pct = (row_close - row_open) / row_open * 100
+                    if pct >= breakout_min_pct:
+                        breakout_idx = i
+                        breakout_streak = self._count_breakout_streak(window, i)
+                        break
 
         stage_passed[3] = (
             breakout_idx is not None
@@ -571,10 +557,7 @@ class B1CaseStrategy(BaseStrategy):
             # 支撑价 = anchor 前后3行内的最低 low（模拟参考低点）
             ref_start = max(0, anchor_idx - 2)
             ref_end = min(n, anchor_idx + 3)
-            try:
-                support_price = float(window.iloc[ref_start:ref_end]['low'].min())
-            except Exception:
-                support_price = None
+            support_price = float(window.iloc[ref_start:ref_end]['low'].min())
 
             # 洗盘区间：突破连涨结束 → setup窗口开始前
             washout_start = breakout_idx + breakout_streak
@@ -584,11 +567,8 @@ class B1CaseStrategy(BaseStrategy):
             if washout_slice.empty or support_price is None:
                 stage_passed[4] = True   # 没有中间过渡段，视为通过
             else:
-                try:
-                    washout_min_close = float(washout_slice['close'].min())
-                    stage_passed[4] = washout_min_close >= support_price
-                except Exception:
-                    stage_passed[4] = False
+                washout_min_close = float(washout_slice['close'].min())
+                stage_passed[4] = washout_min_close >= support_price
         else:
             stage_passed[4] = False
 
@@ -601,14 +581,11 @@ class B1CaseStrategy(BaseStrategy):
         if setup_slice.empty:
             stage_passed[5] = False
         else:
-            try:
-                j_series = setup_slice['J'].apply(lambda x: float(x) if not isinstance(x, float) else x)
-                dist_series = setup_slice['distance_to_bullbear_pct'].abs()
-                days_ok = int(((j_series <= revisit_kdj_max) & (dist_series <= revisit_band_pct)).sum())
-                stage_passed[5] = days_ok >= min_days_required
-                setup_window_start = str(setup_slice['date'].iloc[0].date())
-            except Exception:
-                stage_passed[5] = False
+            j_series = setup_slice['J'].apply(lambda x: float(x) if not isinstance(x, float) else x)
+            dist_series = setup_slice['distance_to_bullbear_pct'].abs()
+            days_ok = int(((j_series <= revisit_kdj_max) & (dist_series <= revisit_band_pct)).sum())
+            stage_passed[5] = days_ok >= min_days_required
+            setup_window_start = str(setup_slice['date'].iloc[0].date())
 
         stages_1_to_5_all = all(stage_passed.get(i, False) for i in range(1, 6))
         first_fail = next((i for i in range(1, 6) if not stage_passed.get(i, False)), None)

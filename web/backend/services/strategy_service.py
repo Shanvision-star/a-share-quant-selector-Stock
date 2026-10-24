@@ -282,15 +282,27 @@ def get_latest_trade_date() -> str:
 
 
 def _trim_price_frame_as_of(df, as_of_date: str = None):
-    if df is None or getattr(df, 'empty', True) or not as_of_date or 'date' not in df.columns:
+    """按交易日截断；日期不可解释时拒绝扫描，避免放入未来数据。"""
+    target = None
+    if as_of_date is not None:
+        if not isinstance(as_of_date, str) or len(as_of_date) != 10:
+            raise ValueError('目标日期必须为 YYYY-MM-DD')
+        target = pd.to_datetime(as_of_date, format='%Y-%m-%d', errors='coerce')
+        if pd.isna(target) or target.strftime('%Y-%m-%d') != as_of_date:
+            raise ValueError('目标日期无效')
+    if df is None or getattr(df, 'empty', True):
         return df
+    if 'date' not in df.columns:
+        raise ValueError('行情缺少 date 列')
 
-    target = pd.to_datetime(as_of_date, errors='coerce')
-    if pd.isna(target):
+    # 历史文件同时存在纯日期和午夜时间戳，不可用首行推断格式后静默丢行。
+    date_text = df['date'].astype(str).str.strip()
+    dates = pd.to_datetime(date_text, format='mixed', errors='coerce')
+    if dates.isna().any() or not date_text.str.match(r'^\d{4}-\d{2}-\d{2}(?:$|[ T])').all():
+        raise ValueError('行情包含无效日期')
+    if target is None:
         return df
-
-    dates = pd.to_datetime(df['date'], errors='coerce')
-    trimmed = df.loc[dates <= target].copy()
+    trimmed = df.loc[dates.dt.normalize() <= target].copy()
     return trimmed.reset_index(drop=True)
 
 
@@ -530,12 +542,23 @@ def _prepare_stock_context(code: str, stock_names: dict, as_of_date: str = None)
     if name.startswith('ST') or name.startswith('*ST'):
         return 'invalid', name, None, f'{name} 为ST股票'
 
-    df = csv_manager.read_stock(code, nrows=DEFAULT_STRATEGY_SCAN_ROWS)
-    df = _trim_price_frame_as_of(df, as_of_date)
-    if (df is None or df.empty) and as_of_date:
+    raw_df = csv_manager.read_stock(code, nrows=DEFAULT_STRATEGY_SCAN_ROWS)
+    if raw_df is None or raw_df.empty:
+        path = csv_manager.data_dir / code[:2] / f'{code}.csv'
+        if path.exists() and path.stat().st_size > 0:
+            raise ValueError('行情文件非空但无法读取有效记录')
+    df = _trim_price_frame_as_of(raw_df, as_of_date)
+    # 当前日保留有界读取；历史日需先截断，再取得同样的 320 根窗口。
+    if (as_of_date is not None and raw_df is not None
+            and len(raw_df) >= DEFAULT_STRATEGY_SCAN_ROWS
+            and len(df) < DEFAULT_STRATEGY_SCAN_ROWS):
         full_df = csv_manager.read_stock(code)
+        if full_df is None or full_df.empty:
+            raise ValueError('历史行情窗口读取失败')
         df = _trim_price_frame_as_of(full_df, as_of_date)
-    if df.empty or len(df) < 60:
+    if df is not None:
+        df = df.head(DEFAULT_STRATEGY_SCAN_ROWS).reset_index(drop=True)
+    if df is None or df.empty or len(df) < 60:
         return 'skip', name, None, '数据不足'
 
     return 'ok', name, df, None
@@ -550,11 +573,34 @@ def _resolve_common_zhixing_params(strategy_items: list):
     return next(iter(params_set)) if len(params_set) == 1 else None
 
 
-def _analyze_stock_multi_strategy(code: str, name: str, df, strategy_items: list, shared_zhixing_params=None) -> dict:
-    """单只股票复用多策略分析。返回 hits dict，key 为 strategy_filter。"""
+def _strategy_terminal_outcomes(strategy_items: list, status: str, reason=None, error=None) -> dict:
+    """数据准备或共享计算失败时，仍为每个应执行策略记录终态。"""
+    outcomes = {}
+    for sf, strategy_name, _ in strategy_items:
+        outcome = {'strategy_name': strategy_name, 'status': status,
+                   'signal_count': 0, 'elapsed_seconds': 0.0}
+        if reason is not None:
+            outcome['reason'] = reason
+        if error is not None:
+            outcome.update(error_type=type(error).__name__, error_message=str(error))
+        outcomes[sf] = outcome
+    return outcomes
+
+
+def _analyze_stock_multi_strategy(code: str, name: str, df, strategy_items: list,
+                                  shared_zhixing_params=None, *, with_outcomes=False) -> dict:
+    """复用指标并记录逐策略终态；旧调用仍返回 hits，但异常必须显式失败。"""
     hits = {}
-    shared_df = prepare_shared_indicators(df, zhixing_params=shared_zhixing_params)
+    outcomes = {}
+    try:
+        shared_df = prepare_shared_indicators(df, zhixing_params=shared_zhixing_params)
+    except Exception as exc:
+        if not with_outcomes:
+            raise
+        return {'hits': {}, 'outcomes': _strategy_terminal_outcomes(strategy_items, 'error', error=exc)}
     for sf, strategy_name, strategy in strategy_items:
+        started = time.perf_counter()
+        outcome = {'strategy_name': strategy_name, 'status': 'not_matched', 'signal_count': 0}
         try:
             result = strategy.analyze_stock(code, name, shared_df.copy())
             if result and result.get('signals'):
@@ -566,8 +612,16 @@ def _analyze_stock_multi_strategy(code: str, name: str, df, strategy_items: list
                         'signals': result['signals'],
                     },
                 }
-        except Exception:
-            continue
+                outcome.update(status='matched', signal_count=len(result['signals']))
+        except Exception as exc:
+            outcome.update(status='error', error_type=type(exc).__name__, error_message=str(exc))
+        outcome['elapsed_seconds'] = time.perf_counter() - started
+        outcomes[sf] = outcome
+    if with_outcomes:
+        return {'hits': hits, 'outcomes': outcomes}
+    failed = [sf for sf, outcome in outcomes.items() if outcome['status'] == 'error']
+    if failed:
+        raise RuntimeError(f'{code} 策略计算失败: {", ".join(failed)}')
     return hits
 
 
@@ -599,12 +653,21 @@ def _finalize_grouped_results(group_buffers: dict, scanned_total: int) -> dict:
 
 
 def _process_one_stock(code: str, stock_names: dict, strategy_items: list, as_of_date: str = None, shared_zhixing_params=None) -> dict:
-    """线程池任务：读取单只股票并在内存中复用多策略分析。"""
-    status, name, df, reason = _prepare_stock_context(code, stock_names, as_of_date)
+    """读取单股并返回完整终态；保留成功命中供诊断，但任何错误使整股失败。"""
+    try:
+        status, name, df, reason = _prepare_stock_context(code, stock_names, as_of_date)
+    except Exception as exc:
+        return {'code': code, 'name': stock_names.get(code, '未知'), 'status': 'error',
+                'reason': '行情准备失败', 'hits': {},
+                'outcomes': _strategy_terminal_outcomes(strategy_items, 'error', error=exc)}
     if status != 'ok':
-        return {'code': code, 'name': name, 'status': status, 'reason': reason, 'hits': {}}
-    hits = _analyze_stock_multi_strategy(code, name, df, strategy_items, shared_zhixing_params)
-    return {'code': code, 'name': name, 'status': 'ok', 'reason': None, 'hits': hits}
+        return {'code': code, 'name': name, 'status': status, 'reason': reason, 'hits': {},
+                'outcomes': _strategy_terminal_outcomes(strategy_items, 'skipped', reason=reason)}
+    analysis = _analyze_stock_multi_strategy(code, name, df, strategy_items, shared_zhixing_params,
+                                             with_outcomes=True)
+    failed = [sf for sf, outcome in analysis['outcomes'].items() if outcome['status'] == 'error']
+    return {'code': code, 'name': name, 'status': 'error' if failed else 'ok',
+            'reason': f'策略计算失败: {", ".join(failed)}' if failed else None, **analysis}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -721,6 +784,9 @@ def _build_empty_payload(strategy_filter: str, requested_date: str, status: str,
 
 
 def _read_strategy_snapshot() -> dict | None:
+    published = repo.get_published_snapshot(str(WEB_STRATEGY_RESULTS_FILE.resolve()))
+    if published is not None:
+        return published
     if not WEB_STRATEGY_RESULTS_FILE.exists():
         return None
 
@@ -770,7 +836,9 @@ def _build_api_payload_from_snapshot(snapshot: dict, strategy_filter: str, reque
         'unique_total': unique_total,
         'generated_at': snapshot.get('generated_at'),
         'status': status,
-        'source': 'file',
+        'source': 'sqlite' if snapshot.get('_authoritative') else 'file',
+        'run_id': snapshot.get('_run_id'),
+        'scan_summary': snapshot.get('scan_summary'),
         'message': message,
         'cache_file': str(WEB_STRATEGY_RESULTS_FILE),
     }
@@ -781,163 +849,10 @@ def build_strategy_result_snapshot(
     strategy_filter: str = 'all',
     progress_callback=None,
     run_id: str = None,
+    strategy_filters: list | None = None,
 ) -> dict:
-    effective_date = target_date or get_latest_trade_date()
-    strategy_filter = _normalize_strategy_filter(strategy_filter)
-
-    registry = get_registry('config/strategy_params.yaml')
-    registry.auto_register_from_directory('strategy')
-    stock_names = _load_stock_names()
-    all_stocks = csv_manager.list_all_stocks()
-    resolved_strategies = _resolve_web_strategies(registry)
-
-    # ── 第一阶段重构: 按股票扫描一次，复用多个策略 ──
-    selected_items = _resolve_selected_web_strategies(resolved_strategies, strategy_filter)
-    existing_snapshot = _read_strategy_snapshot()
-    group_buffers = _init_group_buffers(selected_items, existing_snapshot, strategy_filter, effective_date)
-
-    total_stocks = len(all_stocks)
-    overall_processed = 0
-    overall_matched = 0
-
-    # 为每个策略发送 strategy_start 事件
-    for index, (sf, strategy_name, _) in enumerate(selected_items, start=1):
-        if progress_callback:
-            progress_callback(
-                'strategy_start',
-                {
-                    'status': 'running',
-                    'progress': 0,
-                    'message': f'开始扫描 {strategy_name}。',
-                    'strategy_filter': sf,
-                    'strategy_name': strategy_name,
-                    'strategy_index': index,
-                    'strategy_count': len(selected_items),
-                    'processed': 0,
-                    'total': total_stocks,
-                    'matched': 0,
-                },
-            )
-
-    # 并发遍历股票, 每只股票只 read_stock 一次
-    worker_count = max(1, min(8, total_stocks))
-    shared_zhixing_params = _resolve_common_zhixing_params(selected_items)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {
-            executor.submit(_process_one_stock, code, stock_names, selected_items, effective_date, shared_zhixing_params): code
-            for code in all_stocks
-        }
-
-        for future in concurrent.futures.as_completed(futures):
-            overall_processed += 1
-            try:
-                stock_analysis = future.result()
-            except Exception:
-                stock_analysis = {'code': futures[future], 'name': '', 'status': 'error', 'hits': {}}
-
-            added_rows, emitted_rows = _merge_stock_hits_into_groups(group_buffers, stock_analysis)
-            overall_matched += added_rows
-
-            progress = min(99, int((overall_processed / total_stocks) * 100))
-
-            if emitted_rows and progress_callback:
-                # 找出本次命中涉及的策略名（用于消息显示）
-                hit_strategies = list({r.get('strategy_name', '') for r in emitted_rows})
-                progress_callback(
-                    'signal',
-                    {
-                        'status': 'running',
-                        'progress': progress,
-                        'message': f'{", ".join(hit_strategies)} 新增 {len(emitted_rows)} 条命中。',
-                        'strategy_filter': strategy_filter,
-                        'strategy_name': hit_strategies[0] if hit_strategies else '',
-                        'items': emitted_rows,
-                        'processed': overall_processed,
-                        'total': total_stocks,
-                        'matched': overall_matched,
-                        'current_code': stock_analysis.get('code', ''),
-                        'current_name': stock_analysis.get('name', ''),
-                    },
-                )
-
-            should_emit_progress = (
-                emitted_rows
-                or overall_processed == total_stocks
-                or overall_processed == 1
-                or overall_processed % 10 == 0
-            )
-            if progress_callback and should_emit_progress:
-                progress_callback(
-                    'progress',
-                    {
-                        'status': 'running',
-                        'progress': progress,
-                        'message': f'扫描中：{overall_processed}/{total_stocks}，命中 {overall_matched} 条。',
-                        'strategy_filter': strategy_filter,
-                        'processed': overall_processed,
-                        'total': total_stocks,
-                        'matched': overall_matched,
-                        'current_code': stock_analysis.get('code', ''),
-                        'current_name': stock_analysis.get('name', ''),
-                    },
-                )
-
-    groups = _finalize_grouped_results(group_buffers, total_stocks)
-
-    # 为每个策略发送 strategy_complete 事件
-    for sf, strategy_name, _ in selected_items:
-        if progress_callback:
-            progress_callback(
-                'strategy_complete',
-                {
-                    'status': 'running',
-                    'progress': 99,
-                    'message': f'{strategy_name} 扫描完成，共命中 {groups[sf]["total"]} 只股票。',
-                    'strategy_filter': sf,
-                    'strategy_name': strategy_name,
-                    'processed': overall_processed,
-                    'total': total_stocks,
-                    'matched': overall_matched,
-                    'group_total': groups[sf]['total'],
-                },
-            )
-
-    flat_results = _flatten_grouped_results(groups)
-    snapshot = {
-        'schema_version': WEB_STRATEGY_SCHEMA_VERSION,
-        'trade_date': effective_date,
-        'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'groups': groups,
-        'available_groups': sorted(groups.keys()),
-        'results': flat_results,
-        'total': sum(group.get('total', 0) for group in groups.values()),
-        'unique_total': len({
-            str(item.get('code', ''))
-            for item in flat_results
-            if item.get('code')
-        }),
-        '_run_id': run_id,
-    }
-
-    WEB_STRATEGY_RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = WEB_STRATEGY_RESULTS_FILE.with_suffix('.tmp')
-    with open(temp_file, 'w', encoding='utf-8') as file:
-        json.dump(snapshot, file, ensure_ascii=False, indent=2, default=_json_default)
-    temp_file.replace(WEB_STRATEGY_RESULTS_FILE)
-
-    with _STRATEGY_CACHE_LOCK:
-        _STRATEGY_CACHE.clear()
-
-    # ── SQLite 双写：将结果写入 SQLite ──
-    run_id = snapshot.get('_run_id')
-    if run_id:
-        try:
-            _write_results_to_sqlite(run_id, effective_date, strategy_filter, groups, snapshot)
-        except Exception:
-            pass  # SQLite 写入失败不阻塞主流程
-
-    return snapshot
-
+    from web.backend.services.strategy_snapshot_builder import build_snapshot
+    return build_snapshot(target_date, strategy_filter, progress_callback, run_id, strategy_filters)
 
 def _write_results_to_sqlite(run_id: str, trade_date: str, strategy_filter: str, groups: dict, snapshot: dict):
     """将策略结果批量写入 SQLite"""
@@ -964,19 +879,8 @@ def _write_results_to_sqlite(run_id: str, trade_date: str, strategy_filter: str,
                     'signal': row.get('signal', {}),
                 })
 
-    if batch:
-        repo.insert_results_batch(batch)
-
-    # 保存快照摘要
-    group_totals = {sf: g.get('total', 0) for sf, g in groups.items()}
-    repo.save_snapshot(
-        run_id=run_id,
-        trade_date=trade_date,
-        strategy_filter=strategy_filter,
-        total_results=snapshot.get('total', 0),
-        available_groups=sorted(groups.keys()),
-        group_totals=group_totals,
-    )
+    repo.publish_snapshot(run_id, trade_date, strategy_filter, _json_safe(batch),
+                          _json_safe(snapshot), str(WEB_STRATEGY_RESULTS_FILE.resolve()))
 
 
 def get_strategy_cache_status(strategy_filter: str = 'all', target_date: str = None) -> dict:
@@ -1116,7 +1020,9 @@ def get_strategy_cache_status(strategy_filter: str = 'all', target_date: str = N
         },
         'is_latest': snapshot_date == effective_date,
         'selected_strategy_available': strategy_filter == 'all' or strategy_filter in available_groups,
-        'source': 'file',
+        'source': 'sqlite' if snapshot.get('_authoritative') else 'file',
+        'published_run_id': snapshot.get('_run_id'),
+        'scan_summary': snapshot.get('scan_summary'),
     })
 
     if snapshot_date != effective_date:
@@ -1207,7 +1113,7 @@ async def stream_strategy_cache_rebuild(strategy_filter: str = 'all', target_dat
             _finish_rebuild_state('error', data.get('message', '策略缓存重建失败。'), 100)
 
         # 写入 SQLite 事件表（仅关键事件，不写高频 progress 事件）
-        if event in {'start', 'strategy_start', 'signal', 'strategy_complete', 'complete', 'error'}:
+        if event in {'start', 'strategy_start', 'signal', 'strategy_complete', 'complete', 'error', 'scan_summary', 'scan_timing'}:
             try:
                 repo.insert_event(
                     run_id=run_id,
@@ -1216,7 +1122,7 @@ async def stream_strategy_cache_rebuild(strategy_filter: str = 'all', target_dat
                     strategy_name=data.get('strategy_name'),
                     progress=data.get('progress'),
                     message=data.get('message'),
-                    payload=data if event == 'signal' else None,
+                    payload=data if event in {'signal', 'scan_summary', 'scan_timing'} else None,
                 )
             except Exception:
                 pass
@@ -1364,10 +1270,8 @@ def _clear_strategy_cache() -> None:
 
 
 def _invalidate_persisted_strategy_results() -> None:
-    try:
-        WEB_STRATEGY_RESULTS_FILE.unlink(missing_ok=True)
-    except OSError:
-        pass
+    WEB_STRATEGY_RESULTS_FILE.unlink(missing_ok=True)
+    repo.invalidate_published_snapshots(str(WEB_STRATEGY_RESULTS_FILE.resolve()))
 
 
 def _validate_strategy_config_update(strategy_name: str, new_params: dict) -> dict:
@@ -1436,6 +1340,12 @@ def get_strategies_config() -> dict:
 
 
 def update_strategy_config(strategy_name: str, new_params: dict, expected_revision: str) -> tuple[bool, str]:
+    from web.backend.services.strategy_scan import market_job
+    with market_job(repo.generate_run_id(), 'config'):
+        return _update_strategy_config_unlocked(strategy_name, new_params, expected_revision)
+
+
+def _update_strategy_config_unlocked(strategy_name: str, new_params: dict, expected_revision: str) -> tuple[bool, str]:
     validated_params = _validate_strategy_config_update(strategy_name, new_params)
     with _CONFIG_UPDATE_LOCK:
         original_config, _, _ = get_config_with_revision()

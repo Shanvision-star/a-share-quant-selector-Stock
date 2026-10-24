@@ -52,8 +52,9 @@ def test_bundle_includes_backtest_entry_and_history_subprocess_dependency():
     module = build_module()
     files = {p.relative_to(module.ROOT).as_posix() for p in module.source_files(module.ROOT) if p.exists()}
     assert {"scripts/run_zettaranc_backtest.py", "scripts/extend_history_baostock.py",
-            "scripts/backfill_history.py"} <= files
+            "scripts/backfill_history.py", "scripts/desktop_process_guard.py"} <= files
     assert {"strategy/zettaranc_combo.py", "utils/csv_manager.py", "utils/akshare_fetcher.py"} <= files
+    assert "web/backend/services/strategy_scan.py" in files
 
 
 def test_embedded_python_runs_bundled_zettaranc_and_history_dry_run(tmp_path):

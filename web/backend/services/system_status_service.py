@@ -181,6 +181,18 @@ def _default_requested_trade_date() -> str:
 
 
 def _read_strategy_snapshot() -> dict | None:
+    import os
+    rows = _read_only_db_rows(
+        """SELECT summary_json FROM strategy_cache_snapshots
+           WHERE json_extract(CASE WHEN json_valid(summary_json) THEN summary_json ELSE '{}' END,
+                              '$._authoritative') = 1
+             AND COALESCE(json_extract(summary_json, '$._invalidated'), 0) = 0
+             AND json_extract(summary_json, '$._cache_file') = ?
+           ORDER BY snapshot_id DESC LIMIT 1""",
+        (os.path.normcase(os.path.abspath(WEB_STRATEGY_RESULTS_FILE)),),
+    )
+    if rows:
+        return json.loads(rows[0]['summary_json'])
     if not WEB_STRATEGY_RESULTS_FILE.exists():
         return None
 
@@ -309,7 +321,9 @@ def _default_strategy_cache_loader() -> dict:
             "status": status,
             "message": message,
             "is_latest": is_latest,
-            "source": "file",
+            "source": "sqlite" if snapshot.get('_authoritative') else "file",
+            "published_run_id": snapshot.get('_run_id'),
+            "scan_summary": snapshot.get('scan_summary'),
             "rebuild": {
                 "is_running": bool(last_run and last_run.get("status") == "running"),
                 "last_status": last_run.get("status") if last_run else None,
@@ -620,6 +634,8 @@ class SystemStatusService:
                 "missing_groups": raw.get("missing_groups", []),
                 "latest_run_status": raw.get("latest_run_status"),
                 "last_run_id": raw.get("last_run_id"),
+                "published_run_id": raw.get("published_run_id"),
+                "scan_summary": raw.get("scan_summary"),
                 "rebuild": raw.get("rebuild", {}),
             },
         )

@@ -55,6 +55,8 @@ def watch_parent(server, stdin_fd: int | None = None) -> None:
 
 
 def main():
+    from scripts.desktop_process_guard import configure_process_tree_lifetime
+    process_guard_enabled = configure_process_tree_lifetime()
     import uvicorn
     from web.backend.main import app
 
@@ -66,7 +68,9 @@ def main():
     port = listener.getsockname()[1]
     runtime_path = ROOT / "data" / "desktop-runtime.json"
     runtime_path.parent.mkdir(parents=True, exist_ok=True)
-    runtime = {"base_url": f"http://127.0.0.1:{port}", "pid": os.getpid(), "token": token}
+    runtime = {"base_url": f"http://127.0.0.1:{port}", "pid": os.getpid(), "token": token,
+               "process_guard": "job_object" if process_guard_enabled else
+               ("serial_fallback" if os.name == "nt" else "not_required")}
     runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
     # 发现文件只供当前用户本地 Codex 使用，禁止写入日志或纳入 Git。
     if os.name != "nt":
@@ -88,4 +92,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

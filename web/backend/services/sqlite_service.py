@@ -1,4 +1,5 @@
 """SQLite 数据库服务 - 初始化、连接管理、schema 建表"""
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -343,5 +344,6 @@ def init_database():
     conn.commit()
 
 
-# 模块加载时自动初始化
-init_database()
+# 扫描子进程只计算指标，不创建连接或改写业务数据库。
+if os.environ.get('QUANT_SCAN_WORKER') != '1':
+    init_database()

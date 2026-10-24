@@ -28,6 +28,35 @@ def quant_status() -> dict:
 
 
 @mcp.tool(annotations=READ)
+def quant_strategy_results(strategy: Literal['all', 'b1', 'b2', 'bowl', 'brick', 'zettaranc'] = 'all',
+                           trade_date: str | None = None, code: str | None = None,
+                           offset: int = 0, limit: int = 50) -> dict:
+    """只读已发布策略明细，保留运行编号和信号原文；不扫描、不建立研究、不调用模型。"""
+    from datetime import date
+    import re
+    from urllib.parse import urlencode
+    if strategy not in {'all', 'b1', 'b2', 'bowl', 'brick', 'zettaranc'}:
+        raise ValueError('未知策略')
+    if not 1 <= limit <= 200 or offset < 0:
+        raise ValueError('limit 必须为 1 至 200，offset 不得为负')
+    if code is not None and not re.fullmatch(r'\d{6}', code):
+        raise ValueError('股票代码必须为六位数字')
+    query = {'strategy': strategy}
+    if trade_date is not None:
+        if date.fromisoformat(trade_date).isoformat() != trade_date:
+            raise ValueError('日期必须为 YYYY-MM-DD')
+        query['date'] = trade_date
+    response = request('GET', 'strategy/results?' + urlencode(query))
+    data = response['data']
+    rows = [row for row in data.get('results', []) if code is None or row.get('code') == code]
+    # 不重复返回完整分组，分页只裁剪列表，保留权威快照的全市场数量与来源。
+    result = {key: value for key, value in data.items() if key not in {'groups', 'results'}}
+    result.update(results=rows[offset:offset + limit], filtered_total=len(rows), offset=offset,
+                  limit=limit, has_more=offset + limit < len(rows))
+    return {'success': response.get('success', False), 'data': result}
+
+
+@mcp.tool(annotations=READ)
 def quant_capabilities() -> dict:
     """查看本机 Agent 的任务与模型配置状态，不返回密钥。"""
     return request("GET", "agent/capabilities")

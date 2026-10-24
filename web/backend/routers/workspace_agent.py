@@ -125,6 +125,11 @@ def active_tasks():
         if task["status"] not in ("done", "failed", "canceled", "interrupted"):
             items.append({"id": task["task_id"], "kind": "backtest", "status": task["status"]})
     known = {item["id"] for item in items}
+    from web.backend.services.strategy_scan import active_scan_status
+    for scan in active_scan_status():
+        if scan['id'] not in known:
+            items.append(scan)
+            known.add(scan['id'])
     for action in actions:
         action = controlled_actions.get(action["action_id"])
         if action["status"] in ("running", "queued", "cancel_requested") and action.get("business_id") not in known:
@@ -145,6 +150,8 @@ def shutdown_tasks(payload: ShutdownRequest):
     if not payload.confirmed:
         raise HTTPException(status_code=409, detail="需要确认退出")
     interrupted = []
+    from web.backend.services.strategy_scan import cancel_active_scans
+    interrupted.extend(cancel_active_scans())
     rows = get_connection().execute("SELECT payload FROM workspace_agent_runs WHERE status IN ('queued','running')").fetchall()
     for row in rows:
         run = json.loads(row[0])

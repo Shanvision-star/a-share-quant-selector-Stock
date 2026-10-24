@@ -100,7 +100,7 @@ def _resolve_cors_origins() -> list:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """FastAPI lifespan：启动时初始化数据库与预热，关闭时无需特殊清理。"""
+    """FastAPI lifespan：初始化数据库与预热，退出时取消扫描并禁止发布半成品。"""
     # 启动阶段
     try:
         init_database()
@@ -124,8 +124,11 @@ async def lifespan(_app: FastAPI):
         # 预热失败不阻断启动，但要保留完整 traceback 便于排查
         logger.exception("股票指标快照预热失败，将以冷启动方式提供服务")
 
-    yield
-    # 关闭阶段（暂无）
+    try:
+        yield
+    finally:
+        from web.backend.services.strategy_scan import cancel_active_scans
+        cancel_active_scans()
 
 
 app = FastAPI(

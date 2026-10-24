@@ -34,15 +34,19 @@ async def trigger_update(
             requested = None
 
     async def event_generator():
-        async for msg in run_data_update(
+        stream = run_data_update(
             auto_rebuild=auto_rebuild,
             target_date=date,
             pipeline=pipeline,
             allow_intraday_fast=allow_intraday_fast,
             init_if_empty=init_if_empty,
             strategies=requested,
-        ):
-            yield {"event": msg["event"], "data": json.dumps(msg["data"], ensure_ascii=False)}
+        )
+        try:
+            async for msg in stream:
+                yield {"event": msg["event"], "data": json.dumps(msg["data"], ensure_ascii=False)}
+        finally:
+            await stream.aclose()
 
     return EventSourceResponse(event_generator())
 
@@ -53,8 +57,12 @@ async def trigger_init(max_stocks: int = Query(None, ge=1)):
     from web.backend.services.data_service import run_data_init
 
     async def event_generator():
-        async for msg in run_data_init(max_stocks=max_stocks):
-            yield {"event": msg["event"], "data": json.dumps(msg["data"], ensure_ascii=False)}
+        stream = run_data_init(max_stocks=max_stocks)
+        try:
+            async for msg in stream:
+                yield {"event": msg["event"], "data": json.dumps(msg["data"], ensure_ascii=False)}
+        finally:
+            await stream.aclose()
 
     return EventSourceResponse(event_generator())
 

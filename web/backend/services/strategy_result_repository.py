@@ -1,5 +1,6 @@
 """策略结果仓储层 - 封装 SQLite 读写操作"""
 import json
+import os
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -164,7 +165,7 @@ def get_run_events(run_id: str, limit: int = 500) -> list:
 
 # ─── 策略结果 ───
 
-def insert_results_batch(results: list[dict]):
+def insert_results_batch(results: list[dict], *, commit: bool = True):
     """批量插入策略结果"""
     if not results:
         return
@@ -188,7 +189,8 @@ def insert_results_batch(results: list[dict]):
             for r in results
         ],
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 # Allowed sort columns (whitelist to prevent SQL injection)
@@ -251,6 +253,33 @@ def _build_result_filters(
     return conditions, params
 
 
+def _authoritative_groups_cte() -> str:
+    """按交易日与策略选最新正式发布版本，空分组也必须覆盖旧命中。"""
+    conn = get_connection()
+    has_snapshots = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='strategy_cache_snapshots'"
+    ).fetchone()
+    if not has_snapshots:
+        # 旧版数据库及最小仓储消费者仍沿用逐条结果查询，不强制迁移读路径。
+        return """authoritative_groups AS (
+            SELECT NULL AS run_id, NULL AS trade_date, NULL AS strategy_filter,
+                   1 AS publication_rank WHERE 0
+        )"""
+    return """authoritative_groups AS (
+        SELECT snapshots.run_id, snapshots.trade_date, groups.value AS strategy_filter,
+               ROW_NUMBER() OVER (
+                   PARTITION BY snapshots.trade_date, groups.value
+                   ORDER BY snapshots.snapshot_id DESC
+               ) AS publication_rank
+        FROM strategy_cache_snapshots snapshots,
+             json_each(CASE WHEN json_valid(snapshots.available_groups_json)
+                       THEN snapshots.available_groups_json ELSE '[]' END) groups
+        WHERE json_extract(CASE WHEN json_valid(snapshots.summary_json)
+                           THEN snapshots.summary_json ELSE '{}' END,
+                           '$._authoritative') = 1
+    )"""
+
+
 def _build_latest_results_cte(
     trade_date: str = None,
     strategy_filter: str = None,
@@ -276,10 +305,11 @@ def _build_latest_results_cte(
         start_date=start_date,
         end_date=end_date,
     )
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    conditions.append('(publication.run_id IS NULL OR sr.run_id = publication.run_id)')
+    where = " WHERE " + " AND ".join(conditions)
 
     sql = f"""
-        WITH ranked_results AS (
+        WITH {_authoritative_groups_cte()}, ranked_results AS (
             SELECT
                 sr.*,
                 runs.started_at AS run_started_at,
@@ -302,6 +332,10 @@ def _build_latest_results_cte(
                 ) AS row_num
             FROM strategy_results sr
             LEFT JOIN strategy_runs runs ON runs.run_id = sr.run_id
+            LEFT JOIN authoritative_groups publication
+                ON publication.trade_date = sr.trade_date
+               AND publication.strategy_filter = sr.strategy_filter
+               AND publication.publication_rank = 1
             {where}
         )
     """
@@ -455,7 +489,13 @@ def get_result_summary_for_date(trade_date: str) -> dict:
         params,
     ).fetchall()
 
-    group_totals = {}
+    published_groups = conn.execute(
+        f"""WITH {_authoritative_groups_cte()}
+            SELECT strategy_filter FROM authoritative_groups
+            WHERE trade_date = ? AND publication_rank = 1""",
+        (trade_date,),
+    ).fetchall()
+    group_totals = {r['strategy_filter']: 0 for r in published_groups}
     total = 0
     for r in rows:
         group_totals[r['strategy_filter']] = r['cnt']
@@ -486,6 +526,8 @@ def save_snapshot(
     available_groups: list,
     group_totals: dict,
     summary: dict = None,
+    *,
+    commit: bool = True,
 ):
     """保存缓存快照"""
     conn = get_connection()
@@ -501,6 +543,82 @@ def save_snapshot(
             json.dumps(group_totals, ensure_ascii=False),
             json.dumps(summary, ensure_ascii=False) if summary else None,
         ),
+    )
+    if commit:
+        conn.commit()
+
+
+def publish_snapshot(run_id: str, trade_date: str, strategy_filter: str,
+                     batch: list[dict], snapshot: dict, cache_file) -> None:
+    """在同一事务发布完整快照与结果；失败后旧正式版本继续可读。"""
+    if snapshot.get('trade_date') != trade_date or snapshot.get('_run_id') != run_id:
+        raise ValueError('快照日期或运行编号不一致')
+    groups = snapshot.get('groups')
+    if not isinstance(groups, dict) or not groups:
+        raise ValueError('完整快照必须包含策略分组（允许分组零命中）')
+    seen = set()
+    for row in batch:
+        if (row.get('run_id') != run_id or row.get('trade_date') != trade_date
+                or row.get('strategy_filter') not in groups):
+            raise ValueError('结果批次的运行、日期或策略分组不一致')
+        key = (row['strategy_filter'], row['code'], row.get('signal_date') or '', row.get('category') or '')
+        if key in seen:
+            raise ValueError('完整结果批次包含重复信号')
+        seen.add(key)
+    summary = dict(snapshot)
+    summary.pop('_invalidated', None)
+    summary.update(_authoritative=True, _cache_file=os.path.normcase(os.path.abspath(os.fspath(cache_file))))
+    conn = get_connection()
+    savepoint = 'publish_' + uuid.uuid4().hex
+    conn.execute(f'SAVEPOINT {savepoint}')
+    try:
+        # 多选策略可在同一 run 分阶段发布，替换整批防止旧命中残留。
+        conn.execute('DELETE FROM strategy_results WHERE run_id = ?', (run_id,))
+        insert_results_batch(batch, commit=False)
+        save_snapshot(run_id, trade_date, strategy_filter, snapshot.get('total', 0),
+                      sorted(groups), {sf: group.get('total', 0) for sf, group in groups.items()},
+                      summary=summary, commit=False)
+        conn.execute(f'RELEASE SAVEPOINT {savepoint}')
+    except Exception:
+        conn.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
+        conn.execute(f'RELEASE SAVEPOINT {savepoint}')
+        raise
+
+
+def get_published_snapshot(cache_file) -> Optional[dict]:
+    """读取指定缓存对应的最新权威完整快照，JSON 文件只作为兼容镜像。"""
+    conn = get_connection()
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='strategy_cache_snapshots'").fetchone():
+        return None
+    canonical_path = os.path.normcase(os.path.abspath(os.fspath(cache_file)))
+    row = conn.execute(
+        """SELECT summary_json FROM strategy_cache_snapshots
+           WHERE json_extract(CASE WHEN json_valid(summary_json) THEN summary_json ELSE '{}' END,
+                              '$._authoritative') = 1
+             AND json_extract(CASE WHEN json_valid(summary_json) THEN summary_json ELSE '{}' END,
+                              '$._cache_file') = ?
+             AND COALESCE(json_extract(CASE WHEN json_valid(summary_json) THEN summary_json ELSE '{}' END,
+                                       '$._invalidated'), 0) != 1
+           ORDER BY snapshot_id DESC LIMIT 1""",
+        (canonical_path,),
+    ).fetchone()
+    return json.loads(row['summary_json']) if row else None
+
+
+def invalidate_published_snapshots(cache_file) -> None:
+    """参数变更使当前缓存失效，但保留历史发布关系供复盘与审计。"""
+    conn = get_connection()
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='strategy_cache_snapshots'").fetchone():
+        return
+    canonical_path = os.path.normcase(os.path.abspath(os.fspath(cache_file)))
+    conn.execute(
+        """UPDATE strategy_cache_snapshots
+           SET summary_json = json_set(summary_json, '$._invalidated', json('true'))
+           WHERE json_extract(CASE WHEN json_valid(summary_json) THEN summary_json ELSE '{}' END,
+                              '$._authoritative') = 1
+             AND json_extract(CASE WHEN json_valid(summary_json) THEN summary_json ELSE '{}' END,
+                              '$._cache_file') = ?""",
+        (canonical_path,),
     )
     conn.commit()
 
@@ -519,7 +637,7 @@ def get_latest_snapshot(trade_date: str = None, strategy_filter: str = None) -> 
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     row = conn.execute(
-        f"SELECT * FROM strategy_cache_snapshots{where} ORDER BY generated_at DESC LIMIT 1",
+        f"SELECT * FROM strategy_cache_snapshots{where} ORDER BY generated_at DESC, snapshot_id DESC LIMIT 1",
         params,
     ).fetchone()
 
@@ -545,16 +663,11 @@ def get_available_trade_dates(limit: int = 30, strategy_filter: str = None) -> l
     """获取有结果的日期列表，优先使用信号日期，缺失时回退到缓存交易日"""
     conn = get_connection()
     date_expr = "COALESCE(NULLIF(signal_date, ''), trade_date)"
-    conditions = [f"{date_expr} IS NOT NULL", f"{date_expr} != ''"]
-    params = []
-    if strategy_filter and strategy_filter != 'all':
-        conditions.append("strategy_filter = ?")
-        params.append(strategy_filter)
-    where = " WHERE " + " AND ".join(conditions)
+    cte_sql, params = _build_latest_results_cte(strategy_filter=strategy_filter)
     rows = conn.execute(
-        f"""SELECT DISTINCT {date_expr} AS result_date
-            FROM strategy_results
-            {where}
+        f"""{cte_sql} SELECT DISTINCT {date_expr} AS result_date
+            FROM ranked_results
+            WHERE row_num = 1 AND {date_expr} IS NOT NULL AND {date_expr} != ''
             ORDER BY result_date DESC
             LIMIT ?""",
         params + [limit],

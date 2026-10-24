@@ -44,10 +44,13 @@ async def update_config(req: ConfigUpdateRequest):
     """更新策略配置"""
     _assert_safe_config_update(req)
     from web.backend.services.strategy_service import ConfigRefreshError, update_strategy_config
+    from web.backend.services.strategy_scan import ScanBusy
     try:
         success, revision = update_strategy_config(req.strategy_name, req.params, req.expected_revision)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ScanBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ConfigRefreshError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not success:

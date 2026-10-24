@@ -4,6 +4,7 @@ import sys
 import asyncio
 import concurrent.futures
 import threading
+import time
 from pathlib import Path
 from datetime import datetime, time as dt_time, timedelta
 from typing import Any, Dict
@@ -16,6 +17,7 @@ from utils.akshare_fetcher import AKShareFetcher
 from utils.status_sampling import select_status_sample
 from utils.trading_calendar import previous_a_share_trading_day
 from web.backend.services import strategy_result_repository as repo
+from web.backend.services.strategy_scan import market_job, cancel_active_scans, ScanBusy, ScanCancelled
 
 csv_manager = CSVManager(str(project_root / "data"))
 fetcher = AKShareFetcher(str(project_root / "data"))
@@ -202,21 +204,100 @@ async def run_data_update(
         'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     })
 
+    messages = _market_update_messages(
+        auto_rebuild=auto_rebuild,
+        target_date=target_date,
+        pipeline=pipeline,
+        allow_intraday_fast=allow_intraday_fast,
+        init_if_empty=init_if_empty,
+        strategies=strategies,
+        _run_id=run_id,
+        _effective_date=effective_date,
+    )
     try:
-        async for msg in _run_data_update_unlocked(
-            auto_rebuild=auto_rebuild,
-            target_date=target_date,
-            pipeline=pipeline,
-            allow_intraday_fast=allow_intraday_fast,
-            init_if_empty=init_if_empty,
-            strategies=strategies,
-            _run_id=run_id,
-            _effective_date=effective_date,
-        ):
+        async for msg in messages:
             yield msg
     finally:
-        _UPDATE_JOB_STATE.clear()
-        _UPDATE_JOB_LOCK.release()
+        try:
+            await messages.aclose()
+        finally:
+            _UPDATE_JOB_STATE.clear()
+            _UPDATE_JOB_LOCK.release()
+
+
+async def _market_update_messages(**kwargs):
+    run_id = kwargs['_run_id']
+    started = time.perf_counter()
+    try:
+        with market_job(run_id, 'update') as cancelled:
+            messages = _run_data_update_unlocked(**kwargs, _cancel_event=cancelled)
+            terminal = False
+            try:
+                async for message in messages:
+                    terminal = message['event'] in {'job_complete', 'error'}
+                    if cancelled.is_set() and not terminal:
+                        message['data']['status'] = 'cancelling'
+                        message['data']['message'] = '正在等待行情写入结束，完成后停止作业'
+                    if message['event'] in {'update_complete', 'job_complete', 'error', 'pipeline_error'}:
+                        message['data']['elapsed_seconds'] = time.perf_counter() - started
+                        repo.insert_event(run_id, message['event'], payload=message['data'])
+                    yield message
+            finally:
+                if not terminal:
+                    cancel_active_scans()
+                    _record_interrupted_market_job(run_id)
+                await messages.aclose()
+    except (ScanBusy, ScanCancelled) as exc:
+        if repo.get_run(run_id):
+            repo.finish_run(run_id, 'error', str(exc))
+        yield {'event': 'error', 'data': {'status': 'busy' if isinstance(exc, ScanBusy) else 'error',
+               'run_id': run_id, 'progress': 100, 'message': str(exc)}}
+
+
+def _check_market_cancelled(cancelled):
+    if cancelled is not None and cancelled.is_set():
+        raise ScanCancelled('行情作业已取消，未发布结果')
+
+
+def _record_interrupted_market_job(run_id):
+    try:
+        run = repo.get_run(run_id)
+        if run is None:
+            return
+        from web.backend.services.strategy_service import WEB_STRATEGY_RESULTS_FILE
+        published = repo.get_published_snapshot(str(WEB_STRATEGY_RESULTS_FILE.resolve()))
+        # 取消与提交已有共同锁；断连发生在提交之后不能把已发布运行改为失败。
+        # 仓储读口限定当前缓存且排除失效版本，旧 run 或其他配置缓存不能充当成功证据。
+        if (published and published.get('_authoritative')
+                and published.get('_run_id') == run_id
+                and published.get('trade_date') == run.get('trade_date')):
+            summary = published.get('scan_summary') or {}
+            processed = summary.get('processed')
+            if processed is None:
+                processed = summary.get('total_stocks', run.get('total_count', 0))
+            repo.finish_run(run_id, 'done', '正式结果已发布；发布后连接中断',
+                            matched_count=int(published.get('total') or 0),
+                            processed_count=int(processed or 0))
+            return
+        repo.finish_run(run_id, 'error', '连接中断或任务取消；等待已开始的行情写入结束')
+    except Exception:
+        pass
+
+
+def _execute_market_writer(run_id, kind, operation, cancelled=None):
+    """真实写入线程持有租约，避免 SSE 断连后后台写入与新扫描重叠。"""
+    with market_job(run_id, kind) as worker_cancelled:
+        _check_market_cancelled(cancelled)
+        result = operation()
+        _check_market_cancelled(cancelled)
+        _check_market_cancelled(worker_cancelled)
+        return result
+
+
+def _observe_market_future(future):
+    # 断连后流不再 await，仍领取后台异常，避免产生无人处理的 Future 告警。
+    if not future.cancelled():
+        future.exception()
 
 
 async def _run_data_update_unlocked(
@@ -228,6 +309,7 @@ async def _run_data_update_unlocked(
     strategies: list = None,
     _run_id: str = None,
     _effective_date: str = None,
+    _cancel_event=None,
 ):
     """
     异步执行数据更新，通过 yield 返回进度消息（SSE）
@@ -341,10 +423,13 @@ async def _run_data_update_unlocked(
             )
 
         def do_init():
-            return fetcher.init_full_data(progress_callback=enqueue_init_progress)
+            return _execute_market_writer(run_id, 'init',
+                lambda: fetcher.init_full_data(progress_callback=enqueue_init_progress), _cancel_event)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as init_pool:
+        init_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
             init_future = asyncio.get_event_loop().run_in_executor(init_pool, do_init)
+            init_future.add_done_callback(_observe_market_future)
             while not init_future.done() or not init_queue.empty():
                 drained = False
                 try:
@@ -355,6 +440,9 @@ async def _run_data_update_unlocked(
                 if not drained:
                     await asyncio.sleep(0.05)
             init_summary = await init_future
+        finally:
+            init_pool.shutdown(wait=False, cancel_futures=True)
+        _check_market_cancelled(_cancel_event)
 
         while not init_queue.empty():
             yield init_queue.get_nowait()
@@ -438,6 +526,18 @@ async def _run_data_update_unlocked(
     pipeline_queue: queue.Queue = queue.Queue()
     pipeline_stock_names = None
     pipeline_selected_items = None
+    pipeline_errors = []
+    pipeline_error_lock = threading.Lock()
+
+    def record_pipeline_error(code, exc):
+        with pipeline_error_lock:
+            pipeline_errors.append({'code': code, 'error_type': type(exc).__name__, 'error_message': str(exc)})
+            error_count = len(pipeline_errors)
+        pipeline_queue.put({'event': 'pipeline_error', 'data': {
+            'status': 'error', 'progress': 5, 'run_id': run_id, 'stage': 'update',
+            'trade_date': effective_date, 'code': code, 'error_type': type(exc).__name__,
+            'message': f'策略检查失败：{code or "初始化"}，{exc}', 'pipeline_error_count': error_count,
+        }})
 
     if pipeline:
         try:
@@ -449,14 +549,7 @@ async def _run_data_update_unlocked(
         except Exception as exc:
             # 策略初始化失败不阻塞数据更新，降级为非 pipeline 模式
             pipeline = False
-            pipeline_queue.put({
-                'event': 'update_progress',
-                'data': {
-                    'status': 'running', 'progress': 5,
-                    'message': f'Pipeline 策略初始化失败，降级为普通模式: {exc}',
-                    'run_id': run_id, 'stage': 'update', 'trade_date': effective_date,
-                },
-            })
+            record_pipeline_error(None, exc)
 
     def on_stock_ready(code, df):
         """pipeline 回调：更新成功后立即执行策略扫描（在线程池线程中运行）"""
@@ -477,21 +570,23 @@ async def _run_data_update_unlocked(
                         'trade_date': effective_date,
                     },
                 })
-        except Exception:
-            pass
+        except Exception as exc:
+            record_pipeline_error(code, exc)
 
     def do_update():
-        return fetcher.daily_update(
+        return _execute_market_writer(run_id, 'update', lambda: fetcher.daily_update(
             date=effective_date,
             progress_callback=enqueue_update_progress,
             on_stock_ready=on_stock_ready if pipeline else None,
             allow_intraday_fast=allow_intraday_fast,
-        )
+        ), _cancel_event)
 
     loop = asyncio.get_event_loop()
-    with concurrent.futures.ThreadPoolExecutor() as pool:
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
         try:
             update_future = loop.run_in_executor(pool, do_update)
+            update_future.add_done_callback(_observe_market_future)
             while not update_future.done() or not update_queue.empty() or not pipeline_queue.empty():
                 drained = False
                 for q in (update_queue, pipeline_queue):
@@ -520,6 +615,9 @@ async def _run_data_update_unlocked(
                 },
             }
             return
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    _check_market_cancelled(_cancel_event)
 
     while not update_queue.empty():
         yield update_queue.get_nowait()
@@ -590,16 +688,9 @@ async def _run_data_update_unlocked(
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    # 三态分流：done / partial / error
-    # 关键修复（系统化）：原实现把 'partial'（极少数股票失败）和 'error'（致命）
-    # 视为同一类失败 → 直接 finish_run('error') 并 return，导致后续阶段二策略
-    # 重建永远不会触发。这与“5000+ 股票里 1 只失败仍应能跑策略”的业务事实矛盾。
-    # 修复：仅 'error' 真正中止；'partial' 视为“局部完成”，发 warning 事件后
-    # 继续进入阶段二，避免单点失败阻断整条 pipeline。
-    # ------------------------------------------------------------------
+    # 行情未完整验证时保留旧快照，不能把混合日期结果发布成当日全市场完成。
     update_status = update_summary.get('status')
-    if update_status == 'error':
+    if update_status in {'error', 'partial'}:
         message = update_summary.get('message') or '数据更新失败'
         try:
             repo.finish_run(run_id, 'error', message)
@@ -619,24 +710,16 @@ async def _run_data_update_unlocked(
         }
         return
 
-    if update_status == 'partial':
-        # 局部失败：记录告警事件，但不中断 pipeline，继续阶段二
-        warn_msg = update_summary.get('message') or '数据更新未全量完成'
-        try:
-            repo.insert_event(run_id, 'warning', message=warn_msg)
-        except Exception:
-            pass
-        yield {
-            "event": "update_warning",
-            "data": {
-                "status": "running", "progress": 40,
-                "message": warn_msg + "（局部失败，仍将继续阶段二策略重建）",
-                "run_id": run_id, "stage": "update",
-                "trade_date": effective_date,
-                "update_status": "partial",
-                **update_metrics,
-            },
-        }
+    if pipeline_errors:
+        message = f'行情更新已完成，但 {len(pipeline_errors)} 项策略检查失败；未发布策略结果'
+        repo.finish_run(run_id, 'error', message)
+        yield {'event': 'error', 'data': {
+            'status': 'error', 'progress': 100, 'message': message, 'run_id': run_id,
+            'stage': 'pipeline', 'trade_date': effective_date, 'update_status': update_status,
+            'pipeline_error_count': len(pipeline_errors), 'pipeline_errors': pipeline_errors[:20],
+            **update_metrics,
+        }}
+        return
 
     yield {
         "event": "update_complete",
@@ -650,6 +733,7 @@ async def _run_data_update_unlocked(
     }
 
     if not auto_rebuild:
+        _check_market_cancelled(_cancel_event)
         try:
             repo.finish_run(run_id, 'done', update_summary.get('message') or f'{effective_date} 数据更新完成')
         except Exception:
@@ -667,6 +751,7 @@ async def _run_data_update_unlocked(
         return
 
     # ─── 阶段 2：自动策略缓存重建 ───
+    _check_market_cancelled(_cancel_event)
     yield {
         "event": "rebuild_start",
         "data": {
@@ -696,6 +781,8 @@ async def _run_data_update_unlocked(
     def rebuild_progress_callback(event_type: str, data: dict):
         """将策略重建的进度映射到总体进度 42%-98%"""
         nonlocal last_persisted_progress
+        if event_type in {'scan_summary', 'scan_timing'}:
+            repo.insert_event(run_id, event_type, payload=data)
         raw_progress = data.get('progress', 0)
         processed = int(data.get('processed') or 0)
         total = int(data.get('total') or rebuild_total)
@@ -729,30 +816,15 @@ async def _run_data_update_unlocked(
             target_filters = [s for s in strategies if s in valid_filters] or ['all']
 
         def _run_rebuild():
-            last_snapshot = None
-            for idx, sf in enumerate(target_filters):
-                # 多策略时按段映射进度，每个策略独占一段
-                segment_total = len(target_filters)
-                segment_index = idx
-
-                def _seg_callback(event_type, data, _seg=segment_index, _tot=segment_total):
-                    raw = data.get('progress', 0)
-                    seg_start = (raw / max(1, _tot))
-                    overall = seg_start + (100.0 / max(1, _tot)) * (_seg / max(1, _tot)) * 0  # placeholder
-                    # 直接简化：把每策略 0-100 映射到 (idx/tot) ~ ((idx+1)/tot)
-                    base = 100.0 * _seg / _tot
-                    overall = base + raw / _tot
-                    data['progress'] = int(overall)
-                    rebuild_progress_callback(event_type, data)
-
-                last_snapshot = build_strategy_result_snapshot(
-                    target_date=effective_date,
-                    strategy_filter=sf,
-                    progress_callback=_seg_callback if segment_total > 1 else rebuild_progress_callback,
-                    run_id=run_id,
-                )
-            return last_snapshot
-
+            # 所选策略一次计算并一次发布，任何策略失败都不能留下半个正式快照。
+            options = {'strategy_filters': target_filters} if target_filters != ['all'] else {}
+            return build_strategy_result_snapshot(
+                target_date=effective_date,
+                strategy_filter='all',
+                progress_callback=rebuild_progress_callback,
+                run_id=run_id,
+                **options,
+            )
         snapshot_future = loop.run_in_executor(rebuild_pool, _run_rebuild)
 
         while not snapshot_future.done() or not event_queue.empty():
@@ -771,6 +843,7 @@ async def _run_data_update_unlocked(
             repo.finish_run(
                 run_id, 'done', f'统一作业完成：{effective_date} 数据更新 + 策略重建',
                 matched_count=snapshot.get('total', 0),
+                processed_count=rebuild_total,
             )
             repo.insert_event(run_id, 'job_complete', message='统一作业完成')
         except Exception:
@@ -811,10 +884,32 @@ async def _run_data_update_unlocked(
 
 
 async def run_data_init(max_stocks: int = None):
+    run_id = repo.generate_run_id()
+    try:
+        with market_job(run_id, 'init') as cancelled:
+            messages = _run_data_init_unlocked(max_stocks, _run_id=run_id, _cancel_event=cancelled)
+            terminal = False
+            try:
+                async for message in messages:
+                    terminal = message['event'] in {'job_complete', 'error'}
+                    if cancelled.is_set() and not terminal:
+                        message['data']['status'] = 'cancelling'
+                        message['data']['message'] = '正在等待初始化写入结束'
+                    yield message
+            finally:
+                if not terminal:
+                    cancel_active_scans()
+                    _record_interrupted_market_job(run_id)
+                await messages.aclose()
+    except (ScanBusy, ScanCancelled) as exc:
+        yield {'event': 'error', 'data': {'status': 'error', 'message': str(exc), 'progress': 100}}
+
+
+async def _run_data_init_unlocked(max_stocks: int = None, _run_id=None, _cancel_event=None):
     """异步执行首次全量初始化，通过 SSE 返回进度。"""
     from web.backend.services.strategy_service import get_latest_trade_date
 
-    run_id = repo.generate_run_id()
+    run_id = _run_id or repo.generate_run_id()
     run_type = 'init_only'
     effective_date = get_latest_trade_date()
 
@@ -849,12 +944,15 @@ async def run_data_init(max_stocks: int = None):
         )
 
     def do_init():
-        return fetcher.init_full_data(max_stocks=max_stocks, progress_callback=enqueue_init_progress)
+        return _execute_market_writer(run_id, 'init', lambda: fetcher.init_full_data(
+            max_stocks=max_stocks, progress_callback=enqueue_init_progress), _cancel_event)
 
     loop = asyncio.get_event_loop()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
         try:
             init_future = loop.run_in_executor(pool, do_init)
+            init_future.add_done_callback(_observe_market_future)
             while not init_future.done() or not init_queue.empty():
                 drained = False
                 try:
@@ -885,6 +983,9 @@ async def run_data_init(max_stocks: int = None):
                 },
             }
             return
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    _check_market_cancelled(_cancel_event)
 
     while not init_queue.empty():
         yield init_queue.get_nowait()

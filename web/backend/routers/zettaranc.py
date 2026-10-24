@@ -187,5 +187,11 @@ def attack_scan(limit: int = 50):
     """对本地 csv 池子扫描，limit 控制最多扫多少只（避免长时间阻塞）。"""
     if limit < 0:
         limit = 0
-    candidates = get_default_scanner().scan_today(limit=limit)
+    from web.backend.services.strategy_scan import market_job, ScanBusy
+    from uuid import uuid4
+    try:
+        with market_job('attack-' + uuid4().hex, 'attack'):
+            candidates = get_default_scanner().scan_today(limit=limit)
+    except ScanBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _ok({"count": len(candidates), "candidates": candidates})

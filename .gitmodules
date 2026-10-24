@@ -1,3 +1,7 @@
 [submodule "third_party/zettaranc"]
 	path = third_party/zettaranc
 	url = https://github.com/lululu811/zettaranc-skill.git
+[submodule "web/frontend"]
+	path = web/frontend
+	url = https://github.com/Shanvision-star/a-share-quant-selector-Stock
+	branch = frontend/web

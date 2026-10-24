@@ -316,8 +316,7 @@ class B2CaseAnalyzer:
             else:
                 state_df = calculate_zhixing_state(df_asc)
         except Exception as e:
-            logger.warning("[B2] %s 计算双线状态失败: %s", code, e)
-            return None
+            raise RuntimeError(f"[B2] {code} 计算双线状态失败: {e}") from e
 
         try:
             if has_cached_kdj(df_asc, (9, 3, 3)):
@@ -325,8 +324,7 @@ class B2CaseAnalyzer:
             else:
                 kdj_df = KDJ(df_asc)
         except Exception as e:
-            logger.warning("[B2] %s 计算KDJ失败: %s", code, e)
-            return None
+            raise RuntimeError(f"[B2] {code} 计算KDJ失败: {e}") from e
 
         working_df = state_df.copy()
         working_df["open"] = df_asc["open"].values if "open" in df_asc.columns else df_asc["close"].values
@@ -922,9 +920,10 @@ class B2CaseAnalyzer:
             "pattern_subtype":     pattern_context.get("pattern_subtype", "standard_platform_breakout"),
             "pattern_priority":    pattern_context.get("pattern_priority", 0),
             "pattern_notes":       pattern_context.get("pattern_notes", []),
-            "damage_start":        pattern_context.get("damage_zone", {}).get("damage_start"),
-            "damage_end":          pattern_context.get("damage_zone", {}).get("damage_end"),
-            "damage_drop_pct":     pattern_context.get("damage_zone", {}).get("drop_pct"),
+            # 平行重炮允许没有破坏段，None 表示该可选结构未出现，不是计算失败。
+            "damage_start":        (pattern_context.get("damage_zone") or {}).get("damage_start"),
+            "damage_end":          (pattern_context.get("damage_zone") or {}).get("damage_end"),
+            "damage_drop_pct":     (pattern_context.get("damage_zone") or {}).get("drop_pct"),
             "reversal_date":       pattern_context.get("reversal", {}).get("reversal_date"),
             "reversal_pct":        pattern_context.get("reversal", {}).get("reversal_pct"),
             "parallel_candle_dates": pattern_context.get("parallel_info", {}).get("dates", []),
@@ -1159,38 +1158,34 @@ class B2CaseAnalyzer:
                 end_date   = str(working_df.iloc[min_vol_idx]['date'])
 
         # ── 手动/自动模式通用：计算区间最高价和最低价 ────────────────────────
-        try:
-            if not start_date or not end_date:
-                return None  # 自动识别也失败，无法继续
+        if not start_date or not end_date:
+            return None  # 自动识别也失败，无法继续
 
-            # pd.to_datetime 能兼容 "2025-10-28" 和 "2025-10-28 00:00:00" 等格式
-            start_dt = pd.to_datetime(start_date)
-            end_dt   = pd.to_datetime(end_date)
+        # pd.to_datetime 能兼容 "2025-10-28" 和 "2025-10-28 00:00:00" 等格式
+        start_dt = pd.to_datetime(start_date)
+        end_dt   = pd.to_datetime(end_date)
 
-            # 按日期区间过滤（包含两端边界日期的数据）
-            window = working_df[
-                (working_df["date"] >= start_dt) &
-                (working_df["date"] <= end_dt)
-            ]
-            if window.empty:
-                return None  # 该股票在指定区间内无数据（可能停牌）
+        # 按日期区间过滤（包含两端边界日期的数据）
+        window = working_df[
+            (working_df["date"] >= start_dt) &
+            (working_df["date"] <= end_dt)
+        ]
+        if window.empty:
+            return None  # 该股票在指定区间内无数据（可能停牌）
 
-            # 区间最高价 = B2 突破的关口压力位
-            # 区间最低价 = 盘整期支撑位（用于评估后续回撤风险）
-            high_val = float(window["high"].max())
-            close_high_val = float(window["close"].max())
-            low_val  = float(window["low"].min())
+        # 区间最高价 = B2 突破的关口压力位
+        # 区间最低价 = 盘整期支撑位（用于评估后续回撤风险）
+        high_val = float(window["high"].max())
+        close_high_val = float(window["close"].max())
+        low_val  = float(window["low"].min())
 
-            return {
-                "high":           high_val,
-                "breakout_level": close_high_val,
-                "low":            low_val,
-                "start":          str(start_dt)[:10],   # 标准化为 YYYY-MM-DD
-                "end":            str(end_dt)[:10],
-            }
-        except Exception as e:
-            logger.warning("[B2] 整理区间识别失败: %s", e)
-            return None
+        return {
+            "high":           high_val,
+            "breakout_level": close_high_val,
+            "low":            low_val,
+            "start":          str(start_dt)[:10],   # 标准化为 YYYY-MM-DD
+            "end":            str(end_dt)[:10],
+        }
 
     # ──────────────── 步骤4+5：B2 突破 + 放量确认 ────────────────────────────
 
@@ -1548,11 +1543,8 @@ class B2Strategy(BaseStrategy):
             return None
 
         for case_cfg in self.library.pattern_templates:
-            try:
-                result = self.library.analyzer.analyze_prepared(stock_code, working_df, case_cfg)
-            except Exception as exc:
-                logger.warning("[B2] Web 扫描 %s 时发生异常: %s", stock_code, exc)
-                continue
+            # 任一模板出错时无法可靠选择最优形态，由扫描层记录失败并阻止发布。
+            result = self.library.analyzer.analyze_prepared(stock_code, working_df, case_cfg)
 
             if not result:
                 continue

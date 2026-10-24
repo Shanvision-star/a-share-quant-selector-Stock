@@ -118,8 +118,8 @@ class ZettarancAttackScanner:
                 df["date"] = df["date"].astype(str).str[:10]
                 indicators = self._strategy.calculate_indicators(df)
                 signals = self._strategy.select_stocks(indicators, name_map.get(code, ""))
-            except Exception:  # noqa: BLE001
-                continue
+            except Exception as exc:
+                raise RuntimeError(f'{code} 攻击日策略计算失败: {exc}') from exc
             if not signals:
                 continue
             sig = signals[0]
